@@ -150,30 +150,48 @@
       "phase": "prepublish",
       "area": "source",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "Source, ShellCheck, syntax, secret and retired-runtime gates pass for the 3.0.0 tree",
-      "evidence": [],
-      "notes": ""
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "iso/iso-gate.log",
+          "sha256": "73411b0ba357e0c921dd1123fa10c3ce981d78052a6267b52895924ca3f102fc"
+        }
+      ],
+      "notes": "SOURCE_GATE_PASSED: 69 behavior tests, ShellCheck 57 scripts, gitleaks tree+history, desktop validation, retired-runtime scan."
     },
     {
       "id": "PKG-01",
       "phase": "prepublish",
       "area": "packages",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "Every 3.0.0 binary + corresponding source package builds into a freshly signed Umbra repo",
-      "evidence": [],
-      "notes": ""
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "iso/iso-gate.log",
+          "sha256": "73411b0ba357e0c921dd1123fa10c3ce981d78052a6267b52895924ca3f102fc"
+        }
+      ],
+      "notes": "16 binary / 14 source packages built into a freshly signed Umbra repo (reprepro allowlist passed); installed package contract verified inside the ISO."
     },
     {
       "id": "ISO-01",
       "phase": "prepublish",
       "area": "image",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "ISO structure, checksum, detached signature verify; squashfs within the 4 GiB ceiling",
-      "evidence": [],
-      "notes": ""
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "iso/iso-gate.log",
+          "sha256": "73411b0ba357e0c921dd1123fa10c3ce981d78052a6267b52895924ca3f102fc"
+        }
+      ],
+      "notes": "ISO_GATE_PASSED: sha256 110b0d075e699a05\u2026, size 3967508480B, 3.72GB squashfs (575MB headroom), BIOS+UEFI hybrid, detached sig verifies, 15 exact Shadowfetch packages incl. fireline, no retired runtime/downloader."
     },
     {
       "id": "BOOT-01",

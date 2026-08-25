@@ -34,6 +34,7 @@ EXPECTED_CUSTOM_PACKAGES = {
     "shadowfetch-desktop": "3.0.0-1",
     "shadowfetch-ember": "3.0.0-1",
     "shadowfetch-fireproof": "3.0.0-1",
+    "shadowfetch-fireline": "3.0.0-1",
     "shadowfetch-firewatchd": "3.0.0-1",
     "shadowfetch-hwscan": "3.0.0-1",
     "shadowfetch-menus": "3.0.0-1",
