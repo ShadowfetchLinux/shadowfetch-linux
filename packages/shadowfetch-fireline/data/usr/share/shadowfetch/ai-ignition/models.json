@@ -1,0 +1,25 @@
+{
+  "schema": "shadowfetch.ai-catalog.v1",
+  "note": "Consent-gated first-boot local models. Apache-2.0 / permissive-open only (no Llama-family redistribution risk). VRAM figures are approximate for the listed quantization; CPU-only fallback is always offered.",
+  "engine": "llama.cpp (llama-server) via Buzz; OpenAI-compatible API on loopback",
+  "tiers": [
+    { "min_vram_gb": 0,  "class": "cpu",     "models": [
+      { "id": "qwen3-1.7b",       "name": "Qwen3 1.7B",        "license": "apache-2.0", "quant": "Q4_K_M", "size_gb": 1.2, "use": "quick chat / autocomplete on any machine, CPU-friendly" } ] },
+    { "min_vram_gb": 6,  "class": "entry",   "models": [
+      { "id": "qwen3-4b",         "name": "Qwen3 4B",          "license": "apache-2.0", "quant": "Q4_K_M", "size_gb": 2.6, "use": "general assistant, good on 6-8 GB cards" },
+      { "id": "gemma3-4b",        "name": "Gemma 3 4B",        "license": "gemma-terms", "quant": "Q4_K_M", "size_gb": 3.1, "use": "multimodal-capable general assistant" } ] },
+    { "min_vram_gb": 10, "class": "standard", "models": [
+      { "id": "qwen3-8b",         "name": "Qwen3 8B",          "license": "apache-2.0", "quant": "Q4_K_M", "size_gb": 5.0, "use": "strong general + light coding" },
+      { "id": "devstral-small",   "name": "Devstral Small 1.1","license": "apache-2.0", "quant": "Q4_K_M", "size_gb": 14.0,"use": "agentic coding (fits 16 GB; too big for 10-12 GB)", "min_vram_gb": 16 } ] },
+    { "min_vram_gb": 12, "class": "coder",   "models": [
+      { "id": "qwen3-coder-14b",  "name": "Qwen3-Coder 14B",   "license": "apache-2.0", "quant": "Q4_K_M", "size_gb": 9.0, "use": "local coding agent lane (Aider/Cline against Buzz)" } ] },
+    { "min_vram_gb": 16, "class": "workstation", "models": [
+      { "id": "gpt-oss-20b",      "name": "gpt-oss-20b",       "license": "apache-2.0", "quant": "MXFP4",  "size_gb": 12.0,"use": "reasoning + tool use, OpenAI open-weights" },
+      { "id": "qwen3-14b",        "name": "Qwen3 14B",         "license": "apache-2.0", "quant": "Q4_K_M", "size_gb": 9.0, "use": "strong general/agentic" } ] },
+    { "min_vram_gb": 24, "class": "pro",     "models": [
+      { "id": "qwen3-32b",        "name": "Qwen3 32B",         "license": "apache-2.0", "quant": "Q4_K_M", "size_gb": 20.0,"use": "top local quality on a single 24 GB card" },
+      { "id": "gpt-oss-20b",      "name": "gpt-oss-20b",       "license": "apache-2.0", "quant": "MXFP4",  "size_gb": 12.0,"use": "headroom for long context + tools" } ] },
+    { "min_vram_gb": 48, "class": "halo",    "models": [
+      { "id": "qwen3-235b-a22b",  "name": "Qwen3 235B A22B (MoE)","license": "apache-2.0","quant": "Q4_K_M","size_gb": 130.0,"use": "unified-memory boxes (Strix Halo 128 GB / multi-GPU)" } ] }
+  ]
+}

@@ -5,3 +5,5 @@ data/usr/lib/shadowfetch/mcp/sf_mcp.py     usr/lib/shadowfetch/mcp/
 data/usr/share/polkit-1/actions/org.shadowfetch.fireline.policy  usr/share/polkit-1/actions/
 data/usr/share/doc/shadowfetch/FIRELINE.md usr/share/doc/shadowfetch/
 data/usr/share/applications/shadowfetch-firebreak.desktop  usr/share/applications/
+data/usr/bin/shadowfetch-ai-ignition       usr/bin/
+data/usr/share/shadowfetch/ai-ignition/models.json  usr/share/shadowfetch/ai-ignition/

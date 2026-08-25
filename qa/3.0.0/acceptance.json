@@ -130,6 +130,22 @@
       "notes": "shadowfetch-fireline_3.0.0-1_all.deb installs; all three CLIs + MCP servers run from /usr/bin; deps python3+bubblewrap only."
     },
     {
+      "id": "IGNITION-REC-01",
+      "phase": "prepublish",
+      "area": "ai",
+      "required": true,
+      "status": "pass",
+      "title": "AI Ignition recommends an Apache-2.0 model that fits the detected VRAM at every tier (CPU..48GB)",
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "ignition/ai-ignition.txt",
+          "sha256": "64c315ba8bb24682bff3c08ec59c9a72547f430d7e6ba40af7ef0265fb411817"
+        }
+      ],
+      "notes": "Recommender fits at CPU/2/4/6/8/10/12/16/24/48/128 GB, always Apache-2.0, CPU capped at 4GB weights; plan rejects unknown ids; catalog complete."
+    },
+    {
       "id": "SRC-01",
       "phase": "prepublish",
       "area": "source",
