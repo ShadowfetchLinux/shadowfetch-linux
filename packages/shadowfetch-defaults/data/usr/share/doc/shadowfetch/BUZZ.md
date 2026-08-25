@@ -1,4 +1,4 @@
-# Buzz on Shadowfetch Linux 2.1.5 Fire Edition
+# Buzz on Shadowfetch Linux 3.0.0 Fire Edition
 
 Shadowfetch offers [Buzz](https://github.com/block/buzz) as the shared workspace
 for people and AI agents. Buzz is optional. The first-run wizard can install the

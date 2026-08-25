@@ -1,4 +1,4 @@
-# Optional coding agents on Shadowfetch Linux 2.1.5
+# Optional coding agents on Shadowfetch Linux 3.0.0
 
 First-run setup offers four independent, unchecked coding-agent choices:
 

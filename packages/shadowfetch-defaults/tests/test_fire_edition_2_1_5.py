@@ -59,10 +59,10 @@ class FireEdition215Tests(unittest.TestCase):
 
     def test_release_version_and_package_versions_match(self):
         makefile = (ROOT / "Makefile").read_text()
-        self.assertRegex(makefile, r"(?m)^VERSION\s+\?= 2\.1\.5$")
+        self.assertRegex(makefile, r"(?m)^VERSION\s+\?= 3\.0\.0$")
         for changelog in (ROOT / "packages").glob("shadowfetch-*/debian/changelog"):
             first = changelog.read_text().splitlines()[0]
-            self.assertIn("(2.1.5-1)", first, changelog)
+            self.assertIn("(3.0.0-1)", first, changelog)
 
     def test_canonical_identity_keeps_verified_raw_artifact_routes(self):
         canonical = "https://www.shadowfetchlinux.org"
@@ -94,7 +94,7 @@ class FireEdition215Tests(unittest.TestCase):
 
     def test_debian_revision_versions_use_quilt_source_format(self):
         formats = sorted((ROOT / "packages").glob("*/debian/source/format"))
-        self.assertEqual(13, len(formats))
+        self.assertEqual(14, len(formats))
         for source_format in formats:
             self.assertEqual("3.0 (quilt)", source_format.read_text().strip())
         makefile = (ROOT / "Makefile").read_text()

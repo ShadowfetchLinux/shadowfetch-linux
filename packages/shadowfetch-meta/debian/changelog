@@ -1,3 +1,10 @@
+shadowfetch-meta (3.0.0-1) umbra; urgency=medium
+
+  * Shadowfetch Linux 3.0.0 "Backfire": the agent-safe local-AI workstation.
+  * Rebuilt for 3.0.0 alongside the new shadowfetch-fireline agent-safety system.
+
+ -- Shadowfetch Project <shadowfetchlinux@gmail.com>  Tue, 25 Aug 2026 17:28:03 -0400
+
 shadowfetch-meta (2.1.5-1) umbra; urgency=medium
 
   * Rebuild the Fire Edition desktop and creative metapackages for 2.1.5.

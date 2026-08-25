@@ -1,4 +1,4 @@
-# Codex CLI on Shadowfetch Linux 2.1.5
+# Codex CLI on Shadowfetch Linux 3.0.0
 
 Shadowfetch can optionally install the official OpenAI Codex CLI during the
 first-run setup. Codex is not embedded in the ISO and is not required for Buzz

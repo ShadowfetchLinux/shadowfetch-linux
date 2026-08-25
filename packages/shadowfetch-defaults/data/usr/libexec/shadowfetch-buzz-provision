@@ -29,7 +29,7 @@ if (( EUID != 0 )); then
     exit 1
 fi
 if [[ $(uname -m) != "x86_64" ]]; then
-    echo "Shadowfetch Fire Edition 2.1.5 supports x86_64 systems only." >&2
+    echo "Shadowfetch Fire Edition 3.0.0 supports x86_64 systems only." >&2
     exit 3
 fi
 for command in apt-get curl dpkg dpkg-query flock sha256sum; do

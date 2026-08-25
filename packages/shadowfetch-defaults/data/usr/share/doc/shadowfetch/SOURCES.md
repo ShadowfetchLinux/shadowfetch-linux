@@ -33,7 +33,7 @@ Official documentation is linked from `CODING-AGENTS.md`.
 The complete corresponding source for the Shadowfetch packages of THIS release
 is published as a signed tarball alongside the release:
 
-    https://shadowfetch.com/linux/apt/sources/shadowfetch-source-2.1.5.tar.gz
+    https://shadowfetch.com/linux/apt/sources/shadowfetch-source-3.0.0.tar.gz
 
 Its SHA-256 is published next to it (…tar.gz.sha256). The project's public home
 and issue tracker are at https://github.com/ShadowfetchLinux/shadowfetch-linux .

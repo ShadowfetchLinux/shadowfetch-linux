@@ -1,6 +1,6 @@
 # Adapted from Block's Apache-2.0 Buzz production compose definition.
 # Shadowfetch changes: every image is immutable and the only published port is
-# bound to loopback. These amd64 digests are exercised by the 2.1.5 release QA.
+# bound to loopback. These amd64 digests are exercised by the 3.0.0 release QA.
 name: shadowfetch-buzz
 
 services:

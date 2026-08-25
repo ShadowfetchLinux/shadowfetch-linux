@@ -57,7 +57,7 @@ preflight() {
     local available command
     require_user
     [[ $(uname -m) == "x86_64" ]] || {
-        warn "Shadowfetch Fire Edition 2.1.5 supports x86_64 systems only."
+        warn "Shadowfetch Fire Edition 3.0.0 supports x86_64 systems only."
         return 1
     }
     for command in curl sha256sum sh flock; do
@@ -194,7 +194,7 @@ cmd_doctor() {
         return 1
     }
     "$installed" --version | grep -Fq "$CODEX_VERSION" || {
-        warn "Codex CLI is installed, but it is not the 2.1.5 release pin."
+        warn "Codex CLI is installed, but it is not the 3.0.0 release pin."
         return 1
     }
     ok "Codex CLI $CODEX_VERSION passed the local installation check."

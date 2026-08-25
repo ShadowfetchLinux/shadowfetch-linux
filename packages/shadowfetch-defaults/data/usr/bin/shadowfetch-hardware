@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+"""shadowfetch-hardware - name the hardware that is not working, and the fix.
+
+WHAT IT IS FOR
+
+"My wifi doesn't work" is the most common Linux complaint there is, and on
+Debian the cause is usually mundane: the driver loaded, asked the kernel for a
+firmware blob from the non-free-firmware component, did not get it, and gave up
+without printing anything a person would see. The device then looks present and
+healthy in every tool a user would think to check.
+
+shadowfetch-facts already records both halves of that - devices with no driver
+BOUND, and firmware the kernel REQUESTED and did not receive. This turns those
+readings into a package name and a command.
+
+IT MUST WORK WITH NO NETWORK, AND THAT SHAPES EVERYTHING
+
+The machine that most needs this tool is the machine whose networking is
+broken. So the blob-to-package mapping is a static table compiled into this
+file, not an apt-file lookup: apt-file needs to download a Contents index,
+which needs the network, which is the thing that is broken. A repair tool that
+requires working networking to diagnose broken networking is useless precisely
+when it is needed.
+
+When it cannot fix something itself it prints the exact package, the exact URL
+to fetch on a phone or another laptop, and the dpkg line to run afterwards.
+That is actionable on a dead machine, which is the point.
+
+SAFE BY DEFAULT
+
+Reports and exits. --fix is opt-in and confirms before touching anything, in
+keeping with the rule the other sixteen tools follow: asking a command what is
+wrong must never itself change the system.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+VERSION = "1.0"
+FACTS = "/usr/bin/shadowfetch-facts"
+
+# ---------------------------------------------------------------------------
+# Firmware path prefix -> Debian package. Static ON PURPOSE: see the header.
+# Ordered longest-prefix-first at lookup time so intel/sof beats a bare intel/.
+FIRMWARE_MAP = [
+    ("intel/sof", "firmware-sof-signed", "Intel audio DSP (Tiger Lake and newer)"),
+    ("intel/ipu", "firmware-intel-misc", "Intel camera ISP"),
+    ("iwlwifi-", "firmware-iwlwifi", "Intel Wi-Fi"),
+    ("intel/ibt", "firmware-iwlwifi", "Intel Bluetooth"),
+    ("i915/", "firmware-intel-graphics", "Intel graphics"),
+    ("rtw88/", "firmware-realtek", "Realtek Wi-Fi"),
+    ("rtw89/", "firmware-realtek", "Realtek Wi-Fi"),
+    ("rtl_bt/", "firmware-realtek", "Realtek Bluetooth"),
+    ("rtl_nic/", "firmware-realtek", "Realtek Ethernet"),
+    ("mediatek/", "firmware-mediatek", "MediaTek Wi-Fi / Bluetooth"),
+    ("ath10k/", "firmware-atheros", "Qualcomm Atheros Wi-Fi"),
+    ("ath11k/", "firmware-atheros", "Qualcomm Atheros Wi-Fi"),
+    ("ath12k/", "firmware-atheros", "Qualcomm Atheros Wi-Fi"),
+    ("ath9k", "firmware-atheros", "Atheros Wi-Fi"),
+    ("qca/", "firmware-atheros", "Qualcomm Bluetooth"),
+    ("brcm/", "firmware-brcm80211", "Broadcom Wi-Fi / Bluetooth"),
+    ("cirrus/", "firmware-cirrus", "Cirrus Logic amplifiers"),
+    ("cs35l", "firmware-cirrus", "Cirrus Logic amplifiers"),
+    ("amdgpu/", "firmware-amd-graphics", "AMD graphics"),
+    ("radeon/", "firmware-amd-graphics", "AMD graphics (legacy)"),
+    ("amd/", "amd64-microcode", "AMD CPU microcode"),
+    ("nvidia/", "firmware-nvidia-graphics", "NVIDIA graphics"),
+    ("mrvl/", "firmware-libertas", "Marvell Wi-Fi"),
+    ("libertas/", "firmware-libertas", "Marvell Wi-Fi"),
+    ("ti-connectivity/", "firmware-ti-connectivity", "TI Wi-Fi / Bluetooth"),
+    ("rsi/", "firmware-misc-nonfree", "Redpine Wi-Fi"),
+]
+
+# Kernel module -> package, for a device with NO driver bound at all. lspci
+# names a candidate module; if that module exists but did not bind, firmware is
+# usually the reason, and this gets us to the same package from the other side.
+MODULE_MAP = {
+    "iwlwifi": "firmware-iwlwifi", "iwlmvm": "firmware-iwlwifi",
+    "rtw88_pci": "firmware-realtek", "rtw89_pci": "firmware-realtek",
+    "rtw89_8852be": "firmware-realtek", "rtw89_8852ae": "firmware-realtek",
+    "r8169": "firmware-realtek", "r8125": "firmware-realtek",
+    "mt7921e": "firmware-mediatek", "mt7922": "firmware-mediatek",
+    "mt7663": "firmware-mediatek", "mt76": "firmware-mediatek",
+    "ath10k_pci": "firmware-atheros", "ath11k_pci": "firmware-atheros",
+    "ath12k": "firmware-atheros", "ath9k": "firmware-atheros",
+    "brcmfmac": "firmware-brcm80211", "b43": "firmware-b43-installer",
+    "amdgpu": "firmware-amd-graphics", "radeon": "firmware-amd-graphics",
+    "i915": "firmware-intel-graphics", "xe": "firmware-intel-graphics",
+    "nouveau": "firmware-nvidia-graphics",
+    "snd_sof_pci": "firmware-sof-signed",
+}
+
+DEB_POOL = "https://deb.debian.org/debian/pool/non-free-firmware"
+
+
+def sh(cmd, timeout=20):
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout
+    except Exception:                                          # noqa: BLE001
+        return -1, ""
+
+
+def package_for_blob(blob):
+    """Longest matching prefix wins, so intel/sof does not lose to intel/."""
+    best = None
+    for prefix, pkg, why in FIRMWARE_MAP:
+        if prefix in blob and (best is None or len(prefix) > len(best[0])):
+            best = (prefix, pkg, why)
+    return (best[1], best[2]) if best else (None, None)
+
+
+def collect_facts(path=None):
+    if path:
+        return json.loads(open(path).read())
+    tool = FACTS if os.path.exists(FACTS) else shutil.which("shadowfetch-facts")
+    if not tool:
+        sys.exit("shadowfetch-facts is not installed; this tool reads its output.")
+    rc, out = sh([tool, "--json"], timeout=90)
+    if rc != 0 or not out.strip():
+        sys.exit("shadowfetch-facts produced no output.")
+    return json.loads(out)
+
+
+def installed(pkg):
+    rc, out = sh(["dpkg-query", "-W", "-f=${Status}", pkg])
+    return rc == 0 and "install ok installed" in out
+
+
+def have_network():
+    rc, _ = sh(["curl", "-fsS", "--max-time", "6", "-o", "/dev/null",
+                "https://deb.debian.org/debian/dists/stable/Release"], timeout=12)
+    return rc == 0
+
+
+def main():
+    ap = argparse.ArgumentParser(
+        prog="shadowfetch-hardware", add_help=False,
+        description="Find hardware with no driver or missing firmware, and name the fix.")
+    ap.add_argument("--fix", action="store_true",
+                    help="install the missing firmware packages (asks first)")
+    ap.add_argument("--json", action="store_true", help="machine-readable findings")
+    ap.add_argument("--facts", metavar="FILE",
+                    help="read a saved shadowfetch-facts --json document instead of running it")
+    ap.add_argument("-h", "--help", action="store_true")
+    ap.add_argument("--version", action="store_true")
+    args = ap.parse_args()
+
+    if args.help:
+        print(f"""shadowfetch-hardware - name the hardware that is not working, and the fix.
+
+USAGE
+  shadowfetch-hardware            report only; changes nothing
+  shadowfetch-hardware --fix      install the missing firmware (asks first)
+  shadowfetch-hardware --json     machine-readable findings
+  shadowfetch-hardware --facts F  read a saved shadowfetch-facts document
+
+WHAT IT DOES
+  Reads shadowfetch-facts for two things: devices with no kernel driver bound,
+  and firmware the kernel asked for and did not get. Maps each to the Debian
+  package that provides it.
+
+  Without --fix it only reports. With --fix it installs, after showing you the
+  exact packages and asking. If there is no network it prints what to download
+  elsewhere and how to install it by hand, because the machine that needs this
+  most is usually the one that cannot reach the archive.
+
+Part of Shadowfetch Linux. https://shadowfetch.com/linux/""")
+        return 0
+    if args.version:
+        print(f"shadowfetch-hardware (Shadowfetch Linux) {VERSION}")
+        return 0
+
+    doc = collect_facts(args.facts)
+    f = doc.get("facts", {})
+
+    def sec(name):
+        n = f.get(name, {})
+        return n.get("data") if n.get("available") else None
+
+    fw = sec("firmware") or {}
+    dev = sec("devices") or {}
+    pkgs_data = sec("packages") or {}
+
+    findings = []
+
+    for m in fw.get("missing", []):
+        blob = m.get("blob", "")
+        pkg, why = package_for_blob(blob)
+        findings.append({
+            "kind": "missing-firmware", "detail": blob,
+            "evidence": m.get("line", "")[:160],
+            "package": pkg, "device": why,
+            "installed": installed(pkg) if pkg else None,
+        })
+
+    for d in dev.get("unbound_important", []):
+        pkg = next((MODULE_MAP[mod] for mod in d.get("modules", []) if mod in MODULE_MAP), None)
+        findings.append({
+            "kind": "no-driver-bound",
+            "detail": f"{d.get('class')}: {d.get('name')}",
+            "evidence": f"lspci reports no kernel driver in use; "
+                        f"candidate module(s): {', '.join(d.get('modules') or []) or 'none suggested'}",
+            "package": pkg,
+            "device": d.get("name"),
+            "installed": installed(pkg) if pkg else None,
+        })
+
+    if args.json:
+        print(json.dumps({"findings": findings,
+                          "nonfree_firmware_enabled": pkgs_data.get("has_nonfree_firmware"),
+                          "generated_by": f"shadowfetch-hardware {VERSION}"}, indent=2))
+        return 0
+
+    print(f"shadowfetch-hardware {VERSION}")
+    print()
+    if not findings:
+        print("  Nothing to repair.")
+        print("  Every network, graphics and audio device has a driver bound, and")
+        print("  the kernel log shows no firmware it asked for and did not get.")
+        if not fw and not dev:
+            print()
+            print("  Note: neither the device nor the firmware reading was available,")
+            print("        so this is 'nothing detected', not 'nothing wrong'.")
+        return 0
+
+    need = sorted({x["package"] for x in findings
+                   if x["package"] and not x["installed"]})
+
+    for x in findings:
+        head = "no driver bound" if x["kind"] == "no-driver-bound" else "missing firmware"
+        print(f"  [{head}] {x['detail']}")
+        print(f"      {x['evidence']}")
+        if x["package"] is None:
+            print("      No Debian package is known for this. Please open an issue with")
+            print("      the output of: shadowfetch-facts --json")
+        elif x["installed"]:
+            print(f"      {x['package']} is already installed — the blob may be newer than")
+            print("      the packaged version, or this hardware needs firmware Debian")
+            print("      does not carry.")
+        else:
+            print(f"      Provided by: {x['package']}")
+        print()
+
+    if not need:
+        print("  No package to install. See the notes above.")
+        return 0
+
+    print(f"  Packages needed: {' '.join(need)}")
+
+    # The commonest blocker after the blob itself: the component is not enabled,
+    # so the package exists and apt cannot see it.
+    if pkgs_data.get("has_nonfree_firmware") is False:
+        print()
+        print("  WARNING: non-free-firmware is not in your apt sources, so these")
+        print("  packages will not be found even with a working network. Add it to")
+        print("  the Debian line in /etc/apt/sources.list, for example:")
+        print("      deb http://deb.debian.org/debian testing main contrib "
+              "non-free non-free-firmware")
+
+    online = have_network()
+    print()
+    if not online:
+        print("  This machine cannot reach the Debian archive right now, which is")
+        print("  probably the fault you are trying to fix. On another machine:")
+        for p in need:
+            print(f"      https://packages.debian.org/search?keywords={p}")
+        print()
+        print("  Copy the .deb files across, then here:")
+        print(f"      sudo dpkg -i {' '.join(p + '_*.deb' for p in need)}")
+        print("      sudo update-initramfs -u && sudo reboot")
+        return 1
+
+    if not args.fix:
+        print("  This machine can reach the archive. To install:")
+        print(f"      sudo apt install {' '.join(need)}")
+        print("  or re-run: shadowfetch-hardware --fix")
+        return 1
+
+    print("  About to run:")
+    print(f"      sudo apt install {' '.join(need)}")
+    try:
+        if input("  Proceed? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("  Nothing done.")
+            return 1
+    except EOFError:
+        print("\n  No terminal to confirm on; nothing done.")
+        return 1
+
+    rc = subprocess.call(["sudo", "apt-get", "install", "-y"] + need)
+    if rc != 0:
+        print("  apt failed. Nothing further attempted.")
+        return rc
+    print()
+    print("  Installed. Firmware is loaded when the driver binds, so:")
+    print("      sudo update-initramfs -u")
+    print("  then reboot, and re-run shadowfetch-hardware to confirm.")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

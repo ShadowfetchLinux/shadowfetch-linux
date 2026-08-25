@@ -30,7 +30,7 @@ EOF
 
 version() {
     printf '%s\n' \
-        'shadowfetch-code-agent (Shadowfetch Linux 2.1.5)' \
+        'shadowfetch-code-agent (Shadowfetch Linux 3.0.0)' \
         'Claude Code 2.1.227; Grok Build 1.0.5; Cursor Agent 2026.08.11-e8db854'
 }
 
@@ -98,7 +98,7 @@ require_user() {
 require_platform() {
     require_user
     [[ $(uname -s) == "Linux" && $(uname -m) == "x86_64" ]] || {
-        warn "Shadowfetch Fire Edition 2.1.5 supports x86_64 Linux systems only."
+        warn "Shadowfetch Fire Edition 3.0.0 supports x86_64 Linux systems only."
         return 1
     }
 }
@@ -308,7 +308,7 @@ cmd_setup() {
 cmd_doctor() {
     require_platform
     installed_artifact_matches || {
-        warn "$NAME is missing, changed, or does not match the 2.1.5 release pin."
+        warn "$NAME is missing, changed, or does not match the 3.0.0 release pin."
         return 1
     }
     [[ -L "$LINK_BIN" && $(readlink -f "$LINK_BIN") == "$(readlink -f "$TARGET_BIN")" ]] || {
@@ -335,7 +335,7 @@ cmd_status() {
     if installed_artifact_matches; then
         ok "$NAME $VERSION is installed and verified at $TARGET_BIN."
     else
-        printf ' -- %s is not installed at the Shadowfetch 2.1.5 release pin.\n' "$NAME"
+        printf ' -- %s is not installed at the Shadowfetch 3.0.0 release pin.\n' "$NAME"
     fi
 }
 

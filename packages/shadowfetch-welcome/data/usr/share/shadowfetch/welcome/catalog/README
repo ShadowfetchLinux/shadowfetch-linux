@@ -14,15 +14,15 @@ Schema (all keys always present):
   name        display name for the card
   kind        apt | preset | template
   packages    Debian package names (apt/preset only; [] otherwise)
-  url         reserved; null or empty in every 2.1.5 record
-  sha256      reserved; null or empty in every 2.1.5 record
+  url         reserved; null or empty in every 3.0.0 record
+  sha256      reserved; null or empty in every 3.0.0 record
   size_bytes  download size.  For apt/preset entries this is the
               named-package sum ("at least"); the ISO build pipeline runs
               apt-get -s in the build chroot and merges the measured
               closure over these numbers via sizes.json (judge fold: cards
               never print estimated closures)
   license     plain-words license shown on the card
-  min_ram_gb  reserved; 0 or null in 2.1.5 records
+  min_ram_gb  reserved; 0 or null in 3.0.0 records
   requires    [] of gates: "none", "nvidia" (shown only when the firstboot
               GPU-detect flow found NVIDIA), "btrfs"
   blurb       honest card copy - sizes, speed expectations, caveats

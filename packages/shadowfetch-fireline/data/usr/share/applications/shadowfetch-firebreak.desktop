@@ -6,5 +6,5 @@ Comment=Run a coding agent full-auto with the system read-only and one-click und
 Exec=konsole -e shadowfetch-firebreak --help
 Icon=security-high
 Terminal=false
-Categories=Development;Utility;Security;
+Categories=Development;Security;
 Keywords=agent;ai;sandbox;claude;codex;checkpoint;undo;mcp;

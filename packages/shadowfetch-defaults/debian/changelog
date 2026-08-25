@@ -1,3 +1,10 @@
+shadowfetch-defaults (3.0.0-1) umbra; urgency=medium
+
+  * Shadowfetch Linux 3.0.0 "Backfire": the agent-safe local-AI workstation.
+  * Rebuilt for 3.0.0 alongside the new shadowfetch-fireline agent-safety system.
+
+ -- Shadowfetch Project <shadowfetchlinux@gmail.com>  Tue, 25 Aug 2026 17:28:03 -0400
+
 shadowfetch-defaults (2.1.5-1) umbra; urgency=high
 
   * Update the verified official Buzz Desktop pin to 0.5.17 for upstream

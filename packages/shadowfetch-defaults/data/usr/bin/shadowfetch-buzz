@@ -95,7 +95,7 @@ compute_ready() {
 preflight() {
     local available port_state="available" compute_state="available"
     [[ $(uname -m) == "x86_64" ]] || {
-        warn "Shadowfetch Fire Edition 2.1.5 supports x86_64 systems only."
+        warn "Shadowfetch Fire Edition 3.0.0 supports x86_64 systems only."
         return 1
     }
     for command in podman podman-compose curl ss flock; do
@@ -320,9 +320,9 @@ cmd_status() {
     if command -v buzz-desktop >/dev/null 2>&1; then ok "Buzz Desktop is installed."; else warn "Buzz Desktop is not installed."; fi
     if relay_ready; then ok "Relay ready at $RELAY_URL (loopback only)."; else warn "Relay is not ready."; fi
     if [[ -r "$DATA_DIR/.env" ]] && grep -Fxq "BUZZ_IMAGE=$BUZZ_IMAGE" "$DATA_DIR/.env"; then
-        ok "Relay image matches the 2.1.5 release pin."
+        ok "Relay image matches the 3.0.0 release pin."
     elif [[ -e "$DATA_DIR/.env" ]]; then
-        warn "Relay configuration is older than the 2.1.5 image pin; rerun setup."
+        warn "Relay configuration is older than the 3.0.0 image pin; rerun setup."
     fi
     if compute_ready; then
         ok "Buzz shared compute is active on 127.0.0.1:9337."

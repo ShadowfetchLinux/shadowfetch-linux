@@ -81,3 +81,4 @@ data/usr/share/doc/shadowfetch/LICENSES.md usr/share/doc/shadowfetch/
 data/usr/share/doc/shadowfetch/SOURCES.md usr/share/doc/shadowfetch/
 data/usr/bin/shadowfetch-facts  usr/bin/
 data/usr/bin/shadowfetch-passport  usr/bin/
+data/usr/bin/shadowfetch-hardware usr/bin/

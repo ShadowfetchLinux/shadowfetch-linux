@@ -31,7 +31,7 @@ license does not grant rights to those downloaded products.
 The complete corresponding source for the Shadowfetch packages is:
   * published at https://github.com/ShadowfetchLinux/shadowfetch-linux
   * available as a source tarball at
-      https://shadowfetch.com/linux/apt/sources/shadowfetch-source-2.1.5.tar.gz
+      https://shadowfetch.com/linux/apt/sources/shadowfetch-source-3.0.0.tar.gz
 
 For source of any upstream Debian/KDE component, contact
 signing@shadowfetch.com and we will direct you to, or provide, the exact

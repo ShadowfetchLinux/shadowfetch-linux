@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Shadowfetch Control Center - one window runs the machine.
 
-2.1.5 "Fire Edition": seven fixed sections - Guide (System Passport), Ignite
+3.0.0 "Fire Edition": seven fixed sections - Guide (System Passport), Ignite
 (Ember Mode), Watch (Firewatch), Recover (Phoenix), Local AI, Drivers, and
 Software & Updates.
 The system tools (Safe Update, System Health, AI Workspaces, Local AI Tools,
