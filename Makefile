@@ -33,7 +33,8 @@ PACKAGES := \
 	shadowfetch-menus \
 	shadowfetch-control-center \
 	shadowfetch-fireproof \
-	shadowfetch-hwscan
+	shadowfetch-hwscan \
+	shadowfetch-fireline
 
 # GPG key the APT repo signs with. Override with `make REPO_KEY_ID=...` if
 # you've regenerated the key. The default matches the key on shadowfetch-linux.

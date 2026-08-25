@@ -1,0 +1,243 @@
+{
+  "schema_version": 1,
+  "release": {
+    "version": "3.0.0",
+    "edition": "Fire Edition",
+    "codename": "Umbra",
+    "subtitle": "Backfire"
+  },
+  "evidence_root": "work/qa-3.0.0/evidence",
+  "artifact": {
+    "iso_path": "shadowfetch-3.0.0-amd64.iso",
+    "iso_sha256": "",
+    "iso_size_bytes": 0,
+    "signature_path": "shadowfetch-3.0.0-amd64.iso.asc",
+    "signing_fingerprint": "8F13CE1535EE1F4A2916A1F73C5C900B7BE80CA1",
+    "evidence_bundle_path": "work/release-3.0.0/evidence-bundle-3.0.0.tar.gz",
+    "evidence_bundle_sha256": ""
+  },
+  "cases": [
+    {
+      "id": "FIRELINE-MCP-01",
+      "phase": "prepublish",
+      "area": "fireline",
+      "required": true,
+      "status": "pass",
+      "title": "The four first-party MCP servers handshake, list tools, and pass the suite (12 checks)",
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "fireline/mcp-suite.txt",
+          "sha256": "91def430d8ba129a739e06a69fc59c0ef7d7e6dbd56e83dfe80d122f9c8f7ea6"
+        }
+      ],
+      "notes": "12/12: 4 servers handshake, tools/list, tools/call; unknown method -> JSON-RPC error."
+    },
+    {
+      "id": "FIRELINE-CKPT-01",
+      "phase": "prepublish",
+      "area": "fireline",
+      "required": true,
+      "status": "pass",
+      "title": "Checkpoint snapshot -> agent mutation -> content-hash diff -> undo restores byte-identical",
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "fireline/checkpoint-roundtrip.txt",
+          "sha256": "30a316afcffdf1418ad8e33ec754a6a6a77d17644c34fcef8e2cf3e262470ecd"
+        }
+      ],
+      "notes": "snapshot->mutate->diff(M/+/-)->undo restores byte-identical; equal-size edit + id-collision regression covered."
+    },
+    {
+      "id": "FIRELINE-FS-01",
+      "phase": "prepublish",
+      "area": "fireline",
+      "required": true,
+      "status": "pass",
+      "title": "The fs MCP server is read-only and refuses any path escaping its scoped root",
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "fireline/mcp-suite.txt",
+          "sha256": "91def430d8ba129a739e06a69fc59c0ef7d7e6dbd56e83dfe80d122f9c8f7ea6"
+        }
+      ],
+      "notes": "fs server exposes only list_dir/read_file; ../ traversal refused; in-scope read OK."
+    },
+    {
+      "id": "FIRELINE-SANDBOX-01",
+      "phase": "prepublish",
+      "area": "fireline",
+      "required": true,
+      "status": "pass",
+      "title": "Firebreak: system read-only, only the workspace writable, /etc and $HOME and /usr writes blocked",
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "fireline/firebreak-containment.txt",
+          "sha256": "1425a8c4f68e2f20c53d336585528eb1a5fabbcbcd9cfbcbefcd8dc1d5136e6a"
+        }
+      ],
+      "notes": "12/12 containment checks: workspace writable; /etc, /usr, HOME read-only; verified with installed /usr/bin binaries."
+    },
+    {
+      "id": "FIRELINE-SANDBOX-02",
+      "phase": "prepublish",
+      "area": "fireline",
+      "required": true,
+      "status": "pass",
+      "title": "Firebreak: --net none cuts the network and credential variables are scrubbed by default",
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "fireline/firebreak-containment.txt",
+          "sha256": "1425a8c4f68e2f20c53d336585528eb1a5fabbcbcd9cfbcbefcd8dc1d5136e6a"
+        }
+      ],
+      "notes": "--net none leaves only loopback (1 iface) vs host interfaces when allowed; OPENAI_API_KEY scrubbed by default; --keep-secrets opt-in."
+    },
+    {
+      "id": "FIRELINE-AUDIT-01",
+      "phase": "prepublish",
+      "area": "fireline",
+      "required": true,
+      "status": "pass",
+      "title": "Firebreak takes a pre-run checkpoint and writes a session audit manifest; undo reverses the whole session",
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "fireline/firebreak-containment.txt",
+          "sha256": "1425a8c4f68e2f20c53d336585528eb1a5fabbcbcd9cfbcbefcd8dc1d5136e6a"
+        }
+      ],
+      "notes": "pre-run checkpoint + .session manifest written; run->undo restores clobbered file and removes the agent's added file."
+    },
+    {
+      "id": "FIRELINE-PKG-01",
+      "phase": "prepublish",
+      "area": "packages",
+      "required": true,
+      "status": "pass",
+      "title": "shadowfetch-fireline builds, installs, and every tool runs from /usr/bin as installed",
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "fireline/package-install.txt",
+          "sha256": "95e7c98baae0535f2777cfc839ca03d44e35d4cb60601c7d82d58948d25f9591"
+        }
+      ],
+      "notes": "shadowfetch-fireline_3.0.0-1_all.deb installs; all three CLIs + MCP servers run from /usr/bin; deps python3+bubblewrap only."
+    },
+    {
+      "id": "SRC-01",
+      "phase": "prepublish",
+      "area": "source",
+      "required": true,
+      "status": "pending",
+      "title": "Source, ShellCheck, syntax, secret and retired-runtime gates pass for the 3.0.0 tree",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "PKG-01",
+      "phase": "prepublish",
+      "area": "packages",
+      "required": true,
+      "status": "pending",
+      "title": "Every 3.0.0 binary + corresponding source package builds into a freshly signed Umbra repo",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "ISO-01",
+      "phase": "prepublish",
+      "area": "image",
+      "required": true,
+      "status": "pending",
+      "title": "ISO structure, checksum, detached signature verify; squashfs within the 4 GiB ceiling",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "BOOT-01",
+      "phase": "prepublish",
+      "area": "boot",
+      "required": true,
+      "status": "pending",
+      "title": "Final ISO reaches the live Plasma desktop in BIOS and UEFI",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "INSTALL-01",
+      "phase": "prepublish",
+      "area": "install",
+      "required": true,
+      "status": "pending",
+      "title": "Clean UEFI Btrfs and BIOS encrypted installs survive reboot and health checks",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "UPGRADE-01",
+      "phase": "prepublish",
+      "area": "install",
+      "required": true,
+      "status": "pending",
+      "title": "A real 2.1.5 install upgrades to 3.0.0 preserving user files, Buzz state, and ~/Workspaces",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "IGNITION-01",
+      "phase": "prepublish",
+      "area": "ai",
+      "required": true,
+      "status": "pending",
+      "title": "AI Ignition: NVIDIA driver via the gpu path (simulate-first, Phoenix Point, clean rollback) on the RTX 5060 Ti",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "REL-01",
+      "phase": "prepublish",
+      "area": "release",
+      "required": true,
+      "status": "pending",
+      "title": "Release dossier, package inventory, SBOM and evidence bundle verify",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "WEB-01",
+      "phase": "prepublish",
+      "area": "web",
+      "required": true,
+      "status": "pending",
+      "title": "Staged shadowfetchlinux.org pages present 3.0.0 Backfire with fresh screenshots and OG card",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "PUB-01",
+      "phase": "postpublish",
+      "area": "publish",
+      "required": true,
+      "status": "pending",
+      "title": "GitHub, shadowfetchlinux.org and Archive.org expose the approved 3.0.0 release",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "PUB-02",
+      "phase": "postpublish",
+      "area": "publish",
+      "required": true,
+      "status": "pending",
+      "title": "Fresh public downloads, checksum, signature, metadata verify",
+      "evidence": [],
+      "notes": ""
+    }
+  ]
+}

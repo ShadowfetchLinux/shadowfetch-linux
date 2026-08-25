@@ -1,0 +1,7 @@
+data/usr/bin/shadowfetch-firebreak         usr/bin/
+data/usr/bin/shadowfetch-checkpoint        usr/bin/
+data/usr/bin/shadowfetch-mcp               usr/bin/
+data/usr/lib/shadowfetch/mcp/sf_mcp.py     usr/lib/shadowfetch/mcp/
+data/usr/share/polkit-1/actions/org.shadowfetch.fireline.policy  usr/share/polkit-1/actions/
+data/usr/share/doc/shadowfetch/FIRELINE.md usr/share/doc/shadowfetch/
+data/usr/share/applications/shadowfetch-firebreak.desktop  usr/share/applications/

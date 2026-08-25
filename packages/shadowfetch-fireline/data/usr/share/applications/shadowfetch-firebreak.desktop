@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Firebreak (safe agent sandbox)
+GenericName=Contained AI agent runner
+Comment=Run a coding agent full-auto with the system read-only and one-click undo
+Exec=konsole -e shadowfetch-firebreak --help
+Icon=security-high
+Terminal=false
+Categories=Development;Utility;Security;
+Keywords=agent;ai;sandbox;claude;codex;checkpoint;undo;mcp;

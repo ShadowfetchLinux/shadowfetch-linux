@@ -1,0 +1,11 @@
+shadowfetch-fireline (3.0.0-1) umbra; urgency=medium
+
+  * Initial release: the Fireline agent-safety system for 3.0.0 "Backfire".
+  * shadowfetch-firebreak: bubblewrap-contained full-auto agent launcher with
+    read-only system, workspace-only writes, optional network cut, credential
+    scrubbing, pre-run checkpoint and journald audit.
+  * shadowfetch-checkpoint: snapshot/diff/undo one ~/Workspaces workspace.
+  * shadowfetch-mcp: four signed dependency-free MCP servers (passport,
+    phoenix, checkpoint, fs).
+
+ -- Shadowfetch Project <shadowfetchlinux@gmail.com>  Mon, 25 Aug 2026 10:15:00 -0400

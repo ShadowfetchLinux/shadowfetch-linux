@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# shadowfetch-mcp - Shadowfetch's signed, first-party MCP servers.
+#
+# An agent you invite onto your machine is only as safe as the tools you give
+# it. These servers are shipped IN the signed Shadowfetch APT repo, depend on
+# nothing outside the Python standard library, and are read-only except where
+# they say otherwise:
+#
+#   passport    read-only system self-check (privacy-scrubbed)
+#   phoenix     read-only list of Btrfs/snapper restore points
+#   checkpoint  snapshot / diff / undo ONE ~/Workspaces workspace (writes there)
+#   fs          scoped, read-only file access under one root
+#
+# Point any MCP-capable agent at:  shadowfetch-mcp <server>
+set -euo pipefail
+IMPL="/usr/lib/shadowfetch/mcp/sf_mcp.py"
+[ -f "$IMPL" ] || IMPL="$(cd "$(dirname "$0")/../lib/shadowfetch/mcp" 2>/dev/null && pwd)/sf_mcp.py"
+
+servers="passport phoenix checkpoint fs"
+case "${1:-}" in
+  ""|-h|--help)
+    cat <<EOF
+shadowfetch-mcp - first-party MCP servers for Shadowfetch Linux.
+
+USAGE
+  shadowfetch-mcp <passport|phoenix|checkpoint|fs>   run a server (stdio MCP)
+  shadowfetch-mcp list                               list servers
+  shadowfetch-mcp config [--claude|--codex|--json]   print agent config to add
+  shadowfetch-mcp --version
+
+Read-only: passport, phoenix, fs.  Writes only its named workspace: checkpoint.
+EOF
+    ;;
+  --version) exec python3 "$IMPL" --version ;;
+  list)
+    echo "Shadowfetch MCP servers:"
+    echo "  passport    read-only system self-check (privacy-scrubbed)"
+    echo "  phoenix     read-only list of restore points"
+    echo "  checkpoint  snapshot/diff/undo one ~/Workspaces workspace (writes there)"
+    echo "  fs          scoped read-only file access (set SF_MCP_FS_ROOT)"
+    ;;
+  config)
+    fmt="${2:---json}"
+    case "$fmt" in
+      --claude)
+        echo "# add each server, e.g.:  claude mcp add sf-passport -- shadowfetch-mcp passport"
+        for s in $servers; do echo "claude mcp add sf-$s -- shadowfetch-mcp $s"; done ;;
+      --codex|--json|*)
+        printf '{\n  "mcpServers": {\n'
+        i=0; for s in $servers; do
+          i=$((i+1)); comma=,; [ $i -eq 4 ] && comma=""
+          printf '    "shadowfetch-%s": { "command": "shadowfetch-mcp", "args": ["%s"] }%s\n' "$s" "$s" "$comma"
+        done
+        printf '  }\n}\n' ;;
+    esac
+    ;;
+  passport|phoenix|checkpoint|fs) exec python3 "$IMPL" "$@" ;;
+  *) echo "unknown server: $1 (try: shadowfetch-mcp list)" >&2; exit 2 ;;
+esac

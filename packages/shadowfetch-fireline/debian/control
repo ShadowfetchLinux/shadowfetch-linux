@@ -1,0 +1,37 @@
+Source: shadowfetch-fireline
+Section: admin
+Priority: optional
+Maintainer: Shadowfetch Project <signing@shadowfetch.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Homepage: https://www.shadowfetchlinux.org/
+
+Package: shadowfetch-fireline
+Architecture: all
+Depends:
+ ${misc:Depends},
+ python3 (>= 3.11),
+ bubblewrap
+Recommends:
+ shadowfetch-phoenix,
+ snapper,
+ btrfs-progs
+Description: Shadowfetch Fireline - contain, checkpoint and audit local AI agents
+ Fireline is the agent-safety system of Shadowfetch Linux "Backfire". It lets
+ you run any coding agent full-auto without handing it your whole machine.
+ .
+ shadowfetch-firebreak runs an agent inside bubblewrap with the system mounted
+ read-only and only the project workspace writable; it can cut the network,
+ strips known credential variables from the agent environment by default, takes
+ a workspace checkpoint before the agent runs, and records every session to the
+ audit journal.
+ .
+ shadowfetch-checkpoint snapshots, diffs and undoes a single ~/Workspaces
+ workspace, so "undo everything the agent did" is one command.
+ .
+ shadowfetch-mcp ships four signed, dependency-free MCP servers - passport
+ (read-only system self-check), phoenix (read-only restore-point list),
+ checkpoint (snapshot/diff/undo one workspace) and fs (scoped read-only file
+ access) - so an agent on Shadowfetch can call a checkpoint before it touches
+ anything. Everything here is read-only against the system except the workspace
+ the user named.

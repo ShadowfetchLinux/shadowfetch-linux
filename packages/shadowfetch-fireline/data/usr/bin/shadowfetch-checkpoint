@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""shadowfetch-checkpoint - snapshot, diff and undo an agent workspace.
+
+A thin human/CLI front end over the same checkpoint engine the Shadowfetch MCP
+'checkpoint' server exposes to agents, so a person and an agent take and read
+the SAME restore points. Snapshots and undo touch only the named workspace
+under ~/Workspaces.
+"""
+from __future__ import annotations
+import argparse, sys
+from pathlib import Path
+
+sys.path.insert(0, "/usr/lib/shadowfetch/mcp")
+try:
+    import sf_mcp
+except ImportError:
+    # allow running from a source tree
+    here = Path(__file__).resolve()
+    for up in here.parents:
+        cand = up / "data/usr/lib/shadowfetch/mcp"
+        if (cand / "sf_mcp.py").exists():
+            sys.path.insert(0, str(cand)); import sf_mcp; break
+    else:
+        sys.stderr.write("sf_mcp not found\n"); raise SystemExit(3)
+
+
+def _call(srv, tool, **args):
+    out = srv.tools[tool].handler(args)
+    if isinstance(out, dict):
+        text = out.get("content", [{}])[0].get("text", "")
+        return text, out.get("isError", False)
+    return out, False
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="shadowfetch-checkpoint",
+        description="Snapshot / diff / undo an agent workspace (~/Workspaces).")
+    p.add_argument("--version", action="store_true")
+    sub = p.add_subparsers(dest="cmd")
+    s = sub.add_parser("snapshot", help="take a restore point before an agent runs")
+    s.add_argument("workspace"); s.add_argument("--label", default="manual")
+    l = sub.add_parser("list", help="list a workspace's checkpoints")
+    l.add_argument("workspace")
+    d = sub.add_parser("diff", help="show what changed since a checkpoint")
+    d.add_argument("workspace"); d.add_argument("checkpoint")
+    u = sub.add_parser("undo", help="restore a workspace to a checkpoint")
+    u.add_argument("workspace"); u.add_argument("checkpoint")
+    a = p.parse_args(argv)
+    if a.version:
+        print(f"shadowfetch-checkpoint (Shadowfetch Linux) {sf_mcp.SERVER_VERSION}"); return 0
+    if not a.cmd:
+        p.print_help(); return 2
+    srv = sf_mcp.build_checkpoint()
+    if a.cmd == "snapshot":
+        text, err = _call(srv, "snapshot", workspace=a.workspace, label=a.label)
+    elif a.cmd == "list":
+        text, err = _call(srv, "list", workspace=a.workspace)
+    elif a.cmd == "diff":
+        text, err = _call(srv, "diff", workspace=a.workspace, checkpoint=a.checkpoint)
+    elif a.cmd == "undo":
+        text, err = _call(srv, "undo", workspace=a.workspace, checkpoint=a.checkpoint)
+    print(text)
+    return 1 if err else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

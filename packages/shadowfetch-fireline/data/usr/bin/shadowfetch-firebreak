@@ -1,0 +1,203 @@
+#!/usr/bin/env bash
+# shadowfetch-firebreak - run any coding agent full-auto, safely contained.
+#
+# A backfire: the release is named for the fire you set on purpose to stop the
+# wildfire. Running an autonomous agent with "skip all confirmations" on the
+# bare host IS the wildfire (Replit wiped a prod DB; Gemini CLI deleted files).
+# Firebreak is the cleared line around it:
+#
+#   * the whole system is mounted READ-ONLY; only the project workspace is
+#     writable, so an agent cannot touch anything outside what you gave it;
+#   * a Phoenix-style checkpoint of the workspace is taken BEFORE the agent
+#     runs, so "undo everything it did" is one command;
+#   * network can be cut entirely (--net none);
+#   * known credential variables are stripped from the agent's environment by
+#     default, so a prompt-injected agent cannot read your keys;
+#   * every session is written to the audit journal (journald + a manifest).
+#
+# It wraps bubblewrap with unprivileged user namespaces; no setuid, no root.
+set -uo pipefail
+
+VERSION="3.0.0"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/shadowfetch/firebreak"
+WS_ROOT="${SHADOWFETCH_AGENT_WORKSPACES:-$HOME/Workspaces}"
+CHECKPOINT_BIN="${SHADOWFETCH_CHECKPOINT_BIN:-shadowfetch-checkpoint}"
+
+# Credential variables scrubbed from the sandbox by default. A prompt-injected
+# agent that can read its own environment must not find your keys there.
+SCRUB_VARS=(
+  OPENAI_API_KEY ANTHROPIC_API_KEY XAI_API_KEY GEMINI_API_KEY GOOGLE_API_KEY
+  GROQ_API_KEY MISTRAL_API_KEY DEEPSEEK_API_KEY OPENROUTER_API_KEY
+  GITHUB_TOKEN GH_TOKEN GITLAB_TOKEN HF_TOKEN HUGGING_FACE_HUB_TOKEN
+  AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+  CLOUDFLARE_API_TOKEN CF_API_TOKEN DIGITALOCEAN_TOKEN
+  NPM_TOKEN PYPI_TOKEN DOCKER_PASSWORD SSH_AUTH_SOCK
+)
+
+say()  { printf '\033[1;33m==>\033[0m %s\n' "$*"; }
+ok()   { printf '\033[1;32m OK\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;31m !!\033[0m %s\n' "$*" >&2; }
+die()  { warn "$*"; exit 1; }
+
+usage() {
+  cat <<'EOF'
+shadowfetch-firebreak - run a coding agent full-auto, safely contained.
+
+USAGE
+  shadowfetch-firebreak run [OPTIONS] -- <command> [args...]
+  shadowfetch-firebreak check
+  shadowfetch-firebreak log [N]
+  shadowfetch-firebreak --version
+
+RUN OPTIONS
+  --workspace NAME   workspace under ~/Workspaces to expose writable
+                     (default: the current directory if it is inside a
+                     workspace, else required)
+  --net none|allow   cut the sandbox off the network, or allow it
+                     (default: allow)
+  --no-checkpoint    do not take a pre-run workspace checkpoint (not advised)
+  --keep-secrets     do NOT scrub credential variables (not advised)
+  --                 everything after this is the agent command to run
+
+EXAMPLES
+  shadowfetch-firebreak run --workspace api --net none -- claude --dangerously-skip-permissions
+  shadowfetch-firebreak run -- codex exec "refactor the parser"
+
+The system is read-only inside; only the workspace is writable. Undo the whole
+session with:  shadowfetch-checkpoint undo <workspace> <checkpoint-id>
+EOF
+}
+
+cmd_check() {
+  local fail=0
+  if command -v bwrap >/dev/null; then ok "bubblewrap present ($(bwrap --version))"; else warn "bubblewrap (bwrap) missing"; fail=1; fi
+  if [ "$(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || echo 1)" = "1" ]; then
+    ok "unprivileged user namespaces enabled"
+  else warn "unprivileged user namespaces disabled (sysctl kernel.unprivileged_userns_clone=1 needed)"; fail=1; fi
+  if [ -e /sys/kernel/security/landlock/version ] 2>/dev/null || grep -q landlock /proc/self/status 2>/dev/null; then
+    ok "Landlock LSM available"; else say "Landlock not detected (bubblewrap scoping still applies)"; fi
+  if command -v "$CHECKPOINT_BIN" >/dev/null; then ok "checkpoint engine present"; else warn "shadowfetch-checkpoint missing (no pre-run snapshots)"; fail=1; fi
+  [ "$fail" = 0 ] && { ok "Firebreak is ready."; return 0; } || { warn "Firebreak preconditions not met."; return 1; }
+}
+
+cmd_log() {
+  local n="${1:-10}"
+  [ -d "$STATE_DIR" ] || { say "no Firebreak sessions yet."; return 0; }
+  ls -1t "$STATE_DIR"/*.session 2>/dev/null | head -n "$n" | while read -r f; do
+    printf '%s\n' "$(cat "$f")"
+  done
+}
+
+resolve_workspace() {
+  local name="$1"
+  if [ -n "$name" ]; then printf '%s' "$WS_ROOT/$name"; return; fi
+  # infer from CWD if it is inside a workspace
+  local cwd; cwd="$(pwd -P)"
+  case "$cwd" in
+    "$WS_ROOT"/*)
+      local rel="${cwd#"$WS_ROOT"/}"; printf '%s' "$WS_ROOT/${rel%%/*}" ;;
+    *) return 1 ;;
+  esac
+}
+
+cmd_run() {
+  local ws_name="" net="allow" do_ckpt=1 scrub=1
+  local -a agent_cmd=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --workspace) ws_name="${2:?}"; shift 2 ;;
+      --net) net="${2:?}"; shift 2 ;;
+      --no-checkpoint) do_ckpt=0; shift ;;
+      --keep-secrets) scrub=0; shift ;;
+      --) shift; agent_cmd=("$@"); break ;;
+      *) die "unknown run option: $1 (use -- before the agent command)" ;;
+    esac
+  done
+  [ "${#agent_cmd[@]}" -gt 0 ] || die "no agent command given (put it after --)"
+  command -v bwrap >/dev/null || die "bubblewrap (bwrap) is not installed"
+
+  local ws; ws="$(resolve_workspace "$ws_name")" \
+    || die "not inside ~/Workspaces and no --workspace given"
+  ws="$(cd "$ws" 2>/dev/null && pwd -P)" || die "workspace does not exist: $WS_ROOT/${ws_name:-?}"
+  case "$ws" in "$WS_ROOT"/*) : ;; *) die "workspace must live under $WS_ROOT" ;; esac
+  local ws_basename="${ws#"$WS_ROOT"/}"; ws_basename="${ws_basename%%/*}"
+
+  mkdir -p "$STATE_DIR"
+  local sid; sid="fb-$(date +%Y%m%d-%H%M%S)-$$"
+  local ckpt_id="none"
+
+  say "Firebreak session $sid"
+  say "workspace : $ws"
+  say "network   : $net"
+  say "secrets   : $([ "$scrub" = 1 ] && echo scrubbed || echo PASSED-THROUGH)"
+
+  if [ "$do_ckpt" = 1 ] && command -v "$CHECKPOINT_BIN" >/dev/null; then
+    local out; out="$("$CHECKPOINT_BIN" snapshot "$ws_basename" --label "firebreak:$sid" 2>&1)" \
+      && ckpt_id="$(printf '%s' "$out" | grep -oE 'checkpoint [0-9-]+' | awk '{print $2}')" \
+      && ok "checkpoint $ckpt_id taken (undo: shadowfetch-checkpoint undo $ws_basename $ckpt_id)" \
+      || warn "checkpoint failed: $out"
+  fi
+
+  # audit: session start
+  local start_ts; start_ts="$(date -Is)"
+  command -v logger >/dev/null && logger -t shadowfetch-firebreak \
+    "session=$sid start ws=$ws_basename net=$net scrub=$scrub checkpoint=$ckpt_id cmd=${agent_cmd[*]}"
+
+  # build bubblewrap argv
+  local -a bw=(
+    bwrap
+    --ro-bind / /
+    --dev /dev
+    --proc /proc
+    --tmpfs /tmp
+    --tmpfs /run
+    --bind "$ws" "$ws"
+    --die-with-parent
+    --unshare-pid
+    --unshare-uts
+    --unshare-ipc
+    --hostname firebreak
+    --new-session
+    --chdir "$ws"
+    --setenv SHADOWFETCH_FIREBREAK "$sid"
+    --setenv SHADOWFETCH_FIREBREAK_WORKSPACE "$ws_basename"
+    --setenv PS1 "(firebreak) \\w \\$ "
+  )
+  [ "$net" = "none" ] && bw+=( --unshare-net )
+  if [ "$scrub" = 1 ]; then
+    local v; for v in "${SCRUB_VARS[@]}"; do bw+=( --unsetenv "$v" ); done
+  fi
+
+  "${bw[@]}" -- "${agent_cmd[@]}"
+  local rc=$?
+
+  # audit: session end + manifest
+  local end_ts; end_ts="$(date -Is)"
+  cat > "$STATE_DIR/$sid.session" <<EOM
+session:    $sid
+workspace:  $ws_basename ($ws)
+command:    ${agent_cmd[*]}
+network:    $net
+secrets:    $([ "$scrub" = 1 ] && echo scrubbed || echo passed-through)
+checkpoint: $ckpt_id
+started:    $start_ts
+ended:      $end_ts
+exit:       $rc
+undo:       shadowfetch-checkpoint undo $ws_basename $ckpt_id
+EOM
+  command -v logger >/dev/null && logger -t shadowfetch-firebreak \
+    "session=$sid end exit=$rc checkpoint=$ckpt_id"
+
+  say "session $sid ended (exit $rc)"
+  [ "$ckpt_id" != "none" ] && say "undo everything: shadowfetch-checkpoint undo $ws_basename $ckpt_id"
+  return $rc
+}
+
+case "${1:-}" in
+  -h|--help|"") usage ;;
+  --version) echo "shadowfetch-firebreak (Shadowfetch Linux) $VERSION" ;;
+  check) shift; cmd_check "$@" ;;
+  log)   shift; cmd_log "$@" ;;
+  run)   shift; cmd_run "$@" ;;
+  *) die "unknown command: $1 (try --help)" ;;
+esac

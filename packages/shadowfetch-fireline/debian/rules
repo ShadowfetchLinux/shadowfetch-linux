@@ -1,0 +1,11 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+# The three CLIs and the MCP implementation must stay executable regardless of
+# any source-tree mode reversion (it has bitten shadowfetch-defaults before).
+execute_after_dh_fixperms:
+	chmod 0755 debian/shadowfetch-fireline/usr/bin/shadowfetch-firebreak
+	chmod 0755 debian/shadowfetch-fireline/usr/bin/shadowfetch-checkpoint
+	chmod 0755 debian/shadowfetch-fireline/usr/bin/shadowfetch-mcp
+	chmod 0755 debian/shadowfetch-fireline/usr/lib/shadowfetch/mcp/sf_mcp.py
