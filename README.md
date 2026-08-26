@@ -1,9 +1,9 @@
-![Shadowfetch Linux 2.1.5 «Umbra» desktop](https://www.shadowfetchlinux.org/linux-assets/linux-2.1.5-desktop.webp)
-![Shadowfetch Guide and the private System Passport](https://www.shadowfetchlinux.org/linux-assets/linux-2.1.5-system-passport.webp)
+![Shadowfetch Linux 3.0.0 «Umbra» Backfire — Pick your flame](https://www.shadowfetchlinux.org/linux-assets/linux-3.0.0-welcome.webp)
+![The Fireline — run coding agents full-auto, safely](https://www.shadowfetchlinux.org/linux-assets/linux-3.0.0-fireline.webp)
 
-![Welcome and first-run setup](https://www.shadowfetchlinux.org/linux-assets/linux-2.1.5-welcome.webp)
-![Choose your AI workspace — Buzz and optional coding agents](https://www.shadowfetchlinux.org/linux-assets/linux-2.1.5-ai-workspace.webp)
-![Local AI in Control Center](https://www.shadowfetchlinux.org/linux-assets/linux-2.1.5-local-ai.webp)
+![Shadowfetch Guide and the private System Passport](https://www.shadowfetchlinux.org/linux-assets/linux-3.0.0-system-passport.webp)
+![Control Center](https://www.shadowfetchlinux.org/linux-assets/linux-3.0.0-control-center.webp)
+![Phoenix Recovery](https://www.shadowfetchlinux.org/linux-assets/linux-3.0.0-phoenix.webp)
 
 # Shadowfetch Linux — "Umbra" / Fire Edition
 
@@ -11,19 +11,21 @@
 
 It is an independent derivative that **builds on Debian rather than replacing it**: a curated KDE Plasma 6 (Wayland-first) desktop, a hand-picked creative stack, an in-house control surface, signed ISO releases, a signed APT repository, Btrfs snapshot safety, and an opt-in local-AI setup. It does not claim Debian endorsement — it stands on Debian's shoulders and states exactly what it adds.
 
-> **Current stable release: 2.1.5 "Umbra" Fire Edition** (2026-08-20, amd64)
+> **Current stable release: 3.0.0 "Umbra" — Backfire** (2026-08-26, amd64)
 >
-> - ISO: `shadowfetch-2.1.5-amd64.iso` — 3.97 GB (3.70 GiB)
-> - SHA-256: `848f043e4d6f85c3607e7034ba911a1ce8b4a317674feebef8b07fcd8f531c24`
+> - ISO: `shadowfetch-3.0.0-amd64.iso` — 3.97 GB (3.69 GiB)
+> - SHA-256: `110b0d075e699a05a8a2f8f8dcd05f19454bc8ae09acd0745ca0d947db8c5e3c`
 > - APT suite / codename: `umbra`
 > - Signing-key fingerprint: `8F13 CE15 35EE 1F4A 2916  A1F7 3C5C 900B 7BE8 0CA1`
 > - Base: Debian testing · Desktop: KDE Plasma 6 · Boot: BIOS + UEFI (hybrid ISO)
 >
-> 2.1.5 adds **Shadowfetch Guide** — a local-only, read-only System Passport
-> that checks what works without uploading machine identity — guards Buzz on
-> Plasma Wayland, and offers first-run choices to install **OpenAI Codex CLI,
-> Anthropic Claude Code, xAI Grok Build, or Cursor Agent** beside the private
-> Buzz open-model path. See [`docs/RELEASE-2.1.5.md`](docs/RELEASE-2.1.5.md).
+> **3.0 is the agent-safe local-AI workstation.** The new **Fireline** system
+> runs any coding agent full-auto inside a bubblewrap sandbox — system
+> read-only, only your project writable, network cuttable, API keys stripped —
+> takes a checkpoint first, and undoes everything the agent did with one
+> command. Four signed first-party MCP servers let agents call a checkpoint
+> before they act, and **AI Ignition** recommends an Apache-2.0 model that fits
+> your GPU. See [`docs/RELEASE-3.0.0.md`](docs/RELEASE-3.0.0.md).
 
 ---
 
@@ -42,6 +44,8 @@ Shadowfetch Linux is young and honest about its rough edges. If you want a borin
 
 | Feature | What it does |
 | --- | --- |
+| **Fireline — run agents safely (new in 3.0)** | `shadowfetch-firebreak` runs any coding agent (Claude Code, Codex CLI, Cursor, Grok Build, Aider) full-auto inside bubblewrap: the system is **read-only**, only your `~/Workspaces` project is writable, the network can be cut with `--net none`, and API-key variables are stripped from the agent environment. A checkpoint is taken first — undo everything with `shadowfetch-checkpoint undo`. |
+| **Shadowfetch MCP + AI Ignition (new in 3.0)** | Four signed, dependency-free MCP servers (passport, phoenix, checkpoint, fs) give agents safe tools. `shadowfetch-ai-ignition` reads your VRAM and recommends an Apache-2.0 model that actually fits. |
 | **Shadowfetch Control Center** | One PyQt/Kirigami app for updates, health checks, first-run setup, graphics, recovery, snapshots and local-AI tooling. |
 | **Ember Mode** | One-switch performance profile that **always returns to Balanced on its own** (crash-safe auto-return). |
 | **Firewatch** | Live hardware + local-AI activity monitor: temperatures, resource pressure, a plain-language per-application heat-map, and **tokens/second** from local models. |
@@ -49,9 +53,9 @@ Shadowfetch Linux is young and honest about its rough edges. If you want a borin
 | **Fireproof Updates** | Updates are **simulated and re-verified before applying**; they refuse to run on low disk, an active package manager, or bad power; they take a pre/post snapshot pair and offer rollback if verification fails. |
 | **Ignition Setup** | First-boot system chooser: Core / Creator / Developer / AI Workstation / Full Flame. |
 | **Shadowfetch Guide** | A read-only System Passport that explains graphics, network, audio, firmware, recovery and local-AI readiness before installation, then routes highlighted checks to the existing safe repair tools afterward. |
-| **Local AI via Buzz** | Opt-in and **consent-gated**. Buzz surveys the hardware, recommends an open model, downloads it **only after confirmation**, and serves it on a **loopback-only** shared-compute endpoint. Nothing is fetched until you confirm in Settings → Compute. (2.1.5 verifies Buzz Desktop 0.5.17 by SHA-256 before installing.) |
+| **Local AI via Buzz** | Opt-in and **consent-gated**. Buzz surveys the hardware, recommends an open model, downloads it **only after confirmation**, and serves it on a **loopback-only** shared-compute endpoint. Nothing is fetched until you confirm in Settings → Compute. (3.0.0 verifies Buzz Desktop 0.5.17 by SHA-256 before installing.) |
 | **Optional coding agents** | Four unchecked first-run choices install release-pinned Codex, Claude Code, Grok Build, or Cursor Agent for the desktop user. Every selected artifact is verified independently; each tool owns its sign-in, and no account credential is embedded in or copied by Shadowfetch. |
-| **NVIDIA graphics path** | 2.1.5 verifies NVIDIA's Debian 13 keyring and uses `nvidia-driver-assistant` with **simulate-first, `--no-remove`, and Phoenix snapshots** — validated against a physical RTX 5060 Ti. Intel/AMD use the normal Mesa stack. |
+| **NVIDIA graphics path** | 3.0.0 verifies NVIDIA's Debian 13 keyring and uses `nvidia-driver-assistant` with **simulate-first, `--no-remove`, and Phoenix snapshots** — validated against a physical RTX 5060 Ti. Intel/AMD use the normal Mesa stack. |
 | **Browser Migration** | Validates bookmark-HTML and password-CSV exports before staging/import. (Never attach a password CSV to a bug report.) |
 | **Signed everything** | Signed ISO, signed reprepro APT repo, public signing key, public verification instructions. |
 
@@ -62,13 +66,13 @@ Shadowfetch Linux is young and honest about its rough edges. If you want a borin
 These commands download the current ISO, its checksum, its detached signature and the signing key, then verify authenticity and integrity. **They do not write to a USB stick.**
 
 ```sh
-curl -LO https://www.shadowfetch.com/linux/download/shadowfetch-2.1.5-amd64.iso
-curl -LO https://www.shadowfetch.com/linux/download/shadowfetch-2.1.5-amd64.iso.sha256
-curl -LO https://www.shadowfetch.com/linux/download/shadowfetch-2.1.5-amd64.iso.asc
+curl -LO https://www.shadowfetch.com/linux/download/shadowfetch-3.0.0-amd64.iso
+curl -LO https://www.shadowfetch.com/linux/download/shadowfetch-3.0.0-amd64.iso.sha256
+curl -LO https://www.shadowfetch.com/linux/download/shadowfetch-3.0.0-amd64.iso.asc
 curl -LO https://www.shadowfetch.com/linux/shadowfetch.gpg.asc
 gpg --import shadowfetch.gpg.asc \
-  && gpg --verify shadowfetch-2.1.5-amd64.iso.asc shadowfetch-2.1.5-amd64.iso \
-  && sha256sum -c shadowfetch-2.1.5-amd64.iso.sha256
+  && gpg --verify shadowfetch-3.0.0-amd64.iso.asc shadowfetch-3.0.0-amd64.iso \
+  && sha256sum -c shadowfetch-3.0.0-amd64.iso.sha256
 ```
 
 A GPG *"not certified with a trusted signature"* warning only means you have not personally trusted the key — it is **not** a failed signature. Compare the fingerprint before you trust the download:
@@ -83,7 +87,7 @@ A GPG *"not certified with a trusted signature"* warning only means you have not
 
 ### Writing the USB stick
 
-Write the verified ISO to a USB device with an image writer (balenaEtcher, KDE ISO Image Writer, GNOME Disks) or `dd` — **do not** copy it onto a mounted filesystem. 2.1.5 is under the 4 GiB FAT32 single-file limit, so a FAT32 stick also works, but an image writer is still the recommended path.
+Write the verified ISO to a USB device with an image writer (balenaEtcher, KDE ISO Image Writer, GNOME Disks) or `dd` — **do not** copy it onto a mounted filesystem. 3.0.0 is under the 4 GiB FAT32 single-file limit, so a FAT32 stick also works, but an image writer is still the recommended path.
 
 ### The live session
 
@@ -168,7 +172,7 @@ make qemu       # boot the freshly built ISO in QEMU to smoke-test it
 
 Useful targets: `make source-gate` (tests, parsers, linters, secret scans), `make iso-gate` (post-build ISO inventory checks), `make sign` (detached GPG signature), `make qemu`.
 
-Version is controlled by the Makefile: `VERSION ?= 2.1.5` and `CODENAME ?= umbra`.
+Version is controlled by the Makefile: `VERSION ?= 3.0.0` and `CODENAME ?= umbra`.
 Override it on the command line only when deliberately testing another release.
 
 > **Signing/publishing** (ISO signature, APT repo signature, R2/Worker deploy) requires the Shadowfetch private signing key and Cloudflare/R2 credentials, which are **not** in this repo — they live in the maintainer's build-host keyring and in CI secrets. See `.github/CI-SECRETS.md` for the CI secret names. Contributors can build and QEMU-test an unsigned ISO without any of that.
@@ -206,6 +210,6 @@ Shadowfetch Linux is an **aggregate**: the ISO bundles many upstream Debian pack
 
 ## Release notes & links
 
-- Current: [`docs/RELEASE-2.1.5.md`](docs/RELEASE-2.1.5.md) · previous: [`docs/RELEASE-2.1.4.md`](docs/RELEASE-2.1.4.md)
+- Current: [`docs/RELEASE-3.0.0.md`](docs/RELEASE-3.0.0.md) · previous: [`docs/RELEASE-2.1.5.md`](docs/RELEASE-2.1.5.md)
 - [Download](https://www.shadowfetchlinux.org/download) · [Verify](https://www.shadowfetchlinux.org/verify) · [Install](https://www.shadowfetchlinux.org/install) · [Security](https://www.shadowfetchlinux.org/security) · [Known issues](https://www.shadowfetchlinux.org/known-issues) · [Docs](https://www.shadowfetchlinux.org/docs)
 - Changelog / release feed: https://www.shadowfetchlinux.org/releases.json
