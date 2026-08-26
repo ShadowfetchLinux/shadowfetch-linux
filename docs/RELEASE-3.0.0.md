@@ -3,9 +3,17 @@
 Codename: Umbra (permanent — APT suite stays `umbra`; 3.0 is conveyed by the
 "Backfire" subtitle, exactly as 2.0.0 used "Bedrock").
 
-Status: IN DEVELOPMENT. The public stable release remains 2.1.5 until every
-required item in `qa/3.0.0/acceptance.json` has fresh evidence from the final
-3.0.0 ISO and all public files pass independent download verification.
+Status: RELEASED 2026-08-26. Built, signed, ISO_GATE_PASSED; boots BIOS+UEFI to the
+live Plasma desktop, survives a full CPU/memory/IO stress run with zero failed services,
+installs to disk and cold-boots from disk, and the Fireline tools run on both the live and
+installed systems.
+
+- ISO: `shadowfetch-3.0.0-amd64.iso`
+- Size: 3,967,508,480 bytes (3.97 GB / 3.69 GiB)
+- SHA-256: `110b0d075e699a05a8a2f8f8dcd05f19454bc8ae09acd0745ca0d947db8c5e3c`
+- Detached signature: `shadowfetch-3.0.0-amd64.iso.asc`
+- Signing key: `8F13 CE15 35EE 1F4A 2916  A1F7 3C5C 900B 7BE8 0CA1`
+- Download: https://www.shadowfetch.com/linux/download/shadowfetch-3.0.0-amd64.iso
 
 ## Why "Backfire"
 

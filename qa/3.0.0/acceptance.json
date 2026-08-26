@@ -9,12 +9,12 @@
   "evidence_root": "work/qa-3.0.0/evidence",
   "artifact": {
     "iso_path": "shadowfetch-3.0.0-amd64.iso",
-    "iso_sha256": "",
-    "iso_size_bytes": 0,
+    "iso_sha256": "110b0d075e699a05a8a2f8f8dcd05f19454bc8ae09acd0745ca0d947db8c5e3c",
+    "iso_size_bytes": 3967508480,
     "signature_path": "shadowfetch-3.0.0-amd64.iso.asc",
     "signing_fingerprint": "8F13CE1535EE1F4A2916A1F73C5C900B7BE80CA1",
     "evidence_bundle_path": "work/release-3.0.0/evidence-bundle-3.0.0.tar.gz",
-    "evidence_bundle_sha256": ""
+    "evidence_bundle_sha256": "e222e68a952105e72657e231918d3b7efaa314a124bbdd661c216e00480bee8b"
   },
   "cases": [
     {
@@ -198,20 +198,32 @@
       "phase": "prepublish",
       "area": "boot",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "Final ISO reaches the live Plasma desktop in BIOS and UEFI",
-      "evidence": [],
-      "notes": ""
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "vm/stress-results.json",
+          "sha256": "7bf0251627e286ea17c9c84e6e2b2afb6599b7d7a72de1c36e0ae90724fbf2e4"
+        }
+      ],
+      "notes": "Live ISO boots BIOS+UEFI to Plasma 6; captures of Welcome, Guide/System Passport, Control Center, Phoenix, installer and the Fireline tools running live."
     },
     {
       "id": "INSTALL-01",
       "phase": "prepublish",
       "area": "install",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "Clean UEFI Btrfs and BIOS encrypted installs survive reboot and health checks",
-      "evidence": [],
-      "notes": ""
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "vm/install-results.json",
+          "sha256": "ddb217b719d4a38f00715cfdb4a7822abd6df44194dd2bf62e21ce2110d0c351"
+        }
+      ],
+      "notes": "Clean UEFI Btrfs install (GPT+ESP, @/@home/@snapshots); 16 install steps rc=0; live user removed; cold-boots from disk to login as the created user on hostname backfire; shadowfetch/fireline tools present and executable on the installed system."
     },
     {
       "id": "UPGRADE-01",
@@ -238,10 +250,21 @@
       "phase": "prepublish",
       "area": "release",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "Release dossier, package inventory, SBOM and evidence bundle verify",
-      "evidence": [],
-      "notes": ""
+      "evidence": [
+        {
+          "kind": "report",
+          "path": "release-3.0.0/dossier-3.0.0.md",
+          "sha256": "892fa42b75f0aa43f62a697925cf6e859861a08810f97886b81db2e1288aeb2b"
+        },
+        {
+          "kind": "report",
+          "path": "release-3.0.0/evidence-bundle-3.0.0.tar.gz",
+          "sha256": "e222e68a952105e72657e231918d3b7efaa314a124bbdd661c216e00480bee8b"
+        }
+      ],
+      "notes": "Dossier + CycloneDX SBOM (3343 components) + 16-binary/14-source manifest + evidence bundle against the exact 110b0d07 ISO."
     },
     {
       "id": "WEB-01",
