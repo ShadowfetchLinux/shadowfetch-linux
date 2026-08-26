@@ -1,3 +1,9 @@
+ (3.1.0-1) umbra; urgency=medium
+
+  * Fire and Ice (3.1): dual element theming and element-aware defaults.
+
+ -- Shadowfetch Project <shadowfetchlinux@gmail.com>  Tue, 26 Aug 2026 02:30:00 -0400
+
 shadowfetch-firewatchd (3.0.0-1) umbra; urgency=medium
 
   * Shadowfetch Linux 3.0.0 "Backfire": the agent-safe local-AI workstation.
