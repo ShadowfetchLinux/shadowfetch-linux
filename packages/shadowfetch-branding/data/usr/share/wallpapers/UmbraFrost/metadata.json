@@ -1,0 +1,12 @@
+{
+  "KPlugin": {
+    "Id": "UmbraFrost",
+    "Name": "Umbra Frost",
+    "License": "GPL-3.0",
+    "Authors": [
+      {
+        "Name": "Shadowfetch Project"
+      }
+    ]
+  }
+}

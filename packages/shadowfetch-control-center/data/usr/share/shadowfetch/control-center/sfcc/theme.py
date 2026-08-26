@@ -25,6 +25,33 @@ BORDER = "#34363d"
 GOLD = "#d8a24a"
 GOLD_HOVER = "#efb95d"
 GOLD_PRESS = "#bf8735"
+
+# --- Fire and Ice (3.1) -----------------------------------------------------
+# The element mirrors the brand accents: Fire keeps Umbra gold, Ice swaps the
+# warm trio for its azure reflection (#d8a24a -> #4aa2d8 is a literal R/B
+# mirror). Semantic colors (GREEN/AMBER/ORANGE/RED) keep their meanings in
+# both elements — a warning must stay warning-colored on a cold desktop.
+def _element() -> str:
+    import os
+    v = os.environ.get("SHADOWFETCH_ELEMENT", "")
+    for path in (
+        os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "shadowfetch/element"),
+        "/etc/shadowfetch/element",
+    ):
+        if v:
+            break
+        try:
+            with open(path, encoding="utf-8") as fh:
+                v = fh.readline().strip()
+        except OSError:
+            continue
+    return v if v in ("fire", "ice") else "fire"
+
+ELEMENT = _element()
+if ELEMENT == "ice":
+    GOLD = "#4aa2d8"
+    GOLD_HOVER = "#5db9ef"
+    GOLD_PRESS = "#3587bf"
 TEXT = "#f0eee9"
 MUTED = "#aaa69f"
 GREEN = "#72c69c"

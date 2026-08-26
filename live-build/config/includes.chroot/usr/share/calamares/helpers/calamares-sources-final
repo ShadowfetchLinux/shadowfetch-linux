@@ -105,5 +105,20 @@ for c in contrib non-free; do
     esac
 done
 
+# Fire and Ice (3.1): carry the element chosen at the live boot menu into the
+# installed system, so the first real boot comes up in the element the user
+# already picked. Absent file means Fire (the default) — nothing to copy.
+ELEMENT_SRC=""
+if [ -f /home/shadow/.config/shadowfetch/element ]; then
+    ELEMENT_SRC=/home/shadow/.config/shadowfetch/element   # picked in Welcome
+elif [ -f /etc/shadowfetch/element ]; then
+    ELEMENT_SRC=/etc/shadowfetch/element                   # picked at the boot menu
+fi
+if [ -n "$ELEMENT_SRC" ]; then
+    mkdir -p "$CHROOT/etc/shadowfetch"
+    cp "$ELEMENT_SRC" "$CHROOT/etc/shadowfetch/element"
+    echo "[shadowfetch] sources-final: carried element '$(cat "$ELEMENT_SRC")' into the target"
+fi
+
 echo "[shadowfetch] sources-final: wrote $CHROOT/etc/apt/sources.list"
 exit 0

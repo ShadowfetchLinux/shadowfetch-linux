@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# shadowfetch-element - Fire and Ice: read, set, and apply the system element.
+#
+# 3.1 "Fire and Ice" gives Shadowfetch two complete identities, chosen at
+# install time and changeable at any moment:
+#
+#   fire  the ember identity: gold accents, the UmbraFire wallpaper, and
+#         run-hot defaults (agents may reach the network from the sandbox).
+#   ice   the glacier identity: azure accents, the UmbraIce wallpaper, and
+#         run-cold defaults (agent sandboxes start with NO network; you add
+#         it back per session, deliberately).
+#
+# Resolution order (first hit wins):
+#   $SHADOWFETCH_ELEMENT  ->  ~/.config/shadowfetch/element  ->
+#   /etc/shadowfetch/element  ->  fire
+#
+# The element steers more than color: Welcome's setup profiles, the Control
+# Center accent, and shadowfetch-firebreak's network default all read it.
+set -uo pipefail
+
+USER_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/shadowfetch/element"
+SYS_CONF="/etc/shadowfetch/element"
+
+say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
+ok()   { printf '\033[1;32m OK\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;31m !!\033[0m %s\n' "$*" >&2; }
+
+current() {
+  local v=""
+  v="${SHADOWFETCH_ELEMENT:-}"
+  [ -z "$v" ] && [ -f "$USER_CONF" ] && v="$(head -1 "$USER_CONF" | tr -d '[:space:]')"
+  [ -z "$v" ] && [ -f "$SYS_CONF" ] && v="$(head -1 "$SYS_CONF" | tr -d '[:space:]')"
+  case "$v" in fire|ice) printf '%s' "$v" ;; *) printf 'fire' ;; esac
+}
+
+apply_session() {
+  local el; el="$(current)"
+  local scheme wall konsole
+  if [ "$el" = "ice" ]; then
+    scheme="ShadowfetchIce";  wall="/usr/share/wallpapers/UmbraIce/contents/images/3840x2160.jpg";  konsole="ShadowfetchGlacier"
+  else
+    scheme="ShadowfetchDark"; wall="/usr/share/wallpapers/UmbraFire/contents/images/3840x2160.jpg"; konsole="ShadowfetchUmbra"
+  fi
+  local rc=0
+  if command -v plasma-apply-colorscheme >/dev/null; then
+    plasma-apply-colorscheme "$scheme" >/dev/null 2>&1 && ok "color scheme: $scheme" || { warn "color scheme apply failed"; rc=1; }
+  else
+    warn "plasma-apply-colorscheme not found (not a Plasma session?)"; rc=1
+  fi
+  if [ -f "$wall" ] && command -v plasma-apply-wallpaperimage >/dev/null; then
+    plasma-apply-wallpaperimage "$wall" >/dev/null 2>&1 && ok "wallpaper: $(basename "$(dirname "$(dirname "$(dirname "$wall")")")")" || warn "wallpaper apply failed"
+  fi
+  # Konsole default profile colors follow on next Konsole launch; write the default
+  if command -v kwriteconfig6 >/dev/null; then
+    # Surgical edit: copy the shipped profile into the user dir if absent, then
+    # flip only its ColorScheme — never clobber the rest of the skel profile.
+    local prof="${XDG_DATA_HOME:-$HOME/.local/share}/konsole/Shadowfetch.profile"
+    if [ ! -f "$prof" ] && [ -f /etc/skel/.local/share/konsole/Shadowfetch.profile ]; then
+      mkdir -p "$(dirname "$prof")"
+      cp /etc/skel/.local/share/konsole/Shadowfetch.profile "$prof"
+    fi
+    [ -f "$prof" ] && kwriteconfig6 --file "$prof" --group Appearance --key ColorScheme "$konsole" 2>/dev/null       && ok "konsole scheme: $konsole (new windows)" || true
+  fi
+  return $rc
+}
+
+usage() {
+  cat <<'EOF'
+shadowfetch-element - read, set, and apply the Fire/Ice element.
+
+USAGE
+  shadowfetch-element                 print the current element
+  shadowfetch-element status          element + where it came from
+  shadowfetch-element set fire|ice    set YOUR element and apply it now
+  shadowfetch-element apply           re-apply the current element
+  shadowfetch-element --system set fire|ice   set the system default (root)
+
+fire = gold, run-hot (agent sandboxes may use the network)
+ice  = azure, run-cold (agent sandboxes start with NO network)
+EOF
+}
+
+case "${1:-}" in
+  ""|show) current; echo ;;
+  status)
+    el="$(current)"; src="default"
+    [ -f "$SYS_CONF" ] && src="$SYS_CONF"
+    [ -f "$USER_CONF" ] && src="$USER_CONF"
+    [ -n "${SHADOWFETCH_ELEMENT:-}" ] && src="\$SHADOWFETCH_ELEMENT"
+    echo "element: $el (from $src)"
+    if [ "$el" = "ice" ]; then echo "posture: run-cold — firebreak defaults to --net none"; else echo "posture: run-hot — firebreak allows sandbox network by default"; fi ;;
+  set)
+    v="${2:-}"; case "$v" in fire|ice) : ;; *) warn "element must be fire or ice"; exit 2 ;; esac
+    mkdir -p "$(dirname "$USER_CONF")"; printf '%s\n' "$v" > "$USER_CONF"
+    say "element set to $v"; apply_session ;;
+  apply) apply_session ;;
+  --system)
+    [ "${2:-}" = "set" ] || { usage; exit 2; }
+    v="${3:-}"; case "$v" in fire|ice) : ;; *) warn "element must be fire or ice"; exit 2 ;; esac
+    if [ "$(id -u)" != 0 ]; then warn "--system needs root"; exit 1; fi
+    mkdir -p "$(dirname "$SYS_CONF")"; printf '%s\n' "$v" > "$SYS_CONF"
+    ok "system element: $v" ;;
+  --version) echo "shadowfetch-element (Shadowfetch Linux) 3.1.0" ;;
+  -h|--help) usage ;;
+  *) usage; exit 2 ;;
+esac

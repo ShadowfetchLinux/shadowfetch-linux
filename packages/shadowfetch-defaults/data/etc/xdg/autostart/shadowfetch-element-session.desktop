@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Shadowfetch element
+Comment=Apply the chosen Fire/Ice element to this session
+Exec=/usr/lib/shadowfetch/element-session.sh
+OnlyShowIn=KDE;
+X-KDE-autostart-phase=1

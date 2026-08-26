@@ -1,0 +1,12 @@
+{
+  "KPlugin": {
+    "Id": "UmbraDrift",
+    "Name": "Umbra Drift",
+    "License": "GPL-3.0",
+    "Authors": [
+      {
+        "Name": "Shadowfetch Project"
+      }
+    ]
+  }
+}

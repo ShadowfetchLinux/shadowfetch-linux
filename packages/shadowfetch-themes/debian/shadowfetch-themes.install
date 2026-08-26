@@ -4,3 +4,6 @@ data/usr/share/plasma/look-and-feel/org.shadowfetch.dark/contents/defaults  usr/
 data/usr/share/konsole/ShadowfetchUmbra.colorscheme  usr/share/konsole/
 data/usr/share/sddm/themes/umbra  usr/share/sddm/themes/
 data/usr/share/plasma/look-and-feel/org.shadowfetch.dark/contents/splash/Splash.qml  usr/share/plasma/look-and-feel/org.shadowfetch.dark/contents/splash/
+data/usr/share/color-schemes/ShadowfetchIce.colors      usr/share/color-schemes/
+data/usr/share/konsole/ShadowfetchGlacier.colorscheme   usr/share/konsole/
+data/usr/share/plasma/look-and-feel/org.shadowfetch.ice usr/share/plasma/look-and-feel/

@@ -18,10 +18,20 @@
 # It wraps bubblewrap with unprivileged user namespaces; no setuid, no root.
 set -uo pipefail
 
-VERSION="3.0.0"
+VERSION="3.1.0"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/shadowfetch/firebreak"
 WS_ROOT="${SHADOWFETCH_AGENT_WORKSPACES:-$HOME/Workspaces}"
 CHECKPOINT_BIN="${SHADOWFETCH_CHECKPOINT_BIN:-shadowfetch-checkpoint}"
+
+# Fire and Ice (3.1): the element steers the sandbox's network default.
+#   fire -> --net allow unless told otherwise (run hot)
+#   ice  -> --net none  unless told otherwise (run cold; add network deliberately)
+element() {
+  local v="${SHADOWFETCH_ELEMENT:-}"
+  [ -z "$v" ] && [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/shadowfetch/element" ] &&     v="$(head -1 "${XDG_CONFIG_HOME:-$HOME/.config}/shadowfetch/element" | tr -d '[:space:]')"
+  [ -z "$v" ] && [ -f /etc/shadowfetch/element ] && v="$(head -1 /etc/shadowfetch/element | tr -d '[:space:]')"
+  case "$v" in ice) printf 'ice' ;; *) printf 'fire' ;; esac
+}
 
 # Credential variables scrubbed from the sandbox by default. A prompt-injected
 # agent that can read its own environment must not find your keys there.
@@ -54,7 +64,8 @@ RUN OPTIONS
                      (default: the current directory if it is inside a
                      workspace, else required)
   --net none|allow   cut the sandbox off the network, or allow it
-                     (default: allow)
+                     (default: the element's — fire=allow, ice=none;
+                     see shadowfetch-element)
   --no-checkpoint    do not take a pre-run workspace checkpoint (not advised)
   --keep-secrets     do NOT scrub credential variables (not advised)
   --                 everything after this is the agent command to run
@@ -101,7 +112,9 @@ resolve_workspace() {
 }
 
 cmd_run() {
-  local ws_name="" net="allow" do_ckpt=1 scrub=1
+  local el; el="$(element)"
+  local net_default="allow"; [ "$el" = "ice" ] && net_default="none"
+  local ws_name="" net="$net_default" do_ckpt=1 scrub=1
   local -a agent_cmd=()
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -128,7 +141,8 @@ cmd_run() {
 
   say "Firebreak session $sid"
   say "workspace : $ws"
-  say "network   : $net"
+  say "element   : $el ($([ "$el" = ice ] && echo run-cold || echo run-hot))"
+  say "network   : $net$([ "$net" = "$net_default" ] && echo " (element default)")"
   say "secrets   : $([ "$scrub" = 1 ] && echo scrubbed || echo PASSED-THROUGH)"
 
   if [ "$do_ckpt" = 1 ] && command -v "$CHECKPOINT_BIN" >/dev/null; then

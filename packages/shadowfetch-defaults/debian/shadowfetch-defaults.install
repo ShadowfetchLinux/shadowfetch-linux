@@ -82,3 +82,8 @@ data/usr/share/doc/shadowfetch/SOURCES.md usr/share/doc/shadowfetch/
 data/usr/bin/shadowfetch-facts  usr/bin/
 data/usr/bin/shadowfetch-passport  usr/bin/
 data/usr/bin/shadowfetch-hardware usr/bin/
+data/usr/lib/shadowfetch/element-boot.sh              usr/lib/shadowfetch/
+data/usr/lib/systemd/system/shadowfetch-element-boot.service  usr/lib/systemd/system/
+data/usr/bin/shadowfetch-element                      usr/bin/
+data/usr/lib/shadowfetch/element-session.sh           usr/lib/shadowfetch/
+data/etc/xdg/autostart/shadowfetch-element-session.desktop  etc/xdg/autostart/

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Shadowfetch Ice
+Comment=The Ice element: glacier azure on graphite
+Icon=preferences-desktop-theme
+Type=Service
+X-KDE-PluginInfo-Author=Shadowfetch Project
+X-KDE-PluginInfo-Email=maintainers@shadowfetch.com
+X-KDE-PluginInfo-License=GPL-3.0
+X-KDE-PluginInfo-Name=org.shadowfetch.ice
+X-KDE-PluginInfo-Version=1.0
+X-KDE-PluginInfo-Website=https://www.shadowfetchlinux.org/
+X-KDE-ServiceTypes=Plasma/LookAndFeel

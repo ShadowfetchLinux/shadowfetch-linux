@@ -1,0 +1,14 @@
+[Unit]
+Description=Stamp the Shadowfetch Fire/Ice element from the kernel command line
+DefaultDependencies=no
+After=local-fs.target
+Before=display-manager.service sddm.service
+ConditionKernelCommandLine=|sf.element=fire
+ConditionKernelCommandLine=|sf.element=ice
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/shadowfetch/element-boot.sh
+
+[Install]
+WantedBy=multi-user.target

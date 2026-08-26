@@ -102,17 +102,52 @@ try:
 except Exception:  # noqa: BLE001 - QtDBus genuinely optional at runtime
     QT_DBUS = False
 
-# ---- Umbra palette -------------------------------------------------------
-GOLD       = "#D8A24A"   # Umbra Gold - primary accent
-GOLD_HOVER = "#E8B65E"
-GOLD_PRESS = "#C28E38"
-BG         = "#0B0E12"   # deep graphite
-CARD       = "#141922"
-CARD_HOVER = "#1B212C"
-BORDER     = "#2C333B"
+# ---- Fire and Ice (3.1) --------------------------------------------------
+# The element is decided before this window exists: at the boot menu
+# (sf.element= on the kernel command line -> /etc/shadowfetch/element), or by
+# the user afterwards (~/.config/shadowfetch/element, or the Element page in
+# this very wizard). Everything downstream — palette, profile order, agent
+# network defaults — reads ONE value so the system never looks half-switched.
+def load_element() -> str:
+    v = os.environ.get("SHADOWFETCH_ELEMENT", "").strip().lower()
+    for candidate in (
+        Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+        / "shadowfetch" / "element",
+        Path("/etc/shadowfetch/element"),
+    ):
+        if v:
+            break
+        try:
+            v = candidate.read_text().strip().lower()
+        except OSError:
+            continue
+    return v if v in ("fire", "ice") else "fire"
+
+
+ELEMENT = load_element()
+
+# ---- Umbra palette (element-aware) ---------------------------------------
+# Ice mirrors Fire: #D8A24A gold reflects to #4AA2D8 azure (a literal R/B
+# swap). Neutrals stay graphite in both; GREEN/RED keep their meanings.
+_PALETTES = {
+    "fire": dict(GOLD="#D8A24A", GOLD_HOVER="#E8B65E", GOLD_PRESS="#C28E38",
+                 BG="#0B0E12", CARD="#141922", CARD_HOVER="#1B212C",
+                 BORDER="#2C333B", INK="#0B0E12"),
+    "ice":  dict(GOLD="#4AA2D8", GOLD_HOVER="#5EB9E8", GOLD_PRESS="#3887C2",
+                 BG="#0A0F16", CARD="#121A26", CARD_HOVER="#182233",
+                 BORDER="#2C3947", INK="#0A0F16"),
+}
+_P = _PALETTES[ELEMENT]
+GOLD       = _P["GOLD"]       # primary accent (gold in Fire, azure in Ice)
+GOLD_HOVER = _P["GOLD_HOVER"]
+GOLD_PRESS = _P["GOLD_PRESS"]
+BG         = _P["BG"]
+CARD       = _P["CARD"]
+CARD_HOVER = _P["CARD_HOVER"]
+BORDER     = _P["BORDER"]
 TEXT       = "#E6E9ED"
 MUTED      = "#9AA3AD"
-INK        = "#0B0E12"   # dark text on gold
+INK        = _P["INK"]        # dark text on the accent
 GREEN      = "#7FB069"
 RED        = "#E2533B"
 
@@ -244,15 +279,26 @@ def _rgb(hex_colour: str) -> str:
     return f"{int(h[0:2], 16)},{int(h[2:4], 16)},{int(h[4:6], 16)}"
 
 
-# name -> hex
-ACCENTS = [
-    ("Umbra Gold",    "#D8A24A"),
-    ("Eclipse Amber", "#E8B65E"),
-    ("Signal Cyan",   "#29B6F6"),
-    ("Crimson",       "#E2533B"),
-    ("Verdant",       "#7FB069"),
-    ("Violet",        "#9B7EDE"),
-]
+# name -> hex; the element's signature colour leads, because the wizard
+# preselects ACCENTS[0].
+if ELEMENT == "ice":
+    ACCENTS = [
+        ("Glacier Azure", "#4AA2D8"),
+        ("Signal Cyan",   "#29B6F6"),
+        ("Umbra Gold",    "#D8A24A"),
+        ("Crimson",       "#E2533B"),
+        ("Verdant",       "#7FB069"),
+        ("Violet",        "#9B7EDE"),
+    ]
+else:
+    ACCENTS = [
+        ("Umbra Gold",    "#D8A24A"),
+        ("Eclipse Amber", "#E8B65E"),
+        ("Signal Cyan",   "#29B6F6"),
+        ("Crimson",       "#E2533B"),
+        ("Verdant",       "#7FB069"),
+        ("Violet",        "#9B7EDE"),
+    ]
 
 # (flatpak id, name, description) - installed from Flathub on request
 APPS = [
@@ -314,73 +360,110 @@ APPS = [
     ("cc.arduino.IDE2",        "Arduino IDE",    "Program and flash Arduino microcontrollers"),
 ]
 
-PROFILE_PRESETS = [
-    {
+def build_profile_presets(element: str) -> list:
+    """The setup profiles, branched by element.
+
+    PLAIN-LANGUAGE RULE: every profile description ends with one explicit
+    sentence saying exactly which AI tools it installs or preselects — the
+    user should never have to guess what a choice does about AI.
+    """
+    creative = {
         "key": "creative",
         "title": "Creative studio",
-        "desc": "Photo, video, streaming, 3D and publishing tools for a full creator workstation.",
+        "desc": "Photo, video, streaming, 3D and publishing tools for a full creator "
+                "workstation. AI: installs no AI tools.",
         "apps": [
             "com.obsproject.Studio", "org.blender.Blender", "org.darktable.Darktable",
             "com.rawtherapee.RawTherapee", "fr.handbrake.ghb", "net.scribus.Scribus",
             "org.kde.digikam", "com.dec05eba.gpu_screen_recorder", "io.github.seadve.Kooha",
         ],
-        "ai": False,
-        "llm": False,
-    },
-    {
-        "key": "developer",
-        "title": "Developer workstation",
-        "desc": "Editors, database tools, API tooling and a fast terminal for building software.",
-        "apps": [
-            "com.vscodium.codium", "dev.zed.Zed", "io.dbeaver.DBeaverCommunity",
-            "io.beekeeperstudio.Studio", "com.usebruno.Bruno", "com.mitchellh.ghostty",
-        ],
-        "ai": False,
-        "llm": False,
-    },
-    {
+        "ai_choice": None, "agents": [],
+    }
+    gaming = {
         "key": "gaming",
         "title": "Gaming",
-        "desc": "Steam, Heroic, Lutris and ProtonUp-Qt for a ready-to-play Linux gaming setup.",
+        "desc": "Steam, Heroic, Lutris and ProtonUp-Qt for a ready-to-play Linux gaming "
+                "setup. AI: installs no AI tools.",
         "apps": [
             "com.valvesoftware.Steam", "com.heroicgameslauncher.hgl",
             "net.lutris.Lutris", "net.davidotek.pupgui2",
         ],
-        "ai": False,
-        "llm": False,
-    },
-    {
+        "ai_choice": None, "agents": [],
+    }
+    office = {
         "key": "office",
-        "title": "Office and communication",
-        "desc": "Office suites, email, notes, password management and private messaging.",
+        "title": "Office and communication" if element == "fire" else "Quiet office",
+        "desc": "Office suites, email, notes, password management and private messaging. "
+                "AI: installs no AI tools.",
         "apps": [
             "org.libreoffice.LibreOffice", "org.onlyoffice.desktopeditors",
             "org.mozilla.Thunderbird", "md.obsidian.Obsidian", "net.cozic.joplin_desktop",
             "com.bitwarden.desktop", "org.signal.Signal", "im.riot.Riot",
         ],
-        "ai": False,
-        "llm": False,
-    },
-    {
-        "key": "local-ai",
-        "title": "Local AI lab",
-        "desc": "Install Buzz, then let Buzz rank and download an open model for this hardware.",
-        "apps": [],
-        "ai": True,
-        "llm": False,
-    },
-    {
+        "ai_choice": None, "agents": [],
+    }
+    maker = {
         "key": "maker",
         "title": "Maker and hardware",
-        "desc": "3D-printing, CAD, PCB design and microcontroller development.",
+        "desc": "3D-printing, CAD, PCB design and microcontroller development. "
+                "AI: installs no AI tools.",
         "apps": [
             "io.github.softfever.OrcaSlicer", "com.prusa3d.PrusaSlicer",
             "org.freecad.FreeCAD", "org.kicad.KiCad", "cc.arduino.IDE2",
         ],
-        "ai": False,
-        "llm": False,
-    },
-]
+        "ai_choice": None, "agents": [],
+    }
+    if element == "ice":
+        developer = {
+            "key": "developer",
+            "title": "Cold-room developer",
+            "desc": "Editors, database tools, API tooling and a fast terminal. "
+                    "AI: preselects the Claude Code and Codex CLI coding agents; in Ice, "
+                    "Firebreak agent sandboxes start with NO network — you grant it per "
+                    "session. You confirm everything on the AI workspace screen.",
+            "apps": [
+                "com.vscodium.codium", "dev.zed.Zed", "io.dbeaver.DBeaverCommunity",
+                "io.beekeeperstudio.Studio", "com.usebruno.Bruno", "com.mitchellh.ghostty",
+            ],
+            "ai_choice": None, "agents": ["claude", "codex"],
+        }
+        local_ai = {
+            "key": "local-ai",
+            "title": "Glacier AI lab",
+            "desc": "Fully local AI on this hardware. "
+                    "AI: installs Buzz and lets it rank and download an open model; "
+                    "preselects NO cloud coding agents — nothing leaves this machine.",
+            "apps": [],
+            "ai_choice": "install-buzz", "agents": [],
+        }
+        return [developer, office, local_ai, creative, gaming, maker]
+    developer = {
+        "key": "developer",
+        "title": "Forge developer",
+        "desc": "Editors, database tools, API tooling and a fast terminal. "
+                "AI: preselects the Claude Code and Codex CLI coding agents; in Fire, "
+                "Firebreak agent sandboxes may use the network by default (run hot). "
+                "You confirm everything on the AI workspace screen.",
+        "apps": [
+            "com.vscodium.codium", "dev.zed.Zed", "io.dbeaver.DBeaverCommunity",
+            "io.beekeeperstudio.Studio", "com.usebruno.Bruno", "com.mitchellh.ghostty",
+        ],
+        "ai_choice": None, "agents": ["claude", "codex"],
+    }
+    local_ai = {
+        "key": "local-ai",
+        "title": "Local AI lab",
+        "desc": "The full local stack, run hot. "
+                "AI: installs Buzz (open models on this hardware) and preselects all "
+                "four coding agents — Codex CLI, Claude Code, Grok Build and Cursor. "
+                "You confirm everything on the AI workspace screen.",
+        "apps": [],
+        "ai_choice": "install-buzz", "agents": ["codex", "claude", "grok", "cursor"],
+    }
+    return [creative, gaming, developer, local_ai, office, maker]
+
+
+PROFILE_PRESETS = build_profile_presets(ELEMENT)
 
 PROFILE_BY_KEY = {p["key"]: p for p in PROFILE_PRESETS}
 
@@ -1801,7 +1884,8 @@ class WelcomePage(QWidget):
         version = os.environ.get("SHADOWFETCH_VERSION_OVERRIDE", "").strip()
         if not version and version_file.is_file():
             version = version_file.read_text().strip()
-        edition = f"Fire Edition {version}" if version else "Fire Edition"
+        element_name = "Ice" if ELEMENT == "ice" else "Fire"
+        edition = f"{element_name} Edition {version}" if version else f"{element_name} Edition"
         tag = _label(f"{edition}  |  Umbra", 15, GOLD, bold=True)
         body = _label(
             "A fast, private, AI-ready desktop - honestly built on Debian and "
@@ -1852,6 +1936,86 @@ class WelcomePage(QWidget):
         lay.addWidget(nxt, alignment=Qt.AlignmentFlag.AlignRight)
 
 
+class ElementPage(QWidget):
+    """Fire and Ice: pick the element. Everything after this page branches on it.
+
+    Changing the element relaunches the wizard so every page — palette, profile
+    order, agent defaults — rebuilds around the new element. The page is first
+    in the flow, so nothing the user has entered is lost by the relaunch.
+    """
+    def __init__(self, on_next):
+        super().__init__()
+        self._on_next = on_next
+        self.selected = ELEMENT
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(48, 40, 48, 32)
+        lay.setSpacing(12)
+        lay.addWidget(_label("Choose your element", 22, TEXT, bold=True))
+        lay.addWidget(_label(
+            "Fire and Ice are two complete identities for this system. The choice "
+            "changes the look AND the defaults that follow — and every difference "
+            "is stated plainly. You can switch any time with shadowfetch-element.",
+            12, MUTED, wrap=True))
+        lay.addSpacing(6)
+        options = (
+            ("fire", "Fire — run hot", "#D8A24A",
+             "Umbra gold and the ember desktop. Firebreak agent sandboxes may use "
+             "the network by default. Setup leads with creative, gaming and "
+             "full-auto agent profiles."),
+            ("ice", "Ice — run cold", "#4AA2D8",
+             "Glacier azure and the frost desktop. Firebreak agent sandboxes start "
+             "with NO network — you grant it per session, deliberately. Setup leads "
+             "with the private developer and fully-local AI profiles."),
+        )
+        self._radios = {}
+        group = QButtonGroup(self)
+        for key, name, hexc, desc in options:
+            card = Card()
+            row = QHBoxLayout(card)
+            row.setContentsMargins(16, 14, 16, 14)
+            rb = QRadioButton()
+            rb.setChecked(key == ELEMENT)
+            group.addButton(rb)
+            self._radios[key] = rb
+            rb.toggled.connect(lambda checked, k=key: self._set(k) if checked else None)
+            txt = QVBoxLayout()
+            txt.setSpacing(3)
+            txt.addWidget(_label(name, 15, hexc, bold=True))
+            txt.addWidget(_label(desc, 11, MUTED, wrap=True))
+            row.addWidget(rb, 0, Qt.AlignmentFlag.AlignTop)
+            row.addLayout(txt, 1)
+            lay.addWidget(card)
+        lay.addStretch(1)
+        nxt = QPushButton("Continue  →")
+        nxt.setFixedHeight(44)
+        nxt.clicked.connect(self._submit)
+        lay.addWidget(nxt, alignment=Qt.AlignmentFlag.AlignRight)
+
+    def _set(self, key):
+        self.selected = key
+
+    def _submit(self):
+        chosen = self.selected
+        conf = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "shadowfetch" / "element"
+        try:
+            conf.parent.mkdir(parents=True, exist_ok=True)
+            conf.write_text(chosen + "\n")
+        except OSError:
+            pass
+        if chosen == ELEMENT:
+            self._on_next()
+            return
+        # Apply the look to the running session (best effort), then relaunch the
+        # wizard so every page rebuilds in the new element.
+        try:
+            subprocess.Popen(["shadowfetch-element", "apply"],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+        os.environ["SHADOWFETCH_ELEMENT"] = chosen
+        os.execv(sys.executable, [sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:])
+
+
 class ProfilePage(QWidget):
     """Role-based setup presets that make the long app list easier."""
     def __init__(self, on_next):
@@ -1864,9 +2028,18 @@ class ProfilePage(QWidget):
         lay.setSpacing(12)
 
         lay.addWidget(_label("Choose a setup profile", 22, TEXT, bold=True))
+        element_line = (
+            "You are in the Ice element: run cold — agent sandboxes start with no "
+            "network, and the calm profiles lead."
+            if ELEMENT == "ice" else
+            "You are in the Fire element: run hot — agent sandboxes may use the "
+            "network, and the creative profiles lead."
+        )
         lay.addWidget(_label(
             "Pick one or more starting points. Shadowfetch will preselect the right "
-            "apps and AI setup options, and you can still change every choice on the next screens.",
+            "apps and AI setup options, and you can still change every choice on the "
+            "next screens. " + element_line + " Every profile says exactly which AI "
+            "tools it installs.",
             12, MUTED, wrap=True,
         ))
 
@@ -2184,7 +2357,7 @@ class AccentPage(QWidget):
             btn.setStyleSheet(
                 "QPushButton{border:2px solid #2a313b;border-radius:8px;background:#11151b;}"
                 "QPushButton:checked{border:2px solid %s;}" % GOLD)
-            if vid == "UmbraGold":
+            if vid == ("UmbraIce" if ELEMENT == "ice" else "UmbraGold"):
                 btn.setChecked(True)
             btn.clicked.connect(lambda _c, p=wp, b=btn: self._pick_wallpaper(p, b))
             self._wp_btns.append(btn)
@@ -2309,11 +2482,19 @@ class BuzzPage(QWidget):
         lay.setContentsMargins(48, 40, 48, 32)
         lay.setSpacing(12)
         lay.addWidget(_label("Choose your AI workspace", 22, TEXT, bold=True))
+        element_line = (
+            "Ice element: any coding agent you pick runs in Firebreak with NO network "
+            "by default — you grant it per session."
+            if ELEMENT == "ice" else
+            "Fire element: coding agents you pick run in Firebreak with network "
+            "allowed by default."
+        )
         lay.addWidget(_label(
             "Buzz gives people and AI agents shared rooms, project context, and native shared "
             "compute. Shadowfetch installs the official desktop and a private relay. Buzz then "
             "ranks open-source models for this hardware and asks before downloading one. "
-            "Cloud coding agents are separate, optional tools with their own sign-in.",
+            "Cloud coding agents are separate, optional tools with their own sign-in. "
+            + element_line,
             12, MUTED, wrap=True))
         lay.addSpacing(6)
         self.group = QButtonGroup(self)
@@ -2321,11 +2502,13 @@ class BuzzPage(QWidget):
             ("install-buzz", "Install Buzz", "Recommended. Verifies Buzz Desktop, starts its loopback-only relay, then opens Buzz for its native model choice."),
             ("none", "Not now", "Skip Buzz. It remains available from the Local AI menu."),
         ]
+        self.choice_radios = {}
         for key, name, desc in opts:
             card = Card()
             row = QHBoxLayout(card)
             row.setContentsMargins(16, 12, 16, 12)
             rb = QRadioButton()
+            self.choice_radios[key] = rb
             rb.setChecked(key == "install-buzz")
             rb.toggled.connect(lambda checked, k=key: self._set(k) if checked else None)
             self.group.addButton(rb)
@@ -2376,6 +2559,24 @@ class BuzzPage(QWidget):
 
     def _set(self, key):
         self.choice = key
+
+    def apply_profiles(self, profile_keys):
+        """Preseed this page from the chosen profiles — their AI statements are
+        promises, and this is where the promise is kept (still fully editable)."""
+        agents = set()
+        want_buzz = False
+        for key in profile_keys:
+            preset = PROFILE_BY_KEY.get(key)
+            if not preset:
+                continue
+            agents.update(preset.get("agents", []))
+            if preset.get("ai_choice") == "install-buzz":
+                want_buzz = True
+        for key, checkbox in self.coding_agents.items():
+            if key in agents:
+                checkbox.setChecked(True)   # plain setChecked keeps select-all in sync
+        if want_buzz and "install-buzz" in self.choice_radios:
+            self.choice_radios["install-buzz"].setChecked(True)
 
     def _toggle_all_agents(self, checked):
         for checkbox in self.coding_agents.values():
@@ -2821,11 +3022,13 @@ class ShadowfetchWelcome(QMainWindow):
 
         show_badge = not IGNITION_DONE.exists()
         self.welcome = WelcomePage(
-            lambda: self.stack.setCurrentWidget(self.profile),
+            lambda: self.stack.setCurrentWidget(self.element_page),
             on_ignition=(lambda: self.stack.setCurrentWidget(self.flow))
             if show_badge else None,
             on_catalog=lambda: self.stack.setCurrentWidget(self.catalog_page),
             on_guide=open_system_guide)
+        self.element_page = ElementPage(
+            lambda: self.stack.setCurrentWidget(self.profile))
         self.profile = ProfilePage(self._got_profiles)
         self.wifi = WiFiPage(lambda: self.stack.setCurrentWidget(self.graphics))
         self.graphics = GraphicsPage(lambda: self.stack.setCurrentWidget(self.accent))
@@ -2834,7 +3037,7 @@ class ShadowfetchWelcome(QMainWindow):
         self.buzz = BuzzPage(self._got_buzz)
         self.install = InstallPage(self.close)
 
-        for w in (self.flow, self.welcome, self.profile, self.wifi,
+        for w in (self.flow, self.welcome, self.element_page, self.profile, self.wifi,
                   self.graphics, self.accent, self.apps, self.buzz,
                   self.install, self.catalog_page):
             self.stack.addWidget(w)
@@ -2872,6 +3075,7 @@ class ShadowfetchWelcome(QMainWindow):
     def _got_profiles(self, profiles):
         self.profiles = profiles
         self.apps.apply_profiles(profiles)
+        self.buzz.apply_profiles(profiles)
         self.stack.setCurrentWidget(self.wifi)
 
     def _got_accent(self, name, hexc):
