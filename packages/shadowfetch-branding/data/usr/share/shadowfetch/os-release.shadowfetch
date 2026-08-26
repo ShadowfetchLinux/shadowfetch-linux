@@ -1,9 +1,9 @@
 NAME="Shadowfetch Linux"
-PRETTY_NAME="Shadowfetch Linux 3.0.0 Backfire (Umbra)"
+PRETTY_NAME="Shadowfetch Linux 3.1.0 Backfire (Umbra)"
 ID=shadowfetch
 ID_LIKE=debian
-VERSION="3.0.0 Backfire (Umbra)"
-VERSION_ID="3.0.0"
+VERSION="3.1.0 Backfire (Umbra)"
+VERSION_ID="3.1.0"
 VERSION_CODENAME=umbra
 HOME_URL="https://www.shadowfetchlinux.org/"
 SUPPORT_URL="https://www.shadowfetchlinux.org/known-issues"
