@@ -287,10 +287,16 @@
       "phase": "postpublish",
       "area": "publish",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "GitHub, shadowfetchlinux.org and Archive.org expose the approved 3.0.0 release",
-      "evidence": [],
-      "notes": ""
+      "evidence": [
+        {
+          "kind": "report",
+          "path": "publish/pub01.txt",
+          "sha256": "46cb24931f2b8ebfe694bb714bb430f752aaed4ac97dfbc780ce55f7f67137fe"
+        }
+      ],
+      "notes": "GitHub (release v3.0.0, main, README), shadowfetchlinux.org (deployed 3.0.0), and Archive.org (item with checksums, signature, torrent, and the full ISO at public 200) all expose the approved release."
     },
     {
       "id": "PUB-02",
