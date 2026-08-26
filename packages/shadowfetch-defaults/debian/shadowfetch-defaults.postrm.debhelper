@@ -22,7 +22,7 @@ fi
 # Automatically added by dh_installsystemd/13.14.1ubuntu5
 if [ "$1" = "purge" ]; then
 	if [ -x "/usr/bin/deb-systemd-helper" ]; then
-		deb-systemd-helper purge 'flatpak-system-update.timer' 'rfkill-unblock.service' 'shadowfetch-firstboot.service' 'shadowfetch-migrate-2.1.3-ai.service' 'shadowfetch-regdomain.service' >/dev/null || true
+		deb-systemd-helper purge 'flatpak-system-update.timer' 'rfkill-unblock.service' 'shadowfetch-element-boot.service' 'shadowfetch-firstboot.service' 'shadowfetch-migrate-2.1.3-ai.service' 'shadowfetch-regdomain.service' >/dev/null || true
 	fi
 fi
 # End automatically added section

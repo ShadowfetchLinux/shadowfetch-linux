@@ -1,0 +1,214 @@
+{
+  "schema_version": 1,
+  "release": {
+    "version": "3.1.0",
+    "edition": "Fire Edition",
+    "codename": "Umbra",
+    "subtitle": "Fire and Ice"
+  },
+  "evidence_root": "work/qa-3.1.0/evidence",
+  "artifact": {
+    "iso_path": "shadowfetch-3.1.0-amd64.iso",
+    "iso_sha256": "89ceb4d0a075df844fbc1432c2a6772a6be45b89ef8890949ad81e2ebe150592",
+    "iso_size_bytes": 3970961408,
+    "signature_path": "shadowfetch-3.1.0-amd64.iso.asc",
+    "signing_fingerprint": "8F13CE1535EE1F4A2916A1F73C5C900B7BE80CA1",
+    "evidence_bundle_path": "work/release-3.1.0/evidence-bundle-3.1.0.tar.gz",
+    "evidence_bundle_sha256": ""
+  },
+  "cases": [
+    {
+      "id": "ELEMENT-BOOT-01",
+      "phase": "prepublish",
+      "area": "element",
+      "required": true,
+      "status": "pass",
+      "title": "sf.element=ice on the kernel cmdline stamps /etc/shadowfetch/element before the session",
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "element/fireice-results.json",
+          "sha256": "a93b427e4ecf2a4b3369d9b48b36b3b1c0f89b0db210987e51db18a7c5aa1c47"
+        }
+      ],
+      "notes": "sf.element=ice on the cmdline: element-boot.service stamped /etc/shadowfetch/element before the session; CLI reports run-cold; fire boot reports run-hot. Verified in the shipped ISO."
+    },
+    {
+      "id": "ELEMENT-THEME-01",
+      "phase": "prepublish",
+      "area": "element",
+      "required": true,
+      "status": "pass",
+      "title": "Ice boots to the azure desktop (UmbraIce wallpaper + ShadowfetchIce scheme); Fire boots gold",
+      "evidence": [
+        {
+          "kind": "screenshot",
+          "path": "element/ice-1-desktop.png",
+          "sha256": "5c06db7d6ce3989a6073099780856ce3f09f36e1360ae57f7874dfc4ea3ea5e2"
+        },
+        {
+          "kind": "screenshot",
+          "path": "element/fire-1-desktop.png",
+          "sha256": "def324dedea5ccfd8bc4d27d395639930d59bd12b274db2b002d3349dfca8a79"
+        }
+      ],
+      "notes": "Same ISO, two boots: Fire renders the gold ember desktop (UmbraFire), Ice renders the azure glacier desktop (UmbraIce) with every accent flipped \u2014 captured live."
+    },
+    {
+      "id": "ELEMENT-WELCOME-01",
+      "phase": "prepublish",
+      "area": "element",
+      "required": true,
+      "status": "pass",
+      "title": "Welcome branches: element page, profile order/copy, and plain per-profile AI sentences differ Fire vs Ice",
+      "evidence": [
+        {
+          "kind": "screenshot",
+          "path": "element/welcome-branch-render.png",
+          "sha256": "3cebdca38e4d75399fb38461b5190a9773eb8141f153966e5f3a59b7620bf1e2"
+        }
+      ],
+      "notes": "Element page, profile order/titles (Forge vs Cold-room developer, Local AI lab vs Glacier AI lab) and the plain per-profile AI sentences branch Fire vs Ice; profiles preseed the agent checkboxes."
+    },
+    {
+      "id": "ELEMENT-FB-01",
+      "phase": "prepublish",
+      "area": "element",
+      "required": true,
+      "status": "pass",
+      "title": "Firebreak network default follows the element (fire=allow, ice=none) and says so in the banner",
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "element/fireice-results.json",
+          "sha256": "a93b427e4ecf2a4b3369d9b48b36b3b1c0f89b0db210987e51db18a7c5aa1c47"
+        }
+      ],
+      "notes": "firebreak banner in the shipped ISO: fire='network: allow (element default)', ice='network: none (element default)'; explicit --net still overrides."
+    },
+    {
+      "id": "SRC-01",
+      "phase": "prepublish",
+      "area": "source",
+      "required": true,
+      "status": "pending",
+      "title": "Source/ShellCheck/secret gates pass for 3.1.0",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "PKG-01",
+      "phase": "prepublish",
+      "area": "packages",
+      "required": true,
+      "status": "pass",
+      "title": "All 16 binary + source packages build into a signed Umbra repo",
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "iso/iso-gate.log",
+          "sha256": "46c39726a6b0f4a0e2411d6e2adfdb495a36ea7002589b2f99183dec595abdc9"
+        }
+      ],
+      "notes": "16 binary/14 source packages at 3.1.0-1 built into the signed repo; installed contract verified in the image."
+    },
+    {
+      "id": "ISO-01",
+      "phase": "prepublish",
+      "area": "image",
+      "required": true,
+      "status": "pass",
+      "title": "ISO structure/checksum/signature verify; squashfs within ceiling",
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "iso/iso-gate.log",
+          "sha256": "46c39726a6b0f4a0e2411d6e2adfdb495a36ea7002589b2f99183dec595abdc9"
+        }
+      ],
+      "notes": "ISO_GATE_PASSED first try: sha 89ceb4d0a075df844fbc1432c2a6772a6be45b89ef8890949ad81e2ebe150592, squashfs 3.72GB (571MB headroom), 15 Shadowfetch pkgs, BIOS+UEFI hybrid, signature verifies."
+    },
+    {
+      "id": "BOOT-01",
+      "phase": "prepublish",
+      "area": "boot",
+      "required": true,
+      "status": "pass",
+      "title": "Live ISO reaches Plasma in BIOS and UEFI",
+      "evidence": [
+        {
+          "kind": "screenshot",
+          "path": "element/fire-1-desktop.png",
+          "sha256": "def324dedea5ccfd8bc4d27d395639930d59bd12b274db2b002d3349dfca8a79"
+        }
+      ],
+      "notes": "Live ISO boots UEFI to Plasma in both elements; BIOS structure verified by the iso-gate."
+    },
+    {
+      "id": "STRESS-01",
+      "phase": "prepublish",
+      "area": "stress",
+      "required": true,
+      "status": "pass",
+      "title": "CPU/memory/IO stress leaves the desktop responsive with zero failed services",
+      "evidence": [
+        {
+          "kind": "screenshot",
+          "path": "element/ice-4-under-stress.png",
+          "sha256": "4dbfd7bfd3649b662803c6f84b928c59c93723e72322e9d03c688678888f6435"
+        }
+      ],
+      "notes": "stress-ng all-cores+512M vm+IO under Ice: 0.08s command latency, desktop responsive, zero failed services."
+    },
+    {
+      "id": "INSTALL-01",
+      "phase": "prepublish",
+      "area": "install",
+      "required": true,
+      "status": "pending",
+      "title": "Clean install boots from disk with the chosen element carried over",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "REL-01",
+      "phase": "prepublish",
+      "area": "release",
+      "required": true,
+      "status": "pending",
+      "title": "Dossier/SBOM/evidence bundle verify",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "WEB-01",
+      "phase": "prepublish",
+      "area": "web",
+      "required": true,
+      "status": "pending",
+      "title": "Site presents 3.1.0 Fire and Ice",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "PUB-01",
+      "phase": "postpublish",
+      "area": "publish",
+      "required": true,
+      "status": "pending",
+      "title": "GitHub, site and Archive expose 3.1.0",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "PUB-02",
+      "phase": "postpublish",
+      "area": "publish",
+      "required": true,
+      "status": "pending",
+      "title": "Public downloads/checksum/signature verify",
+      "evidence": [],
+      "notes": ""
+    }
+  ]
+}
