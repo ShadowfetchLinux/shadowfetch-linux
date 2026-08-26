@@ -156,10 +156,10 @@
         {
           "kind": "log",
           "path": "iso/iso-gate.log",
-          "sha256": "73411b0ba357e0c921dd1123fa10c3ce981d78052a6267b52895924ca3f102fc"
+          "sha256": "09d6c5e4bb3b6263b5f225a2a117349a4095730166c894d31517fe7dfe909a21"
         }
       ],
-      "notes": "SOURCE_GATE_PASSED: 69 behavior tests, ShellCheck 57 scripts, gitleaks tree+history, desktop validation, retired-runtime scan."
+      "notes": "ISO_GATE_PASSED against ISO 110b0d07 (re-run after adding fireline to the expected package set)."
     },
     {
       "id": "PKG-01",
@@ -172,10 +172,10 @@
         {
           "kind": "log",
           "path": "iso/iso-gate.log",
-          "sha256": "73411b0ba357e0c921dd1123fa10c3ce981d78052a6267b52895924ca3f102fc"
+          "sha256": "09d6c5e4bb3b6263b5f225a2a117349a4095730166c894d31517fe7dfe909a21"
         }
       ],
-      "notes": "16 binary / 14 source packages built into a freshly signed Umbra repo (reprepro allowlist passed); installed package contract verified inside the ISO."
+      "notes": "Installed package contract: 3344 total, 15 exact Shadowfetch packages incl. shadowfetch-fireline, no retired runtime or build-time downloader."
     },
     {
       "id": "ISO-01",
@@ -188,10 +188,10 @@
         {
           "kind": "log",
           "path": "iso/iso-gate.log",
-          "sha256": "73411b0ba357e0c921dd1123fa10c3ce981d78052a6267b52895924ca3f102fc"
+          "sha256": "09d6c5e4bb3b6263b5f225a2a117349a4095730166c894d31517fe7dfe909a21"
         }
       ],
-      "notes": "ISO_GATE_PASSED: sha256 110b0d075e699a05\u2026, size 3967508480B, 3.72GB squashfs (575MB headroom), BIOS+UEFI hybrid, detached sig verifies, 15 exact Shadowfetch packages incl. fireline, no retired runtime/downloader."
+      "notes": "BIOS+UEFI hybrid, detached signature verifies, internal checksums (325 files), squashfs 3.72GB with 575MB headroom."
     },
     {
       "id": "BOOT-01",
@@ -271,10 +271,16 @@
       "phase": "prepublish",
       "area": "web",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "Staged shadowfetchlinux.org pages present 3.0.0 Backfire with fresh screenshots and OG card",
-      "evidence": [],
-      "notes": ""
+      "evidence": [
+        {
+          "kind": "report",
+          "path": "publish/web01.txt",
+          "sha256": "2af6d44e602b3a3c3b51422ef49f0d5250bb4c3b038c525a99a440143221bafa"
+        }
+      ],
+      "notes": "shadowfetchlinux.org deployed at 3.0.0: verify/download/changelog show 3.0.0 + sha 110b0d07; six new final-ISO screenshots incl. the Fireline terminal; Fireline + AI Ignition added to the homepage; 3.0.0 OG card; upgrade note on known-issues. Same layout as prior releases."
     },
     {
       "id": "PUB-01",
@@ -291,10 +297,16 @@
       "phase": "postpublish",
       "area": "publish",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "Fresh public downloads, checksum, signature, metadata verify",
-      "evidence": [],
-      "notes": ""
+      "evidence": [
+        {
+          "kind": "report",
+          "path": "publish/pub02.txt",
+          "sha256": "28ca2f45fb27fe81b333882a9dc863b9b60a56b479ff2466b40cbc9222450809"
+        }
+      ],
+      "notes": "Public ISO 200 at exact size; sha256 sidecar matches; apt 15 pkgs @3.0.0-1; canonical site + GitHub release v3.0.0 live; 2.1.5 kept as rollback."
     }
   ]
 }
