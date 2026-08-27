@@ -18,6 +18,15 @@
 # It wraps bubblewrap with unprivileged user namespaces; no setuid, no root.
 set -uo pipefail
 
+# QEMU guest-agent probes, system services, and other non-login callers are not
+# required to provide HOME. Resolve it once so even read-only commands such as
+# --version and check remain reliable outside an interactive desktop session.
+if [ -z "${HOME:-}" ]; then
+  HOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
+  HOME="${HOME:-/tmp}"
+  export HOME
+fi
+
 VERSION="3.5.0"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/shadowfetch/firebreak"
 WS_ROOT="${SHADOWFETCH_AGENT_WORKSPACES:-$HOME/Workspaces}"

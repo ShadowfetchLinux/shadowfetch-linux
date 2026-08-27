@@ -47,6 +47,26 @@ class Workbench350Tests(unittest.TestCase):
         self.assertEqual(0, proc.returncode, proc.stderr)
         self.assertEqual("ice", proc.stdout.strip())
 
+        proc = subprocess.run(
+            [str(FIREBREAK), "--version"],
+            env={key: value for key, value in os.environ.items() if key != "HOME"},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertEqual(
+            "shadowfetch-firebreak (Shadowfetch Linux) 3.5.0",
+            proc.stdout.strip(),
+        )
+
+    def test_live_build_invalidates_first_party_archive_cache(self):
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("cache/packages.chroot", makefile)
+        self.assertIn("cache/packages.binary", makefile)
+        self.assertIn("-name 'shadowfetch-*.deb'", makefile)
+        self.assertIn("-name 'grub-btrfs_*.deb'", makefile)
+
     def test_four_profiles_have_plain_consequences_and_signed_catalog_records(self):
         data = json.loads(MANIFEST.read_text(encoding="utf-8"))
         self.assertEqual(1, data["schema_version"])

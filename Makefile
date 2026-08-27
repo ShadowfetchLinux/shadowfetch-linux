@@ -233,6 +233,15 @@ iso: repo
 	@cp $(LB_DIR)/config/archives/shadowfetch.key.chroot $(LB_DIR)/config/archives/shadowfetch.key.binary
 # Clean the prior live-build output.
 	@cd $(LB_DIR) && sudo lb clean
+	# live-build caches archives by package name and version. During release QA,
+	# a same-version source correction must not silently reuse an older first-party
+	# .deb payload, so invalidate only Shadowfetch's locally built package cache.
+	@for cache in $(LB_DIR)/cache/packages.chroot $(LB_DIR)/cache/packages.binary; do \
+		if [ -d "$$cache" ]; then \
+			sudo find "$$cache" -maxdepth 1 -type f \
+				\( -name 'shadowfetch-*.deb' -o -name 'grub-btrfs_*.deb' \) -delete ; \
+		fi ; \
+	done
 	@test ! -e $(LB_DIR)/binary/live/filesystem.squashfs || { echo "FATAL: lb clean left a stale squashfs" >&2; exit 1; }
 	@touch $(LB_BUILD_MARKER)
 # Serve the repo to the chroot. The old live-build binary_grub2 stage is not

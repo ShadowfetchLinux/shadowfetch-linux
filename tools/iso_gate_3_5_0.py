@@ -69,6 +69,8 @@ REQUIRED_ROOT_FILES = {
     "usr/bin/add-calamares-desktop-icon",
     "usr/bin/shadowfetch-buzz",
     "usr/bin/shadowfetch-control",
+    "usr/bin/shadowfetch-element",
+    "usr/bin/shadowfetch-firebreak",
     "usr/bin/shadowfetch-passport",
     "usr/bin/shadowfetch-workbench",
     "usr/bin/shadowfetch-welcome",
@@ -108,6 +110,8 @@ REQUIRED_EXECUTABLES = {
     "usr/bin/add-calamares-desktop-icon",
     "usr/bin/shadowfetch-buzz",
     "usr/bin/shadowfetch-control",
+    "usr/bin/shadowfetch-element",
+    "usr/bin/shadowfetch-firebreak",
     "usr/bin/shadowfetch-passport",
     "usr/bin/shadowfetch-workbench",
     "usr/bin/shadowfetch-welcome",
@@ -139,6 +143,22 @@ FORBIDDEN_BUILD_TIME_PACKAGES = frozenset(
         "libdvdcss2-dbgsym",
     }
 )
+
+CRITICAL_PACKAGE_PAYLOADS = {
+    "shadowfetch-defaults": (
+        "usr/bin/shadowfetch-buzz",
+        "usr/bin/shadowfetch-element",
+        "usr/bin/shadowfetch-passport",
+        "usr/bin/shadowfetch-workbench",
+    ),
+    "shadowfetch-fireline": (
+        "usr/bin/shadowfetch-ai-ignition",
+        "usr/bin/shadowfetch-checkpoint",
+        "usr/bin/shadowfetch-firebreak",
+        "usr/bin/shadowfetch-mcp",
+        "usr/lib/shadowfetch/mcp/sf_mcp.py",
+    ),
+}
 
 SECRET_PATH = re.compile(
     r"^(?:root|home/[^/]+)/(?:(?:\.ssh/(?:id_[^/]+|authorized_keys))|"
@@ -627,6 +647,39 @@ def package_gate(squashfs: Path) -> None:
     )
 
 
+def critical_payload_parity_gate(squashfs: Path) -> None:
+    """Reject a live-build cache hit whose version matches but payload is stale."""
+    with tempfile.TemporaryDirectory(prefix="shadowfetch-package-parity-") as temporary:
+        extraction_root = Path(temporary)
+        checked = 0
+        for package, paths in CRITICAL_PACKAGE_PAYLOADS.items():
+            version = EXPECTED_CUSTOM_PACKAGES[package]
+            matches = sorted((ROOT / "build").glob(f"{package}_{version}_*.deb"))
+            if len(matches) != 1:
+                raise RuntimeError(
+                    f"expected one freshly built archive for {package} {version}, found {matches}"
+                )
+            package_root = extraction_root / package
+            subprocess.run(
+                ["dpkg-deb", "--extract", str(matches[0]), str(package_root)],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            for path in paths:
+                packaged = package_root / path
+                if not packaged.is_file():
+                    raise RuntimeError(f"critical package payload is absent: {package}:/{path}")
+                installed = squash_cat(squashfs, path, binary=True)
+                assert isinstance(installed, bytes)
+                if packaged.read_bytes() != installed:
+                    raise RuntimeError(
+                        f"installed payload differs from fresh {package} archive: /{path}"
+                    )
+                checked += 1
+    print(f"PASS: {checked} critical installed helpers match freshly built package payloads")
+
+
 def retired_path(path: str) -> bool:
     lowered = path.lower()
     exact_prefixes = (
@@ -903,6 +956,7 @@ def main() -> int:
         squashfs = internal_manifest_gate(mountpoint)
         inventory, _ = squashfs_inventory(squashfs)
         package_gate(squashfs)
+        critical_payload_parity_gate(squashfs)
         payload_gate(squashfs, inventory)
         identity_and_installer_gate(squashfs, inventory)
     print("\nISO_GATE_PASSED")
