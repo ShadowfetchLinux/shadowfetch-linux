@@ -1,8 +1,8 @@
-# Optional coding agents on Shadowfetch Linux 3.0.0
+# Optional coding agents on Shadowfetch Linux 3.5.0
 
 First-run setup offers four independent, unchecked coding-agent choices:
 
-- OpenAI Codex CLI 0.148.0
+- OpenAI Codex CLI 0.150.1
 - Anthropic Claude Code 2.1.227
 - xAI Grok Build CLI 1.0.5
 - Cursor Agent 2026.08.11-e8db854

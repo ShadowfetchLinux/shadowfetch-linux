@@ -1,7 +1,7 @@
 {
   "schema": "shadowfetch.ai-catalog.v1",
   "note": "Consent-gated first-boot local models. Apache-2.0 / permissive-open only (no Llama-family redistribution risk). VRAM figures are approximate for the listed quantization; CPU-only fallback is always offered.",
-  "engine": "llama.cpp (llama-server) via Buzz; OpenAI-compatible API on loopback",
+  "engine": "Buzz-managed local inference; OpenAI-compatible API on loopback",
   "tiers": [
     { "min_vram_gb": 0,  "class": "cpu",     "models": [
       { "id": "qwen3-1.7b",       "name": "Qwen3 1.7B",        "license": "apache-2.0", "quant": "Q4_K_M", "size_gb": 1.2, "use": "quick chat / autocomplete on any machine, CPU-friendly" } ] },

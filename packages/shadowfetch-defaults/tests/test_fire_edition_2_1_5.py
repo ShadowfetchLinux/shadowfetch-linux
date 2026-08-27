@@ -59,10 +59,12 @@ class FireEdition215Tests(unittest.TestCase):
 
     def test_release_version_and_package_versions_match(self):
         makefile = (ROOT / "Makefile").read_text()
-        self.assertRegex(makefile, r"(?m)^VERSION\s+\?= 3\.0\.0$")
+        match = re.search(r"(?m)^VERSION\s+\?= ([0-9]+\.[0-9]+\.[0-9]+)$", makefile)
+        self.assertIsNotNone(match)
+        version = match.group(1)
         for changelog in (ROOT / "packages").glob("shadowfetch-*/debian/changelog"):
             first = changelog.read_text().splitlines()[0]
-            self.assertIn("(3.0.0-1)", first, changelog)
+            self.assertIn(f"({version}-1)", first, changelog)
 
     def test_canonical_identity_keeps_verified_raw_artifact_routes(self):
         canonical = "https://www.shadowfetchlinux.org"
@@ -274,9 +276,9 @@ class FireEdition215Tests(unittest.TestCase):
             self.assertIn(binary, lock["debian_contract"]["required_binaries"])
 
     def test_codex_upstream_contract_is_locked(self):
-        lock = json.loads((ROOT / "qa/2.1.5/upstream-codex.json").read_text())
+        lock = json.loads((ROOT / "qa/3.5.0/upstream-codex.json").read_text())
         helper = CODEX.read_text()
-        self.assertEqual("0.148.0", lock["release"])
+        self.assertEqual("0.150.1", lock["release"])
         self.assertEqual(
             "https://learn.chatgpt.com/docs/codex/cli", lock["documentation"]
         )

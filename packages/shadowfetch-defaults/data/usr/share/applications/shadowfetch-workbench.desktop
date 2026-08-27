@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Element Workbench
+Comment=Create verified Fire and Ice production workspaces
+Exec=shadowfetch-control --page workbench
+Icon=shadowfetch
+Terminal=false
+Categories=System;
+Keywords=AI;agent;developer;production;workspace;container;
+StartupNotify=true

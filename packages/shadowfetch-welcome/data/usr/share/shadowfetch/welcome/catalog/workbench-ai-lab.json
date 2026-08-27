@@ -1,0 +1,12 @@
+{
+  "id": "workbench-ai-lab",
+  "name": "AI Lab",
+  "kind": "preset",
+  "section": "workbench",
+  "packages": ["git", "python3-venv", "python3-pip", "python3-huggingface-hub", "jupyterlab", "podman", "podman-compose", "distrobox", "vulkan-tools", "nvtop"],
+  "size_bytes": 180000000,
+  "license": "Free software from the signed Debian and Shadowfetch archives",
+  "min_ram_gb": 8,
+  "requires": ["none"],
+  "blurb": "JupyterLab, Hugging Face model tooling, rootless containers and GPU diagnostics. Buzz and every model download remain separate, explicit choices."
+}

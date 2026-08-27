@@ -12,7 +12,8 @@ Depends:
  ${misc:Depends},
  python3,
  python3-pyqt6,
- python3-dbus
+ python3-dbus,
+ shadowfetch-defaults (= ${binary:Version})
 Recommends:
  shadowfetch-ember,
  shadowfetch-firewatchd,
@@ -26,8 +27,8 @@ Recommends:
 Replaces: shadowfetch-defaults (<< 2.1.2-1~)
 Breaks: shadowfetch-defaults (<< 2.1.2-1~)
 Description: Shadowfetch Control Center - Guide and Fire Edition system pages
- The Fire Edition Control Center starts with Shadowfetch Guide, a private
- read-only System Passport, followed by Ignite (Ember Mode), Watch
+ The Fire and Ice Control Center starts with Shadowfetch Guide, a private
+ read-only System Passport, followed by Element Workbench, Ignite (Ember Mode), Watch
  (Firewatch), Recover (Phoenix), Local AI, Drivers, and Software & Updates.
  Supports deep links
  (--page section[:tab]) with single-instance routing over the session

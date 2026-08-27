@@ -1,0 +1,394 @@
+#!/usr/bin/env python3
+"""Plan, verify and create Shadowfetch Element Workbench environments."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+VERSION_FILE = Path("/usr/share/shadowfetch/version")
+DEFAULT_MANIFEST = Path("/usr/share/shadowfetch/workbench/profiles.json")
+DEFAULT_HELPER = Path("/usr/libexec/shadowfetch-bundle-install")
+NAME_RE = re.compile(r"[^a-z0-9._-]+")
+
+
+def manifest_path() -> Path:
+    return Path(os.environ.get("SHADOWFETCH_WORKBENCH_MANIFEST", DEFAULT_MANIFEST))
+
+
+def load_manifest() -> dict:
+    path = manifest_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"Workbench manifest is unavailable or invalid: {path}: {exc}")
+    profiles = data.get("profiles") if isinstance(data, dict) else None
+    if data.get("schema_version") != 1 or not isinstance(profiles, list):
+        raise SystemExit(f"Workbench manifest has an unsupported schema: {path}")
+    ids = set()
+    for profile in profiles:
+        if not isinstance(profile, dict) or not profile.get("id"):
+            raise SystemExit(f"Workbench manifest contains an invalid profile: {path}")
+        if profile["id"] in ids:
+            raise SystemExit(f"Workbench manifest repeats profile {profile['id']}")
+        ids.add(profile["id"])
+    return data
+
+
+def profile_by_id(data: dict, profile_id: str) -> dict:
+    for profile in data["profiles"]:
+        if profile["id"] == profile_id:
+            return profile
+    choices = ", ".join(p["id"] for p in data["profiles"])
+    raise SystemExit(f"Unknown profile '{profile_id}'. Choose: {choices}")
+
+
+def configured_element() -> str:
+    value = os.environ.get("SHADOWFETCH_ELEMENT", "").strip().lower()
+    candidates = (
+        Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+        / "shadowfetch" / "element",
+        Path("/etc/shadowfetch/element"),
+    )
+    for path in candidates:
+        if value:
+            break
+        try:
+            value = path.read_text(encoding="utf-8").strip().lower()
+        except OSError:
+            continue
+    return value if value in {"fire", "ice"} else "fire"
+
+
+def package_record(catalog_id: str) -> dict:
+    catalog_root = Path(os.environ.get(
+        "SHADOWFETCH_WORKBENCH_CATALOG",
+        "/usr/share/shadowfetch/welcome/catalog",
+    ))
+    path = catalog_root / f"{catalog_id}.json"
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"Profile package record is unavailable: {path}: {exc}")
+    packages = record.get("packages") if isinstance(record, dict) else None
+    if record.get("id") != catalog_id or not isinstance(packages, list):
+        raise SystemExit(f"Profile package record is invalid: {path}")
+    return record
+
+
+def installed_packages(packages: list[str]) -> dict[str, bool]:
+    result = {package: False for package in packages}
+    if not packages:
+        return result
+    try:
+        proc = subprocess.run(
+            ["dpkg-query", "-W", "-f", "${Package} ${db:Status-Status}\\n", *packages],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return result
+    for line in proc.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] in result:
+            result[parts[0]] = parts[1] == "installed"
+    return result
+
+
+def plan_for(profile: dict) -> dict:
+    record = package_record(profile["catalog_id"])
+    package_state = installed_packages(record["packages"])
+    command_state = {command: shutil.which(command) is not None
+                     for command in profile.get("commands", [])}
+    element = configured_element()
+    return {
+        "profile": profile["id"],
+        "name": profile["name"],
+        "element": element,
+        "recommended_element": profile["recommended_element"],
+        "element_matches_recommendation": element == profile["recommended_element"],
+        "catalog_id": profile["catalog_id"],
+        "installed_disk_gb": profile["installed_disk_gb"],
+        "network": profile["network"],
+        "accounts": profile["accounts"],
+        "accelerator": profile["accelerator"],
+        "packages": package_state,
+        "commands": command_state,
+        "ready": all(package_state.values()) and all(command_state.values()),
+    }
+
+
+def print_plan(plan: dict) -> None:
+    print(f"{plan['name']} on {plan['element'].title()}")
+    print(f"  Recommended element: {plan['recommended_element'].title()}")
+    print(f"  Installed footprint target: about {plan['installed_disk_gb']} GB before projects/models")
+    print(f"  Network: {plan['network']}")
+    print(f"  Accounts: {plan['accounts']}")
+    print(f"  Accelerator: {plan['accelerator']}")
+    missing_packages = [name for name, ready in plan["packages"].items() if not ready]
+    missing_commands = [name for name, ready in plan["commands"].items() if not ready]
+    print("  Packages: " + ("ready" if not missing_packages else "missing " + ", ".join(missing_packages)))
+    print("  Commands: " + ("ready" if not missing_commands else "missing " + ", ".join(missing_commands)))
+    print("  Status: " + ("READY" if plan["ready"] else "SETUP NEEDED"))
+
+
+def sanitize_name(value: str) -> str:
+    cleaned = NAME_RE.sub("-", value.strip().lower()).strip("-")[:48]
+    if not cleaned or cleaned in {".", ".."}:
+        raise SystemExit("Project name must contain letters or numbers.")
+    return cleaned
+
+
+def workspace_root() -> Path:
+    root = Path(os.environ.get("SHADOWFETCH_WORKBENCH_ROOT", str(Path.home() / "Workspaces")))
+    root = root.expanduser().resolve(strict=False)
+    if root == Path("/"):
+        raise SystemExit("The filesystem root cannot be a Workbench directory.")
+    return root
+
+
+def common_files(profile: dict, display_name: str) -> dict[str, str]:
+    profile_id = profile["id"]
+    element = configured_element()
+    network_default = "none" if element == "ice" else "allow"
+    return {
+        "README.md": (
+            f"# {display_name}\n\n"
+            f"Shadowfetch {profile['name']} workspace.\n\n"
+            "Start with `AGENTS.md`, keep secrets out of the repository, and record "
+            "important outcomes in `JOURNAL.md`.\n"
+        ),
+        "AGENTS.md": (
+            f"# {display_name}\n\n"
+            "## Mission\n\nDescribe the concrete production outcome.\n\n"
+            "## Operating rules\n\n"
+            "- Read this file and TASKS.md before acting.\n"
+            "- Keep edits inside this workspace unless explicitly authorized.\n"
+            "- Never store passwords, tokens, private keys, recovery codes, or real .env files.\n"
+            "- Ask before publishing, purchasing, deleting data, or messaging people.\n"
+            "- Review diffs and run relevant tests before accepting agent output.\n"
+            "- Record commands, evidence, and remaining risks in JOURNAL.md.\n\n"
+            "## Agent launch\n\n"
+            f"This workspace was created in {element.title()} mode. Firebreak's element "
+            f"network default is `{network_default}`. Use `shadowfetch-firebreak -- <command>` "
+            "for project-only write access and an explicit session banner.\n"
+        ),
+        "TASKS.md": "# Tasks\n\n## Active\n\n- [ ] Define the first verified outcome.\n\n## Waiting\n\n## Complete\n",
+        "JOURNAL.md": "# Work Journal\n\nRecord dated work summaries, checks, receipts, and open risks.\n",
+        ".env.example": "# Variable names only. Never put real credentials here.\n",
+        ".gitignore": ".env\n*.key\n*.pem\n*.p12\n*.p8\n.cache/\nlogs/\nscratch/\nmodels/\noutput/\n",
+        ".shadowfetch/workbench.json": json.dumps({
+            "schema_version": 1,
+            "profile": profile_id,
+            "element": element,
+            "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "network_default": network_default,
+        }, indent=2) + "\n",
+    }
+
+
+def profile_files(profile_id: str) -> dict[str, str]:
+    if profile_id == "software-studio":
+        return {
+            ".devcontainer/devcontainer.json": json.dumps({
+                "name": "Shadowfetch Software Studio",
+                "image": "mcr.microsoft.com/devcontainers/base:debian",
+                "remoteUser": "vscode",
+            }, indent=2) + "\n",
+            "compose.yaml": "services:\n  app:\n    build: .\n    command: sleep infinity\n    volumes:\n      - .:/workspace:Z\n",
+            "docs/decisions/README.md": "# Architecture decisions\n\nCapture consequential choices and their tradeoffs.\n",
+            "tests/README.md": "# Tests\n\nAdd the smallest repeatable checks that prove behavior.\n",
+        }
+    if profile_id == "ai-lab":
+        return {
+            "pyproject.toml": "[project]\nname = \"shadowfetch-ai-lab\"\nversion = \"0.1.0\"\nrequires-python = \">=3.11\"\ndependencies = []\n",
+            "models/MANIFEST.md": "# Model inventory\n\nRecord repository, immutable revision, license, files, checksums, size and intended use before download.\n",
+            "data/README.md": "# Data\n\nKeep raw and processed data separate. Record source, consent, license and transformations.\n",
+            "notebooks/README.md": "# Notebooks\n\nMove reusable logic into src/ and keep notebook outputs reviewable.\n",
+            "src/.keep": "",
+        }
+    if profile_id == "production-ops":
+        return {
+            "ansible/inventory/hosts.yml": "all:\n  hosts: {}\n",
+            "ansible/playbook.yml": "---\n- name: Verified production change\n  hosts: all\n  gather_facts: true\n  tasks: []\n",
+            "containers/Containerfile": "FROM docker.io/library/debian:stable-slim\nWORKDIR /app\nUSER 65532:65532\n",
+            "runbooks/README.md": "# Runbooks\n\nState owner, preflight, exact change, verification, rollback and evidence.\n",
+            "receipts/README.md": "# Deployment receipts\n\nStore non-secret hashes, versions, test output and approval references.\n",
+        }
+    if profile_id == "creative-ai":
+        return {
+            "assets/README.md": "# Assets\n\nKeep source material in input/, renders in output/, and editable work in projects/.\n",
+            "provenance.csv": "asset,source,creator,license,consent,model,model_revision,prompt,created_at\n",
+            "models/MANIFEST.md": "# Model inventory\n\nRecord source, immutable revision, license, checksum and intended use.\n",
+            "workflows/README.md": "# Workflows\n\nDocument repeatable render settings and required plugins.\n",
+        }
+    raise SystemExit(f"No project template exists for profile {profile_id}")
+
+
+def create_workspace(profile: dict, display_name: str) -> Path:
+    if os.geteuid() == 0:
+        raise SystemExit("Create Workbench projects as the desktop user, not root.")
+    root = workspace_root()
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    slug = sanitize_name(display_name)
+    target = root / slug
+    if target.exists() or target.is_symlink():
+        raise SystemExit(f"Workspace already exists: {target}")
+    stage = Path(tempfile.mkdtemp(prefix=f".{slug}.", dir=root))
+    try:
+        files = common_files(profile, display_name)
+        files.update(profile_files(profile["id"]))
+        for relative, content in files.items():
+            destination = stage / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(content, encoding="utf-8")
+        for directory in ("logs", "scratch", "artifacts"):
+            (stage / directory).mkdir(exist_ok=True)
+        os.replace(stage, target)
+    except Exception:
+        shutil.rmtree(stage, ignore_errors=True)
+        raise
+    return target
+
+
+def command_list(args: argparse.Namespace) -> int:
+    data = load_manifest()
+    rows = [{
+        "id": profile["id"],
+        "name": profile["name"],
+        "tagline": profile["tagline"],
+        "recommended_element": profile["recommended_element"],
+    } for profile in data["profiles"]]
+    if args.json:
+        print(json.dumps(rows, indent=2))
+    else:
+        element = configured_element()
+        print(f"Shadowfetch Element Workbench ({element.title()})")
+        for row in rows:
+            marker = "recommended" if row["recommended_element"] == element else "available"
+            print(f"  {row['id']:<20} {row['name']:<18} {marker}")
+            print(f"    {row['tagline']}")
+    return 0
+
+
+def command_plan(args: argparse.Namespace) -> int:
+    profile = profile_by_id(load_manifest(), args.profile)
+    plan = plan_for(profile)
+    if args.json:
+        print(json.dumps(plan, indent=2))
+    else:
+        print_plan(plan)
+    return 0
+
+
+def command_doctor(args: argparse.Namespace) -> int:
+    data = load_manifest()
+    profiles = ([profile_by_id(data, args.profile)] if args.profile else data["profiles"])
+    plans = [plan_for(profile) for profile in profiles]
+    if args.json:
+        print(json.dumps({"ready": all(p["ready"] for p in plans), "profiles": plans}, indent=2))
+    else:
+        for index, plan in enumerate(plans):
+            if index:
+                print()
+            print_plan(plan)
+    return 0 if all(plan["ready"] for plan in plans) else 1
+
+
+def command_install(args: argparse.Namespace) -> int:
+    profile = profile_by_id(load_manifest(), args.profile)
+    plan = plan_for(profile)
+    print_plan(plan)
+    if plan["ready"]:
+        return 0
+    if not args.yes:
+        answer = input("Install the missing profile packages with a Phoenix Point? [y/N] ")
+        if answer.strip().lower() not in {"y", "yes"}:
+            print("Nothing changed.")
+            return 0
+    helper = Path(os.environ.get("SHADOWFETCH_WORKBENCH_HELPER", DEFAULT_HELPER))
+    if not helper.is_file() or not os.access(helper, os.X_OK):
+        raise SystemExit(f"The protected bundle installer is unavailable: {helper}")
+    return subprocess.run(["pkexec", str(helper), "install", profile["catalog_id"]], check=False).returncode
+
+
+def command_create(args: argparse.Namespace) -> int:
+    profile = profile_by_id(load_manifest(), args.profile)
+    target = create_workspace(profile, args.name)
+    print(f"Created {profile['name']} workspace: {target}")
+    print(f"Open it with: shadowfetch-workbench open {target.name}")
+    return 0
+
+
+def command_open(args: argparse.Namespace) -> int:
+    target = workspace_root() / sanitize_name(args.name)
+    if not target.is_dir():
+        raise SystemExit(f"Workspace not found: {target}")
+    if shutil.which("dolphin"):
+        subprocess.Popen(["dolphin", str(target)], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    else:
+        print(target)
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="shadowfetch-workbench",
+        description="Plan, verify and create Fire and Ice production workspaces.",
+    )
+    parser.add_argument("--version", action="store_true", help="show version and exit")
+    sub = parser.add_subparsers(dest="command")
+    list_parser = sub.add_parser("list", help="list the four workload profiles")
+    list_parser.add_argument("--json", action="store_true")
+    plan_parser = sub.add_parser("plan", help="show consequences and missing tools")
+    plan_parser.add_argument("profile")
+    plan_parser.add_argument("--json", action="store_true")
+    doctor_parser = sub.add_parser("doctor", help="verify one profile or the whole Workbench")
+    doctor_parser.add_argument("profile", nargs="?")
+    doctor_parser.add_argument("--json", action="store_true")
+    install_parser = sub.add_parser("install", help="install one profile after an explicit plan")
+    install_parser.add_argument("profile")
+    install_parser.add_argument("--yes", action="store_true")
+    create_parser = sub.add_parser("create", help="create a production-ready project workspace")
+    create_parser.add_argument("profile")
+    create_parser.add_argument("name")
+    open_parser = sub.add_parser("open", help="open an existing Workbench project")
+    open_parser.add_argument("name")
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    if args.version:
+        version = VERSION_FILE.read_text(encoding="utf-8").strip() if VERSION_FILE.is_file() else "unknown"
+        print(f"shadowfetch-workbench (Shadowfetch Linux {version})")
+        return 0
+    handlers = {
+        "list": command_list,
+        "plan": command_plan,
+        "doctor": command_doctor,
+        "install": command_install,
+        "create": command_create,
+        "open": command_open,
+    }
+    if args.command is None:
+        parser.print_help()
+        return 0
+    return handlers[args.command](args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

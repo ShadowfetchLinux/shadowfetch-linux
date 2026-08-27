@@ -2,7 +2,7 @@
 # Verified, user-owned installer and launcher for the official OpenAI Codex CLI.
 set -euo pipefail
 
-CODEX_VERSION="0.148.0"
+CODEX_VERSION="0.150.1"
 INSTALLER_URL="https://chatgpt.com/codex/install.sh"
 INSTALLER_SHA256="ba92dd27e5c06f0d3bbc58bfa4b9cfb6599cd2742fbb1f92a2765e6c07dedb5a"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/shadowfetch/codex"
@@ -57,7 +57,7 @@ preflight() {
     local available command
     require_user
     [[ $(uname -m) == "x86_64" ]] || {
-        warn "Shadowfetch Fire Edition 3.0.0 supports x86_64 systems only."
+        warn "This Shadowfetch release supports x86_64 systems only."
         return 1
     }
     for command in curl sha256sum sh flock; do
@@ -194,7 +194,7 @@ cmd_doctor() {
         return 1
     }
     "$installed" --version | grep -Fq "$CODEX_VERSION" || {
-        warn "Codex CLI is installed, but it is not the 3.0.0 release pin."
+        warn "Codex CLI is installed, but it does not match this release pin."
         return 1
     }
     ok "Codex CLI $CODEX_VERSION passed the local installation check."

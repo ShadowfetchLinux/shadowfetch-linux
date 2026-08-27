@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "product": "Shadowfetch Element Workbench",
+  "profiles": [
+    {
+      "id": "software-studio",
+      "name": "Software Studio",
+      "tagline": "A repeatable Python, TypeScript, container and database workstation.",
+      "recommended_element": "fire",
+      "catalog_id": "workbench-software-studio",
+      "installed_disk_gb": 2,
+      "network": "Needed only to install packages, fetch dependencies and use cloud agents.",
+      "accounts": "No account for the base tools. Optional coding agents use their own sign-in.",
+      "accelerator": "No GPU required.",
+      "commands": ["git", "python3", "node", "npm", "podman", "distrobox", "psql"],
+      "capabilities": ["Git and build tools", "Python environments", "Node.js and npm", "Rootless OCI containers", "PostgreSQL and SQLite clients", "Dev Container project metadata"]
+    },
+    {
+      "id": "ai-lab",
+      "name": "AI Lab",
+      "tagline": "Local model collaboration, notebooks, model provenance and GPU checks.",
+      "recommended_element": "ice",
+      "catalog_id": "workbench-ai-lab",
+      "installed_disk_gb": 3,
+      "network": "Needed to install tools and download a model. Ice keeps agent sessions offline by default.",
+      "accounts": "Base tools need no account. Gated Hugging Face models may require the user's own token.",
+      "accelerator": "CPU works; Vulkan, NVIDIA CUDA or AMD ROCm can accelerate supported workloads.",
+      "commands": ["python3", "hf", "jupyter-lab", "podman", "vulkaninfo", "nvtop"],
+      "capabilities": ["Buzz local model workspace", "Hugging Face CLI", "JupyterLab", "Model revision and license manifest", "Vulkan and GPU diagnostics", "Isolated Python environments"]
+    },
+    {
+      "id": "production-ops",
+      "name": "Production Ops",
+      "tagline": "Rootless image builds, automation, runbooks and observable delivery.",
+      "recommended_element": "fire",
+      "catalog_id": "workbench-production-ops",
+      "installed_disk_gb": 2,
+      "network": "Needed for registries and remote systems. Credentials remain in each tool's native store.",
+      "accounts": "No account for local work; registries and providers use their own authentication.",
+      "accelerator": "No GPU required.",
+      "commands": ["podman", "buildah", "skopeo", "ansible", "git", "redis-cli"],
+      "capabilities": ["Rootless Podman", "Buildah and Skopeo", "Ansible Core", "Redis diagnostics", "Runbook templates", "Deployment receipts"]
+    },
+    {
+      "id": "creative-ai",
+      "name": "Creative AI",
+      "tagline": "A provenance-ready image, video, audio and generative workflow.",
+      "recommended_element": "fire",
+      "catalog_id": "workbench-creative-ai",
+      "installed_disk_gb": 6,
+      "network": "Needed to install applications and any optional models. Creation works offline afterward where tools allow.",
+      "accounts": "No account for the base creative applications.",
+      "accelerator": "A supported GPU is recommended for 3D and generative workloads.",
+      "commands": ["krita", "freecad", "openscad", "kdenlive", "obs", "ffmpeg", "darktable"],
+      "capabilities": ["Krita, FreeCAD and OpenSCAD", "Kdenlive and FFmpeg", "OBS Studio", "Darktable and RawTherapee", "Asset provenance ledger", "Model and license inventory"]
+    }
+  ]
+}

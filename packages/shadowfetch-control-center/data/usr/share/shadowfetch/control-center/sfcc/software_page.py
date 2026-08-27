@@ -229,7 +229,8 @@ class SoftwarePage(QWidget):
             card.setParent(None)
             card.deleteLater()
         self._bundle_cards = []
-        records = busutil.load_catalog(kinds=("preset",))
+        records = [record for record in busutil.load_catalog(kinds=("preset",))
+                   if record.get("section") != "workbench"]
         if not records:
             self._bundle_note.setText(
                 "No bundle catalog is installed. Bundles are curated "

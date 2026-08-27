@@ -1,0 +1,141 @@
+{
+  "schema_version": 1,
+  "release": {
+    "version": "3.5.0",
+    "edition": "Fire and Ice",
+    "codename": "Umbra",
+    "subtitle": "Element Workbench"
+  },
+  "evidence_root": "work/qa-3.5.0/evidence",
+  "artifact": {
+    "iso_path": "shadowfetch-3.5.0-amd64.iso",
+    "iso_sha256": "",
+    "iso_size_bytes": 0,
+    "signature_path": "shadowfetch-3.5.0-amd64.iso.asc",
+    "signing_fingerprint": "8F13CE1535EE1F4A2916A1F73C5C900B7BE80CA1",
+    "evidence_bundle_path": "work/release-3.5.0/evidence-bundle-3.5.0.tar.gz",
+    "evidence_bundle_sha256": ""
+  },
+  "cases": [
+    {
+      "id": "SRC-01",
+      "phase": "prepublish",
+      "area": "source",
+      "required": true,
+      "status": "pending",
+      "title": "Source, parser, ShellCheck, desktop, secret and retired-runtime gates pass",
+      "evidence": [],
+      "notes": "Must be rerun from the exact release commit."
+    },
+    {
+      "id": "PKG-01",
+      "phase": "prepublish",
+      "area": "packages",
+      "required": true,
+      "status": "pending",
+      "title": "Exact signed 3.5.0 binary and source package allowlists pass",
+      "evidence": [],
+      "notes": "Includes Fireline and every Element Workbench payload."
+    },
+    {
+      "id": "ISO-01",
+      "phase": "prepublish",
+      "area": "artifact",
+      "required": true,
+      "status": "pending",
+      "title": "Fresh signed hybrid ISO passes the installed-image gate",
+      "evidence": [],
+      "notes": "No model weights, credentials or retired runtimes may be present."
+    },
+    {
+      "id": "WB-01",
+      "phase": "prepublish",
+      "area": "workbench",
+      "required": true,
+      "status": "pending",
+      "title": "All four Workbench plans and project templates work as an unprivileged user",
+      "evidence": [],
+      "notes": "Software Studio, AI Lab, Production Ops and Creative AI."
+    },
+    {
+      "id": "FIRE-01",
+      "phase": "prepublish",
+      "area": "vm",
+      "required": true,
+      "status": "pending",
+      "title": "Fire live VM boots, renders Workbench and reports the connected agent posture",
+      "evidence": [],
+      "notes": "Capture desktop, Welcome, Workbench and Firebreak banner."
+    },
+    {
+      "id": "ICE-01",
+      "phase": "prepublish",
+      "area": "vm",
+      "required": true,
+      "status": "pending",
+      "title": "Ice live VM boots, renders Workbench and defaults Firebreak to no network",
+      "evidence": [],
+      "notes": "Capture desktop, Welcome, Workbench and Firebreak banner."
+    },
+    {
+      "id": "INSTALL-01",
+      "phase": "prepublish",
+      "area": "installer",
+      "required": true,
+      "status": "pending",
+      "title": "Calamares clean install boots from disk with the selected element",
+      "evidence": [],
+      "notes": "Package database and Shadowfetch services must be clean after reboot."
+    },
+    {
+      "id": "STRESS-01",
+      "phase": "prepublish",
+      "area": "stress",
+      "required": true,
+      "status": "pending",
+      "title": "Concurrent CPU, memory, storage, container and UI load runs for at least 45 minutes",
+      "evidence": [],
+      "notes": "No kernel fault, failed Shadowfetch unit, package corruption or UI freeze."
+    },
+    {
+      "id": "RECOVERY-01",
+      "phase": "prepublish",
+      "area": "recovery",
+      "required": true,
+      "status": "pending",
+      "title": "Cancelled and failed profile installs remain visible and recoverable",
+      "evidence": [],
+      "notes": "Exercise no-mutation cancellation plus Phoenix/checkpoint paths."
+    },
+    {
+      "id": "VISUAL-01",
+      "phase": "prepublish",
+      "area": "visual",
+      "required": true,
+      "status": "pending",
+      "title": "Fire and Ice screenshots pass 1366x768 and 1920x1080 visual QA",
+      "evidence": [],
+      "notes": "No clipped text, overlap, blank rendering or misleading installed state."
+    },
+    {
+      "id": "EVIDENCE-01",
+      "phase": "prepublish",
+      "area": "release",
+      "required": true,
+      "status": "pending",
+      "title": "Dossier, SBOM, manifests, checksums, signature and evidence bundle verify",
+      "evidence": [],
+      "notes": "Evidence is bound to the exact ISO hash and release commit."
+    },
+    {
+      "id": "PUB-01",
+      "phase": "postpublish",
+      "area": "publication",
+      "required": true,
+      "status": "pending",
+      "title": "Website, GitHub and artifact endpoints expose the same signed 3.5.0 release",
+      "evidence": [],
+      "notes": "Not authorized by the build request; requires a separate release decision."
+    }
+  ]
+}

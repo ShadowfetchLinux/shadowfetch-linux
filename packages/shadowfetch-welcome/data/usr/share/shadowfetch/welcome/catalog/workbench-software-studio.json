@@ -1,0 +1,12 @@
+{
+  "id": "workbench-software-studio",
+  "name": "Software Studio",
+  "kind": "preset",
+  "section": "workbench",
+  "packages": ["git", "build-essential", "python3-venv", "python3-pip", "nodejs", "npm", "podman", "podman-compose", "podman-docker", "distrobox", "sqlitebrowser", "postgresql-client", "pgcli"],
+  "size_bytes": 90000000,
+  "license": "Free software from the signed Debian and Shadowfetch archives",
+  "min_ram_gb": 4,
+  "requires": ["none"],
+  "blurb": "Repeatable Python and TypeScript development, rootless containers, database clients and Dev Container-ready project templates."
+}

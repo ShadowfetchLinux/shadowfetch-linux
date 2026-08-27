@@ -1,9 +1,14 @@
 import sys, os, shutil
-sys.path.insert(0, "/home/rtx5060ti/projects/shadowfetch-3.0.0/packages/shadowfetch-fireline/data/usr/lib/shadowfetch/mcp")
-import sf_mcp
 from pathlib import Path
 
+FL = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(FL / "data/usr/lib/shadowfetch/mcp"))
+import sf_mcp
+
+failures = 0
+
 def scenario(root, do_diff):
+    global failures
     os.environ["SHADOWFETCH_AGENT_WORKSPACES"] = root
     r = Path(root)
     shutil.rmtree(r, ignore_errors=True)
@@ -24,6 +29,8 @@ def scenario(root, do_diff):
     added = (ws / "src/added.py").exists()
     ok = (app == "original" and readme and not added)
     print(f"  [{'diff' if do_diff else 'nodiff'}] app={app!r} README={readme} added={added} -> {'PASS' if ok else 'FAIL'}")
+    failures += not ok
 
 scenario("/tmp/sf-a", False)
 scenario("/tmp/sf-b", True)
+sys.exit(1 if failures else 0)

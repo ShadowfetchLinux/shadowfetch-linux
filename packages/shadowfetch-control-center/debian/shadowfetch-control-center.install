@@ -12,6 +12,7 @@ data/usr/share/shadowfetch/control-center/sfcc/phoenix_page.py usr/share/shadowf
 data/usr/share/shadowfetch/control-center/sfcc/agents_page.py usr/share/shadowfetch/control-center/sfcc/
 data/usr/share/shadowfetch/control-center/sfcc/drivers_page.py usr/share/shadowfetch/control-center/sfcc/
 data/usr/share/shadowfetch/control-center/sfcc/software_page.py usr/share/shadowfetch/control-center/sfcc/
+data/usr/share/shadowfetch/control-center/sfcc/workbench_page.py usr/share/shadowfetch/control-center/sfcc/
 data/usr/share/shadowfetch/ember/profiles/gaming.conf usr/share/shadowfetch/ember/profiles/
 data/usr/share/shadowfetch/ember/profiles/local-ai.conf usr/share/shadowfetch/ember/profiles/
 data/usr/share/applications/shadowfetch-control.desktop usr/share/applications/

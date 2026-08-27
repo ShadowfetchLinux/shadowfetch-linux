@@ -1,3 +1,12 @@
+> **3.5.0 "Umbra" flagship release candidate is under validation.** It keeps the
+> Fire and Ice desktop and adds **Element Workbench**: four honest, installable
+> production profiles for software, AI, operations and creative work. Packages,
+> local models and coding agents remain explicit choices; the release will not
+> replace the current stable download until its signed ISO passes source,
+> package, BIOS, UEFI, install, 45-minute stress, recovery and visual gates.
+> See [`RELEASE-3.5.0.md`](RELEASE-3.5.0.md) and
+> [`docs/RESEARCH-3.5.0.md`](docs/RESEARCH-3.5.0.md).
+
 ![Shadowfetch Linux 3.0.0 «Umbra» Backfire — Pick your flame](https://www.shadowfetchlinux.org/linux-assets/linux-3.0.0-welcome.webp)
 ![The Fireline — run coding agents full-auto, safely](https://www.shadowfetchlinux.org/linux-assets/linux-3.0.0-fireline.webp)
 
@@ -44,6 +53,7 @@ Shadowfetch Linux is young and honest about its rough edges. If you want a borin
 
 | Feature | What it does |
 | --- | --- |
+| **Element Workbench (release candidate in 3.5)** | Four consequence-aware profiles: Software Studio, AI Lab, Production Ops and Creative AI. Each shows disk, network, account and accelerator needs, installs from the signed snapshot through the protected bundle helper, and creates a private project with agent rules, provenance and receipts. |
 | **Fireline — run agents safely (new in 3.0)** | `shadowfetch-firebreak` runs any coding agent (Claude Code, Codex CLI, Cursor, Grok Build, Aider) full-auto inside bubblewrap: the system is **read-only**, only your `~/Workspaces` project is writable, the network can be cut with `--net none`, and API-key variables are stripped from the agent environment. A checkpoint is taken first — undo everything with `shadowfetch-checkpoint undo`. |
 | **Shadowfetch MCP + AI Ignition (new in 3.0)** | Four signed, dependency-free MCP servers (passport, phoenix, checkpoint, fs) give agents safe tools. `shadowfetch-ai-ignition` reads your VRAM and recommends an Apache-2.0 model that actually fits. |
 | **Shadowfetch Control Center** | One PyQt/Kirigami app for updates, health checks, first-run setup, graphics, recovery, snapshots and local-AI tooling. |
@@ -172,7 +182,7 @@ make qemu       # boot the freshly built ISO in QEMU to smoke-test it
 
 Useful targets: `make source-gate` (tests, parsers, linters, secret scans), `make iso-gate` (post-build ISO inventory checks), `make sign` (detached GPG signature), `make qemu`.
 
-Version is controlled by the Makefile: `VERSION ?= 3.0.0` and `CODENAME ?= umbra`.
+Version is controlled by the Makefile: `VERSION ?= 3.5.0` and `CODENAME ?= umbra`.
 Override it on the command line only when deliberately testing another release.
 
 > **Signing/publishing** (ISO signature, APT repo signature, R2/Worker deploy) requires the Shadowfetch private signing key and Cloudflare/R2 credentials, which are **not** in this repo — they live in the maintainer's build-host keyring and in CI secrets. See `.github/CI-SECRETS.md` for the CI secret names. Contributors can build and QEMU-test an unsigned ISO without any of that.

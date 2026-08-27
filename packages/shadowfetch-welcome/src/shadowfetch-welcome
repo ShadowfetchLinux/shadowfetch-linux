@@ -162,7 +162,7 @@ CODING_AGENTS = (
         "helper_tool": None,
         "install_title": "Installing Codex CLI...",
         "checking": "Checking the OpenAI release pin and installer...",
-        "receipt": "Codex CLI 0.148.0 passed its pinned installer and version checks.",
+        "receipt": "Codex CLI 0.150.1 passed its pinned installer and version checks.",
     },
     {
         "key": "claude",
@@ -247,6 +247,18 @@ def open_system_guide():
         except OSError:
             pass
     return False
+
+
+def open_workbench():
+    """Open the flagship production workspace surface."""
+    control = shutil.which("shadowfetch-control")
+    if not control:
+        return False
+    try:
+        subprocess.Popen([control, "--page", "workbench"])
+        return True
+    except OSError:
+        return False
 
 CONFIG_DIR = Path.home() / ".config" / "shadowfetch"
 CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -1724,8 +1736,8 @@ class CatalogPage(QWidget):
 
         by_section = {key: [] for key, _ in CATALOG_SECTIONS}
         for cid, rec in sorted(self.catalog.items()):
-            if cid.startswith("ignition-"):
-                continue  # the Ignition page owns those
+            if cid.startswith("ignition-") or rec.get("section") == "workbench":
+                continue  # Ignition and Workbench own their profile records
             by_section.setdefault(catalog_section_of(rec), []).append(rec)
 
         for key, title in CATALOG_SECTIONS:
@@ -1868,7 +1880,7 @@ class CatalogPage(QWidget):
 # ---- pages ---------------------------------------------------------------
 class WelcomePage(QWidget):
     def __init__(self, on_next, on_ignition=None, on_catalog=None,
-                 on_guide=None):
+                 on_guide=None, on_workbench=None):
         super().__init__()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(56, 56, 56, 48)
@@ -1886,13 +1898,15 @@ class WelcomePage(QWidget):
             version = version_file.read_text().strip()
         element_name = "Ice" if ELEMENT == "ice" else "Fire"
         edition = f"{element_name} Edition {version}" if version else f"{element_name} Edition"
-        tag = _label(f"{edition}  |  Umbra", 15, GOLD, bold=True)
+        tag = _label(f"{edition}  |  Fire and Ice Workbench", 15, GOLD, bold=True)
         body = _label(
             "A fast, private, AI-ready desktop - honestly built on Debian and "
             "KDE Plasma 6.\nOn the default Btrfs install every update is snapshotted, "
             "so you can roll back a bad change with the built-in Btrfs Assistant.\n"
             "Shadowfetch Guide checks what works without uploading your computer's "
-            "identity. Then pick a setup profile and optionally install Buzz or one "
+            "identity. Element Workbench creates production-ready software, AI, "
+            "operations and creative projects with explicit safety boundaries. Then "
+            "pick an app profile and optionally install Buzz or one "
             "or more coding agents. Buzz ranks and downloads an open model from its "
             "Compute settings.",
             13, MUTED, wrap=True,
@@ -1919,6 +1933,12 @@ class WelcomePage(QWidget):
             guide.setToolTip("Open the private, read-only Shadowfetch System Passport")
             guide.clicked.connect(on_guide)
             links.addWidget(guide)
+        if on_workbench is not None:
+            workbench = QPushButton("Open Element Workbench")
+            workbench.setFixedHeight(38)
+            workbench.setToolTip("Plan tools and create a production workspace")
+            workbench.clicked.connect(on_workbench)
+            links.addWidget(workbench)
         if on_ignition is not None:
             badge = QPushButton("Ignition - pick your flame  →")
             badge.setFixedHeight(38)
@@ -2027,7 +2047,7 @@ class ProfilePage(QWidget):
         lay.setContentsMargins(48, 40, 48, 32)
         lay.setSpacing(12)
 
-        lay.addWidget(_label("Choose a setup profile", 22, TEXT, bold=True))
+        lay.addWidget(_label("Choose an app profile", 22, TEXT, bold=True))
         element_line = (
             "You are in the Ice element: run cold — agent sandboxes start with no "
             "network, and the calm profiles lead."
@@ -3026,7 +3046,8 @@ class ShadowfetchWelcome(QMainWindow):
             on_ignition=(lambda: self.stack.setCurrentWidget(self.flow))
             if show_badge else None,
             on_catalog=lambda: self.stack.setCurrentWidget(self.catalog_page),
-            on_guide=open_system_guide)
+            on_guide=open_system_guide,
+            on_workbench=open_workbench)
         self.element_page = ElementPage(
             lambda: self.stack.setCurrentWidget(self.profile))
         self.profile = ProfilePage(self._got_profiles)

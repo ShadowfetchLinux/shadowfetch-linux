@@ -3,7 +3,7 @@ componentName:   debian
 welcomeStyleCalamares: true
 welcomeExpandingLogo: false
 windowExpanding: normal
-windowSize: 800px,580px
+windowSize: 920px,640px
 windowPlacement: center
 
 strings:
@@ -31,9 +31,9 @@ images:
 slideshow:               "show.qml"
 
 style:
-   SidebarBackground:    "#26475b"
+   SidebarBackground:    "#101216"
    SidebarText:          "#FFFFFF"
    SidebarTextCurrent:   "#fbfbfb"
-   SidebarBackgroundCurrent: "#265370"
+   SidebarBackgroundCurrent: "#8A5417"
 
 slideshowAPI: 2

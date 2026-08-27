@@ -1,6 +1,8 @@
 import subprocess, json, os, shutil, sys
 from pathlib import Path
-MCP = ["python3", "/home/rtx5060ti/projects/shadowfetch-3.0.0/packages/shadowfetch-fireline/data/usr/lib/shadowfetch/mcp/sf_mcp.py"]
+
+FL = Path(__file__).resolve().parents[1]
+MCP = ["python3", str(FL / "data/usr/lib/shadowfetch/mcp/sf_mcp.py")]
 
 def session(server, calls, env=None):
     e = dict(os.environ); e.update(env or {})

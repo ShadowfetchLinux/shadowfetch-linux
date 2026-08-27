@@ -1,3 +1,10 @@
+shadowfetch-phoenix (3.5.0-1) umbra; urgency=medium
+
+  * Shadowfetch Linux 3.5.0 flagship Fire and Ice Workbench release.
+  * Rebuild against the exact 3.5.0 signed repository contract.
+
+ -- Shadowfetch Project <shadowfetchlinux@gmail.com>  Thu, 27 Aug 2026 15:00:00 -0400
+
 shadowfetch-phoenix (3.1.0-1) umbra; urgency=medium
 
   * Fire and Ice (3.1): dual element theming and element-aware defaults.

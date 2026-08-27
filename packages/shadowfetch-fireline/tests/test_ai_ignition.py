@@ -1,7 +1,9 @@
 import subprocess, os, re, sys, json
-FL = "/home/rtx5060ti/projects/shadowfetch-3.0.0/packages/shadowfetch-fireline"
-AI = FL + "/data/usr/bin/shadowfetch-ai-ignition"
-CAT = FL + "/data/usr/share/shadowfetch/ai-ignition/models.json"
+from pathlib import Path
+
+FL = Path(__file__).resolve().parents[1]
+AI = str(FL / "data/usr/bin/shadowfetch-ai-ignition")
+CAT = str(FL / "data/usr/share/shadowfetch/ai-ignition/models.json")
 os.environ["SHADOWFETCH_AI_CATALOG"] = CAT
 catalog = json.load(open(CAT))
 byid = {m["id"]: m for t in catalog["tiers"] for m in t["models"]}

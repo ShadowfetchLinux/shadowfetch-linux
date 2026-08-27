@@ -1,0 +1,12 @@
+{
+  "id": "workbench-production-ops",
+  "name": "Production Ops",
+  "kind": "preset",
+  "section": "workbench",
+  "packages": ["git", "podman", "podman-compose", "podman-docker", "buildah", "skopeo", "ansible-core", "redis-tools", "jq", "shellcheck"],
+  "size_bytes": 125000000,
+  "license": "Free software from the signed Debian and Shadowfetch archives",
+  "min_ram_gb": 4,
+  "requires": ["none"],
+  "blurb": "Rootless image builds, registry inspection, Ansible automation, service diagnostics, runbooks and deployment receipts."
+}

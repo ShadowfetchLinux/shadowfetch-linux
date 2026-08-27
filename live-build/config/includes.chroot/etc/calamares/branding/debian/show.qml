@@ -16,7 +16,7 @@
  *   along with Calamares. If not, see <http://www.gnu.org/licenses/>.
  */
 
-import QtQuick 2.0;
+import QtQuick 2.15;
 import calamares.slideshow 1.0;
 
 Presentation
@@ -24,27 +24,80 @@ Presentation
     id: presentation
 
     Timer {
-        interval: 20000
+        interval: 12000
         repeat: true
         onTriggered: presentation.goToNextSlide()
     }
 
     Slide {
+        Rectangle { anchors.fill: parent; color: "#090B0E" }
         Image {
-            id: background1
-            source: "slide1.png"
-            width: 467; height: 280
-            fillMode: Image.PreserveAspectFit
-            anchors.centerIn: parent
+            anchors.fill: parent
+            source: "slide-fire.jpg"
+            fillMode: Image.PreserveAspectCrop
+            opacity: 0.82
         }
+        Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 116; color: "#E60A0C10" }
         Text {
-            anchors.horizontalCenter: background1.horizontalCenter
-            anchors.top: background1.bottom
-            text: qsTr("Welcome to Shadowfetch Linux.<br/>"+
-                  "The rest of the installation is automated and should complete in a few minutes.")
-            wrapMode: Text.WordWrap
-            width: 600
-            horizontalAlignment: Text.Center
+            anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+            anchors.margins: 24; height: 82
+            color: "#FFFFFF"; wrapMode: Text.WordWrap; textFormat: Text.RichText
+            font.pixelSize: 17; horizontalAlignment: Text.AlignLeft
+            text: qsTr("<b>Shadowfetch Linux 3.5.0</b><br/>Fire keeps connected production work close. Ice starts agent sessions offline. Both retain the same KDE desktop and recovery tools.")
+        }
+    }
+
+    Slide {
+        Rectangle { anchors.fill: parent; color: "#071014" }
+        Image {
+            anchors.fill: parent
+            source: "slide-ice.jpg"
+            fillMode: Image.PreserveAspectCrop
+            opacity: 0.78
+        }
+        Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 116; color: "#E6070C11" }
+        Text {
+            anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+            anchors.margins: 24; height: 82
+            color: "#FFFFFF"; wrapMode: Text.WordWrap; textFormat: Text.RichText
+            font.pixelSize: 17; horizontalAlignment: Text.AlignLeft
+            text: qsTr("<b>Element Workbench</b><br/>Create a Software Studio, AI Lab, Production Ops desk or Creative AI workspace. Install only the signed tools you choose.")
+        }
+    }
+
+    Slide {
+        Rectangle { anchors.fill: parent; color: "#090B0E" }
+        Image {
+            anchors.fill: parent
+            source: "slide-fire.jpg"
+            fillMode: Image.PreserveAspectCrop
+            opacity: 0.68
+        }
+        Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 116; color: "#E60A0C10" }
+        Text {
+            anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+            anchors.margins: 24; height: 82
+            color: "#FFFFFF"; wrapMode: Text.WordWrap; textFormat: Text.RichText
+            font.pixelSize: 17; horizontalAlignment: Text.AlignLeft
+            text: qsTr("<b>AI with visible boundaries</b><br/>Buzz, local models, Codex, Claude Code, Grok Build and Cursor remain optional. No model, account or credential is bundled or downloaded without consent.")
+        }
+    }
+
+    Slide {
+        Rectangle { anchors.fill: parent; color: "#071014" }
+        Image {
+            anchors.fill: parent
+            source: "slide-ice.jpg"
+            fillMode: Image.PreserveAspectCrop
+            opacity: 0.68
+        }
+        Rectangle { anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom; height: 116; color: "#E6070C11" }
+        Text {
+            anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+            anchors.margins: 24; height: 82
+            color: "#FFFFFF"; wrapMode: Text.WordWrap; textFormat: Text.RichText
+            font.pixelSize: 17; horizontalAlignment: Text.AlignLeft
+            text: qsTr("<b>Built to come back</b><br/>Fireproof simulates updates first. Phoenix Points protect system changes. Firebreak confines agent writes to the project you select.")
         }
     }
 

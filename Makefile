@@ -10,7 +10,7 @@
 #   make distclean  Wipe everything regenerable
 
 SHELL := /bin/bash
-VERSION  ?= 3.1.0
+VERSION  ?= 3.5.0
 CODENAME ?= umbra
 ISO_NAME := shadowfetch-$(VERSION)-amd64.iso
 VERSION_TOKEN := $(subst .,_,$(VERSION))
@@ -79,7 +79,7 @@ R2_REGION   ?= auto
 
 # Used by sync-from-linux (Mac-side flow): host + path to the build box.
 LINUX_HOST ?= shadowfetch-linux
-LINUX_PATH ?= ~/projects/shadowfetch
+LINUX_PATH ?= ~/projects/shadowfetch-3.5.0
 
 .PHONY: all help test source-gate package-gate iso-gate acceptance-audit deps packages repo iso sign pre-release-check publish qemu clean distclean \
         sync-from-linux deploy-worker ship stamp-version
@@ -106,6 +106,9 @@ test:
 	python3 -m unittest discover -s packages/shadowfetch-firewatchd/tests -v
 	python3 -m unittest discover -s packages/shadowfetch-fireproof/tests -v
 	python3 -m unittest discover -s packages/shadowfetch-hwscan/tests -v
+	python3 packages/shadowfetch-fireline/tests/test_ai_ignition.py
+	python3 packages/shadowfetch-fireline/tests/test_fireline_mcp.py
+	python3 packages/shadowfetch-fireline/tests/test_checkpoint_roundtrip.py
 	python3 -m unittest discover -s tools/tests -v
 
 source-gate:
@@ -146,7 +149,7 @@ stamp-version:
 	@sed -i -E 's/[0-9]+\.[0-9]+\.[0-9]+/$(VERSION)/g' \
 		$(ROOT)/packages/shadowfetch-branding/data/usr/share/shadowfetch/os-release.shadowfetch
 	@for f in $(ROOT)/packages/shadowfetch-themes/data/usr/share/sddm/themes/umbra/metadata.desktop $(ROOT)/packages/shadowfetch-defaults/data/usr/share/doc/shadowfetch/LICENSES.md $(ROOT)/packages/shadowfetch-defaults/data/usr/share/doc/shadowfetch/SOURCES.md; do \
-		sed -i -E 's/\b[12]\.[0-9]+\.[0-9]+\b/$(VERSION)/g' "$$f"; \
+		sed -i -E 's/\b[0-9]+\.[0-9]+\.[0-9]+\b/$(VERSION)/g' "$$f"; \
 	done
 	@echo ">>> stamped version $(VERSION) into branding, themes and docs"
 

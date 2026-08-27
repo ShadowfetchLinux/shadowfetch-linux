@@ -1,0 +1,12 @@
+{
+  "id": "workbench-creative-ai",
+  "name": "Creative AI",
+  "kind": "preset",
+  "section": "workbench",
+  "packages": ["krita", "freecad", "openscad", "kdenlive", "obs-studio", "ffmpeg", "darktable", "rawtherapee", "digikam", "digikam-data", "hugin", "luminance-hdr", "ardour", "qpwgraph"],
+  "size_bytes": 410000000,
+  "license": "Free software from the signed Debian and Shadowfetch archives",
+  "min_ram_gb": 8,
+  "requires": ["none"],
+  "blurb": "Image, video, technical 3D, streaming, photography and audio production with project-level asset and model provenance templates."
+}

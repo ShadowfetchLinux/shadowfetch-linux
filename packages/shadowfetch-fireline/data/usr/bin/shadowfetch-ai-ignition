@@ -5,7 +5,7 @@ Shadowfetch's own review said "AI-ready, not turnkey" (nouveau on an RTX 5080,
 manual model setup). Ignition closes that gap: it reads what this machine can
 run from the System Passport / hwscan, recommends a model that actually FITS the
 GPU, and hands you the exact consent-gated command to install it through Buzz's
-local llama.cpp engine. Nothing downloads until you say yes; the catalog is
+private local-model setup. Nothing downloads until you say yes; the catalog is
 Apache-2.0 / permissive-open only, so nothing here carries a redistribution
 trap.
 
@@ -23,7 +23,7 @@ from pathlib import Path
 
 CATALOG = os.environ.get("SHADOWFETCH_AI_CATALOG",
                          "/usr/share/shadowfetch/ai-ignition/models.json")
-VERSION = "3.0.0"
+VERSION = "3.5.0"
 
 
 def load_catalog() -> dict:
@@ -148,7 +148,7 @@ def cmd_plan(args, catalog):
         print(f"unknown model id: {args.model_id} (see: shadowfetch-ai-ignition catalog)", file=sys.stderr)
         return 2
     print(f"Setup plan for {model['name']} ({model['license']}, ~{model['size_gb']:g} GB):")
-    print("  1. Buzz installs the llama.cpp engine (loopback-only, no account).")
+    print("  1. Buzz prepares private local inference (loopback-only, no account).")
     print(f"  2. Download {model['id']} weights ({model['quant']}) after your confirmation.")
     print("  3. Serve it on the local OpenAI-compatible API; point agents at it.")
     print("\nThis prints the plan only. To proceed, Shadowfetch asks for explicit")

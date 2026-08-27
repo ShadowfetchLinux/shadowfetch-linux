@@ -1,7 +1,7 @@
-"""The Control Center shell: seven fixed sections, deep-link routing, one
+"""The Control Center shell: eight fixed sections, deep-link routing, one
 window.
 
-Sidebar order is fixed - Guide / Ignite / Watch / Recover / Local AI /
+Sidebar order is fixed - Guide / Workbench / Ignite / Watch / Recover / Local AI /
 Drivers / Software & Updates (subtitle "Updates & bundles", the design's own
 fallback name so the headline safety feature never hides behind a word
 that means "app store").
@@ -37,6 +37,7 @@ from sfcc.firewatch_page import FirewatchPage
 from sfcc.guide_page import GuidePage
 from sfcc.phoenix_page import PhoenixPage
 from sfcc.software_page import SoftwarePage
+from sfcc.workbench_page import WorkbenchPage
 from sfcc.theme import label
 
 BUS_NAME = "com.shadowfetch.ControlCenter"
@@ -44,6 +45,7 @@ OBJ_PATH = "/com/shadowfetch/ControlCenter"
 
 SECTIONS = [
     ("guide", "Guide", "System Passport"),
+    ("workbench", "Workbench", "Fire & Ice projects"),
     ("ignite", "Ignite", None),
     ("watch", "Watch", None),
     ("recover", "Recover", None),
@@ -54,6 +56,7 @@ SECTIONS = [
 
 ALIASES = {
     "guide": "guide", "passport": "guide", "system-passport": "guide",
+    "workbench": "workbench", "forge": "workbench", "projects": "workbench",
     "ignite": "ignite", "ember": "ignite",
     "watch": "watch", "firewatch": "watch",
     "recover": "recover", "phoenix": "recover", "recovery": "recover",
@@ -194,6 +197,7 @@ class ControlCenterWindow(QWidget):
         self.stack = QStackedWidget()
         self.pages = [
             GuidePage(self.open_route),
+            WorkbenchPage(),
             EmberPage(self.firewatch, self.open_route),
             FirewatchPage(self.firewatch),
             PhoenixPage(),

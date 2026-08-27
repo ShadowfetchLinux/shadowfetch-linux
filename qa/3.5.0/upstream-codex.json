@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "verified_at": "2026-08-27T19:00:00Z",
+  "documentation": "https://learn.chatgpt.com/docs/codex/cli",
+  "upstream": "https://github.com/openai/codex",
+  "release": "0.150.1",
+  "installer": {
+    "url": "https://chatgpt.com/codex/install.sh",
+    "sha256": "ba92dd27e5c06f0d3bbc58bfa4b9cfb6599cd2742fbb1f92a2765e6c07dedb5a"
+  },
+  "release_channel": {
+    "url": "https://releases.openai.com/codex/channels/latest",
+    "resolved_tag": "rust-v0.150.1",
+    "linux_x86_64_asset": "codex-x86_64-unknown-linux-musl.tar.gz",
+    "linux_x86_64_sha256": "ab308870bc7fc048c23dc49d03f6b8af9ce7fc99b9da882d6688be7a90155c7a"
+  },
+  "installation": {
+    "scope": "desktop-user",
+    "binary": "~/.local/bin/codex",
+    "credentials_embedded": false,
+    "archive_digest_verified_by_upstream_installer": true
+  }
+}
