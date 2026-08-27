@@ -70,6 +70,11 @@ class Workbench350Tests(unittest.TestCase):
             lines = manifest.read_text(encoding="utf-8").splitlines()
             self.assertNotIn("@@", lines, manifest)
 
+    def test_every_first_party_package_has_copyright_metadata(self):
+        for package in (ROOT / "packages").glob("shadowfetch-*"):
+            if (package / "debian/control").is_file():
+                self.assertTrue((package / "debian/copyright").is_file(), package)
+
     def test_workbench_help_is_read_only_and_python_parses(self):
         py_compile.compile(str(WORKBENCH), doraise=True)
         with tempfile.TemporaryDirectory() as td:
