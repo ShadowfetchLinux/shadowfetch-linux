@@ -170,6 +170,14 @@ class Workbench350Tests(unittest.TestCase):
         self.assertIn('rec.get("section") == "workbench"', welcome)
         self.assertIn("Open Element Workbench", welcome)
 
+    def test_workbench_actions_fit_the_1366_layout_contract(self):
+        page = (CONTROL / "data/usr/share/shadowfetch/control-center/sfcc/workbench_page.py").read_text()
+        self.assertIn("actions = QGridLayout()", page)
+        self.assertIn("actions.addWidget(self.install, 0, 0, 1, 2)", page)
+        self.assertIn("actions.addWidget(create, 1, 0)", page)
+        self.assertIn("actions.addWidget(plan, 1, 1)", page)
+        self.assertIn("self.grid.setContentsMargins(0, 4, 0, 4)", page)
+
     def test_codex_pin_is_current_for_this_release_and_digest_verified(self):
         codex = (DEFAULTS / "data/usr/bin/shadowfetch-codex").read_text()
         self.assertIn('CODEX_VERSION="0.150.1"', codex)
