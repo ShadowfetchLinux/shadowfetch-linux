@@ -1,0 +1,4 @@
+/*
+ * Shadowfetch deliberately inherits the active Qt widget style. The file is
+ * present so Calamares treats that choice as an explicit branding decision.
+ */

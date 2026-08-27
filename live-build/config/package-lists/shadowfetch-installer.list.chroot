@@ -1,6 +1,8 @@
-# Shadowfetch 1.2.0 - graphical installer + Btrfs snapshot tools
+# Shadowfetch 3.5.0 - graphical installer + complete disk setup tools
 calamares
 calamares-settings-debian
+util-linux-extra
+lvm2
 snapper
 btrfs-assistant
 btrfs-progs
