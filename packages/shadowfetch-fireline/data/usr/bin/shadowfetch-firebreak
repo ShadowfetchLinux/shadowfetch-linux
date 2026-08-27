@@ -18,7 +18,7 @@
 # It wraps bubblewrap with unprivileged user namespaces; no setuid, no root.
 set -uo pipefail
 
-VERSION="3.1.0"
+VERSION="3.5.0"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/shadowfetch/firebreak"
 WS_ROOT="${SHADOWFETCH_AGENT_WORKSPACES:-$HOME/Workspaces}"
 CHECKPOINT_BIN="${SHADOWFETCH_CHECKPOINT_BIN:-shadowfetch-checkpoint}"

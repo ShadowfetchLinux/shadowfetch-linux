@@ -18,7 +18,12 @@
 # Center accent, and shadowfetch-firebreak's network default all read it.
 set -uo pipefail
 
-USER_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/shadowfetch/element"
+home_dir="${HOME:-}"
+if [ -z "$home_dir" ]; then
+  home_dir="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"
+fi
+home_dir="${home_dir:-/tmp}"
+USER_CONF="${XDG_CONFIG_HOME:-$home_dir/.config}/shadowfetch/element"
 SYS_CONF="/etc/shadowfetch/element"
 
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
@@ -100,7 +105,7 @@ case "${1:-}" in
     if [ "$(id -u)" != 0 ]; then warn "--system needs root"; exit 1; fi
     mkdir -p "$(dirname "$SYS_CONF")"; printf '%s\n' "$v" > "$SYS_CONF"
     ok "system element: $v" ;;
-  --version) echo "shadowfetch-element (Shadowfetch Linux) 3.1.0" ;;
+  --version) echo "shadowfetch-element (Shadowfetch Linux) 3.5.0" ;;
   -h|--help) usage ;;
   *) usage; exit 2 ;;
 esac

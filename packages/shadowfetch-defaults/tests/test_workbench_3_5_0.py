@@ -19,6 +19,8 @@ DEFAULTS = ROOT / "packages/shadowfetch-defaults"
 WELCOME = ROOT / "packages/shadowfetch-welcome"
 CONTROL = ROOT / "packages/shadowfetch-control-center"
 WORKBENCH = DEFAULTS / "data/usr/bin/shadowfetch-workbench"
+ELEMENT = DEFAULTS / "data/usr/bin/shadowfetch-element"
+FIREBREAK = ROOT / "packages/shadowfetch-fireline/data/usr/bin/shadowfetch-firebreak"
 MANIFEST = DEFAULTS / "data/usr/share/shadowfetch/workbench/profiles.json"
 CATALOG = WELCOME / "data/usr/share/shadowfetch/welcome/catalog"
 
@@ -29,6 +31,21 @@ class Workbench350Tests(unittest.TestCase):
         self.assertRegex(makefile, r"(?m)^VERSION\s+\?= 3\.5\.0$")
         for changelog in (ROOT / "packages").glob("shadowfetch-*/debian/changelog"):
             self.assertIn("(3.5.0-1)", changelog.read_text().splitlines()[0], changelog)
+
+    def test_element_and_firebreak_versions_are_stamped_and_home_is_optional(self):
+        makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        self.assertIn("data/usr/bin/shadowfetch-element", makefile)
+        self.assertIn("data/usr/bin/shadowfetch-firebreak", makefile)
+        self.assertIn("3.5.0", ELEMENT.read_text(encoding="utf-8"))
+        self.assertIn('VERSION="3.5.0"', FIREBREAK.read_text(encoding="utf-8"))
+
+        env = dict(os.environ, SHADOWFETCH_ELEMENT="ice")
+        env.pop("HOME", None)
+        proc = subprocess.run(
+            [str(ELEMENT)], env=env, capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertEqual("ice", proc.stdout.strip())
 
     def test_four_profiles_have_plain_consequences_and_signed_catalog_records(self):
         data = json.loads(MANIFEST.read_text(encoding="utf-8"))

@@ -148,10 +148,10 @@ stamp-version:
 	@printf '%s\n' '$(VERSION)' > $(ROOT)/packages/shadowfetch-branding/data/usr/share/shadowfetch/version
 	@sed -i -E 's/[0-9]+\.[0-9]+\.[0-9]+/$(VERSION)/g' \
 		$(ROOT)/packages/shadowfetch-branding/data/usr/share/shadowfetch/os-release.shadowfetch
-	@for f in $(ROOT)/packages/shadowfetch-themes/data/usr/share/sddm/themes/umbra/metadata.desktop $(ROOT)/packages/shadowfetch-defaults/data/usr/share/doc/shadowfetch/LICENSES.md $(ROOT)/packages/shadowfetch-defaults/data/usr/share/doc/shadowfetch/SOURCES.md; do \
+	@for f in $(ROOT)/packages/shadowfetch-themes/data/usr/share/sddm/themes/umbra/metadata.desktop $(ROOT)/packages/shadowfetch-defaults/data/usr/share/doc/shadowfetch/LICENSES.md $(ROOT)/packages/shadowfetch-defaults/data/usr/share/doc/shadowfetch/SOURCES.md $(ROOT)/packages/shadowfetch-defaults/data/usr/bin/shadowfetch-element $(ROOT)/packages/shadowfetch-fireline/data/usr/bin/shadowfetch-firebreak; do \
 		sed -i -E 's/\b[0-9]+\.[0-9]+\.[0-9]+\b/$(VERSION)/g' "$$f"; \
 	done
-	@echo ">>> stamped version $(VERSION) into branding, themes and docs"
+	@echo ">>> stamped version $(VERSION) into branding, themes, docs and CLI surfaces"
 
 $(PACKAGES_STAMP): stamp-version
 	@mkdir -p $(BUILD_DIR)
