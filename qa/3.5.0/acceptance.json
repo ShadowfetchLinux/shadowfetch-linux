@@ -9,12 +9,12 @@
   "evidence_root": "work/qa-3.5.0/evidence",
   "artifact": {
     "iso_path": "shadowfetch-3.5.0-amd64.iso",
-    "iso_sha256": "",
-    "iso_size_bytes": 0,
+    "iso_sha256": "2af853b1f5dedfca17a7a63783f4c881e72e912f26082b10c07d45aafe57b995",
+    "iso_size_bytes": 3980310528,
     "signature_path": "shadowfetch-3.5.0-amd64.iso.asc",
     "signing_fingerprint": "8F13CE1535EE1F4A2916A1F73C5C900B7BE80CA1",
     "evidence_bundle_path": "work/release-3.5.0/evidence-bundle-3.5.0.tar.gz",
-    "evidence_bundle_sha256": ""
+    "evidence_bundle_sha256": "69a57b09fc8c32369210ceef47290e9386c7b4c9033755a4ef66ba263aa8d009"
   },
   "cases": [
     {
@@ -22,120 +22,312 @@
       "phase": "prepublish",
       "area": "source",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "Source, parser, ShellCheck, desktop, secret and retired-runtime gates pass",
-      "evidence": [],
-      "notes": "Must be rerun from the exact release commit."
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "source/source-gate-d27e204.log",
+          "sha256": "f0299355f7a0e7f62dd26a46c150261f7f343f1cc887bec4e103f53584b88016"
+        }
+      ],
+      "notes": "Exact commit d27e204: 83 core tests including the 1366 layout regression, 65 ShellCheck files, parser checks, Gitleaks tree/history scans, recovery contracts, and retired-runtime scans passed."
     },
     {
       "id": "PKG-01",
       "phase": "prepublish",
       "area": "packages",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "Exact signed 3.5.0 binary and source package allowlists pass",
-      "evidence": [],
-      "notes": "Includes Fireline and every Element Workbench payload."
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "packages/package-gate-d27e204.log",
+          "sha256": "a266a32e031e690d75d856ec4ee92f8cfdbdffd9bf2ec814182074b5d7329d49"
+        }
+      ],
+      "notes": "Exact commit d27e204: 16 binaries from 14 signed sources passed inventory, ownership, mode, Lintian, source-extraction, Debian 13 dependency-solve, and clean-chroot install gates."
     },
     {
       "id": "ISO-01",
       "phase": "prepublish",
       "area": "artifact",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "Fresh signed hybrid ISO passes the installed-image gate",
-      "evidence": [],
-      "notes": "No model weights, credentials or retired runtimes may be present."
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "iso/iso-gate-2af853b1.log",
+          "sha256": "e4830eec6accdb843e1826901d3b8829180e5a540b84c74b3750234bdaef9990"
+        },
+        {
+          "kind": "log",
+          "path": "release/iso-identity-2af853b1.log",
+          "sha256": "6ac789e336e64b0caa1c54a281dab779173a143530f2889e4e6e9e22583cfdaa"
+        }
+      ],
+      "notes": "Exact ISO 2af853b1...b995 passed detached-signature, internal checksums, BIOS/UEFI hybrid boot, 3351-package, freshly rebuilt helper-payload, Workbench, privacy, and retired-runtime gates."
     },
     {
       "id": "WB-01",
       "phase": "prepublish",
       "area": "workbench",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "All four Workbench plans and project templates work as an unprivileged user",
-      "evidence": [],
-      "notes": "Software Studio, AI Lab, Production Ops and Creative AI."
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "vm-2af853b1/bios-fire-workbench-create-all.log",
+          "sha256": "bd7a6b1f834cb1b39011730aae91c3274a5abb00c8c2fa23a7970795b6342977"
+        },
+        {
+          "kind": "log",
+          "path": "vm-2af853b1/uefi-ice-workbench-create-ai-lab.log",
+          "sha256": "0732e3f65b8d0953ae163432103ed17651705c1add3b1f20da947a50d6a3fb74"
+        }
+      ],
+      "notes": "Unprivileged sfqa created and validated all four Fire project templates; Ice AI Lab recorded element=ice and network_default=none."
     },
     {
       "id": "FIRE-01",
       "phase": "prepublish",
       "area": "vm",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "Fire live VM boots, renders Workbench and reports the connected agent posture",
-      "evidence": [],
-      "notes": "Capture desktop, Welcome, Workbench and Firebreak banner."
+      "evidence": [
+        {
+          "kind": "screenshot",
+          "path": "vm-2af853b1/fire-live-fresh-welcome-1366x768.png",
+          "sha256": "4bb4b3dfc99390bf51830c3f6a228455e4680289d39a0537694e703b755bea44"
+        },
+        {
+          "kind": "screenshot",
+          "path": "vm-2af853b1/fire-live-fresh-desktop-1366x768.png",
+          "sha256": "e38f1a1da5e68012bdef0fcac4186c8ca2b5158812c06171202be768aa68d607"
+        },
+        {
+          "kind": "screenshot",
+          "path": "vm-2af853b1/fire-live-fresh-workbench-1366x768.png",
+          "sha256": "e8ec98627eda8fa2a07f66ac35acbbc16d7687ff0067278c6d96552a4eeebc2b"
+        },
+        {
+          "kind": "log",
+          "path": "vm-2af853b1/fire-live-firebreak-default.log",
+          "sha256": "1e5b41e4a632549d14012f151c103acdf482a8529b9e3617cf2ecf81d0e07e29"
+        }
+      ],
+      "notes": "Fresh live media booted Fire, rendered Welcome and Workbench at 1366x768, reported no failed services, and Firebreak defaulted to network allow with secrets scrubbed and system read-only."
     },
     {
       "id": "ICE-01",
       "phase": "prepublish",
       "area": "vm",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "Ice live VM boots, renders Workbench and defaults Firebreak to no network",
-      "evidence": [],
-      "notes": "Capture desktop, Welcome, Workbench and Firebreak banner."
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "vm-2af853b1/ice-live-boot-identity.log",
+          "sha256": "ac851e29f7877b239b2d1b29f5a3776e61431bf2c0fa922c243352735a3f9fcd"
+        },
+        {
+          "kind": "screenshot",
+          "path": "vm-2af853b1/ice-live-fresh-welcome-1366x768.png",
+          "sha256": "027b10c8f264ea5853fddf0e75abaf5f4b20e82c3e26174572e7a79720ae5042"
+        },
+        {
+          "kind": "screenshot",
+          "path": "vm-2af853b1/ice-live-fresh-workbench-1366x768.png",
+          "sha256": "5c18b2ed176f3a3b16a648c6e749c8ffb87de31ca235072c8e99e82c17814b76"
+        },
+        {
+          "kind": "log",
+          "path": "vm-2af853b1/ice-live-firebreak-default.log",
+          "sha256": "6a9096481113a9be1668817ac9666f799cca0c8b5b219b10af2d2d6f230da126"
+        }
+      ],
+      "notes": "Fresh live media booted with sf.element=ice, rendered Welcome and Workbench at 1366x768, and Firebreak defaulted to no network with secrets scrubbed and system read-only."
     },
     {
       "id": "INSTALL-01",
       "phase": "prepublish",
       "area": "installer",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "Calamares clean install boots from disk with the selected element",
-      "evidence": [],
-      "notes": "Package database and Shadowfetch services must be clean after reboot."
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "vm-2af853b1/bios-fire-installed-audit.log",
+          "sha256": "28799cda1737fbb9eb3397ef4904a13e91f322d636852d256ae54ffd65c1191c"
+        },
+        {
+          "kind": "log",
+          "path": "vm-2af853b1/uefi-ice-installed-audit.log",
+          "sha256": "5a1ee056ad1b56f7f9dfd6da7f1d179da9f1dd427450a3ed8491b00b2aa7425b"
+        },
+        {
+          "kind": "screenshot",
+          "path": "vm-2af853b1/bios-fire-installer-finish-1366x768.png",
+          "sha256": "33fdef90e612690b004c0e82cc9c8487553ed7af4c41282e636f52ccd915675d"
+        },
+        {
+          "kind": "screenshot",
+          "path": "vm-2af853b1/uefi-ice-installer-finish-1366x768.png",
+          "sha256": "2702dae31e66de5c18866cfc0b73b47c17a36264c0883526705e9d457eabb428"
+        }
+      ],
+      "notes": "Fresh BIOS Fire and UEFI Ice guided installs completed and booted from disk; Btrfs root, ext4 /boot, UEFI vfat ESP, services, dpkg, credentials and retired-runtime checks passed."
     },
     {
       "id": "STRESS-01",
       "phase": "prepublish",
       "area": "stress",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "Concurrent CPU, memory, storage, container and UI load runs for at least 45 minutes",
-      "evidence": [],
-      "notes": "No kernel fault, failed Shadowfetch unit, package corruption or UI freeze."
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "vm-2af853b1/bios-fire-stress-45m/result.json",
+          "sha256": "a674831c1e508d7e71a2414d48ad58bb74bbe716465156f01564f2b50fc46f64"
+        },
+        {
+          "kind": "log",
+          "path": "vm-2af853b1/bios-fire-stress-45m/timing.txt",
+          "sha256": "1fdd0e61a51bb8be9cc73c492c7926bce832e5696b1e065e50ffef0353d698aa"
+        },
+        {
+          "kind": "log",
+          "path": "vm-2af853b1/bios-fire-post-stress-installed-audit.log",
+          "sha256": "28799cda1737fbb9eb3397ef4904a13e91f322d636852d256ae54ffd65c1191c"
+        },
+        {
+          "kind": "log",
+          "path": "vm-2af853b1/bios-fire-post-stress-graphics-audit.log",
+          "sha256": "a586229d7432d0e5575830e6fe00eb9e047cbb89aff667c3da20b8a075308300"
+        },
+        {
+          "kind": "screenshot",
+          "path": "vm-2af853b1/bios-fire-ui-under-stress-t-plus-36m-1920x1080.png",
+          "sha256": "129f01c08219bcfff60ac169e4cb8c4f931536d7f7661cc8a6b438cf26f923e5"
+        }
+      ],
+      "notes": "Exact installed Fire VM sustained 2709 seconds of concurrent CPU, memory, disk, I/O, rootless-container, Workbench and health-probe load: 214 container cycles, 239 probes, zero failures, clean post-stress kernel/service/dpkg/Btrfs audit, and responsive 1920x1080 UI at T+36m."
     },
     {
       "id": "RECOVERY-01",
       "phase": "prepublish",
       "area": "recovery",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "Cancelled and failed profile installs remain visible and recoverable",
-      "evidence": [],
-      "notes": "Exercise no-mutation cancellation plus Phoenix/checkpoint paths."
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "vm-2af853b1/bios-fire-recovery/result.json",
+          "sha256": "588b73818fc1ce65571f97450fb19255fc55384ce1a5c7b5a2c3f79e7c071b69"
+        },
+        {
+          "kind": "log",
+          "path": "vm-2af853b1/bios-fire-recovery/offline-failure.log",
+          "sha256": "a1ee8801c85c9d8d16646db3a378bcaa9b3ca4d981da74be87ccaecd719a0a03"
+        },
+        {
+          "kind": "log",
+          "path": "vm-2af853b1/bios-fire-recovery/retry-success.log",
+          "sha256": "0d47f94a787ef5676c348d67e0999158116344f5541b12dfaa2863f91b49dff1"
+        },
+        {
+          "kind": "log",
+          "path": "vm-2af853b1/bios-fire-post-recovery-installed-audit.log",
+          "sha256": "28799cda1737fbb9eb3397ef4904a13e91f322d636852d256ae54ffd65c1191c"
+        }
+      ],
+      "notes": "Cancellation and forced offline failure preserved package inventory and never crossed commit; retry completed, recorded a Phoenix Point, passed profile doctor and post-recovery installed audit."
     },
     {
       "id": "VISUAL-01",
       "phase": "prepublish",
       "area": "visual",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "Fire and Ice screenshots pass 1366x768 and 1920x1080 visual QA",
-      "evidence": [],
-      "notes": "No clipped text, overlap, blank rendering or misleading installed state."
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "vm-2af853b1/visual-audit-manual-ocr.log",
+          "sha256": "4aa0253f8085d54846917946065597817101e7a393a660701cc5b2f6e5a2dadc"
+        },
+        {
+          "kind": "screenshot",
+          "path": "vm-2af853b1/bios-fire-workbench-qxl-1366x768.png",
+          "sha256": "b63ef3698b78f59cee423936dfdffd8f4fc79ef505f2c6792925b2fd84f494b7"
+        },
+        {
+          "kind": "screenshot",
+          "path": "vm-2af853b1/uefi-ice-workbench-qxl-1366x768.png",
+          "sha256": "da9230328acc27e2190dd3b5ff6cf56c5485875722d9e2f4badf1b013ae35e81"
+        },
+        {
+          "kind": "screenshot",
+          "path": "vm-2af853b1/bios-fire-ai-agents-1920x1080.png",
+          "sha256": "e501796c231c0d84bbc3e647613220153b275ac22f527e675f8e2b41d9c2661c"
+        },
+        {
+          "kind": "screenshot",
+          "path": "vm-2af853b1/uefi-ice-ai-agents-1920x1080.png",
+          "sha256": "81f7b89295e4acd7f18400444617039ce78b7d7f6c90e2bf800e16534cf99429"
+        },
+        {
+          "kind": "screenshot",
+          "path": "vm-2af853b1/bios-fire-desktop-1920x1080.png",
+          "sha256": "336ccaddd5b121e12208101b68504c305682fce99fce7f51aa955026bd8f5975"
+        },
+        {
+          "kind": "screenshot",
+          "path": "vm-2af853b1/uefi-ice-desktop-1920x1080.png",
+          "sha256": "ddac540404e6a437884e6563292059f8b60d909d8660649a41b76cecc36cb750"
+        }
+      ],
+      "notes": "Fifteen manually reviewed and OCR-assisted frames passed at 1366x768 and 1920x1080 with nonblank rendering, no clipping, overlap, stale branding or horizontal scrollbar; documented OCR aliases were pixel-confirmed."
     },
     {
       "id": "EVIDENCE-01",
       "phase": "prepublish",
       "area": "release",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "Dossier, SBOM, manifests, checksums, signature and evidence bundle verify",
-      "evidence": [],
-      "notes": "Evidence is bound to the exact ISO hash and release commit."
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "release/evidence-gate-2af853b1.log",
+          "sha256": "888dda73b24a53760293d402a35cf143c805fde563463be7c7794a9cdccd49aa"
+        }
+      ],
+      "notes": "Exact ISO checksum and detached signature, 3350-component CycloneDX SBOM, 16-binary/14-source package manifest, generated release files, corrected 58-input reproducible QA bundle and prepublication release facts verified against the bound 3.5.0 artifact."
     },
     {
       "id": "PUB-01",
       "phase": "postpublish",
       "area": "publication",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "Website, GitHub and artifact endpoints expose the same signed 3.5.0 release",
-      "evidence": [],
-      "notes": "Not authorized by the build request; requires a separate release decision."
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "release/publication-3.5.0.log",
+          "sha256": "a86661171642d324ac1ade572118ae8e07f25673da31c4941a772ad5789043c4"
+        }
+      ],
+      "notes": "Live publication verified: signed ISO and sidecars expose SHA-256 2af853b1; website Worker 0755163b serves current 3.5.0 data and the GitHub release link; GitHub main and release/3.5.0 resolve to d872972, annotated tag v3.5.0 resolves to exact tested source d27e204, and all 10 public release assets hash-match. No Archive.org 3.5.0 mirror is claimed."
     }
   ]
 }
