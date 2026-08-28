@@ -1,40 +1,25 @@
-> **3.5.0 "Umbra" flagship release candidate is under validation.** It keeps the
-> Fire and Ice desktop and adds **Element Workbench**: four honest, installable
-> production profiles for software, AI, operations and creative work. Packages,
-> local models and coding agents remain explicit choices; the release will not
-> replace the current stable download until its signed ISO passes source,
-> package, BIOS, UEFI, install, 45-minute stress, recovery and visual gates.
-> See [`RELEASE-3.5.0.md`](RELEASE-3.5.0.md) and
-> [`docs/RESEARCH-3.5.0.md`](docs/RESEARCH-3.5.0.md).
+# Shadowfetch Linux 3.5.0 - Fire and Ice Workbench
 
-![Shadowfetch Linux 3.0.0 «Umbra» Backfire — Pick your flame](https://www.shadowfetchlinux.org/linux-assets/linux-3.0.0-welcome.webp)
-![The Fireline — run coding agents full-auto, safely](https://www.shadowfetchlinux.org/linux-assets/linux-3.0.0-fireline.webp)
-
-![Shadowfetch Guide and the private System Passport](https://www.shadowfetchlinux.org/linux-assets/linux-3.0.0-system-passport.webp)
-![Control Center](https://www.shadowfetchlinux.org/linux-assets/linux-3.0.0-control-center.webp)
-![Phoenix Recovery](https://www.shadowfetchlinux.org/linux-assets/linux-3.0.0-phoenix.webp)
-
-# Shadowfetch Linux — "Umbra" / Fire Edition
+![Shadowfetch Linux 3.5.0 Fire desktop](https://www.shadowfetchlinux.org/linux-assets/linux-3.5.0-fire-desktop.webp)
+![Shadowfetch Linux 3.5.0 Ice Element Workbench](https://www.shadowfetchlinux.org/linux-assets/linux-3.5.0-ice-workbench.webp)
 
 **Shadowfetch Linux is a Debian-testing derivative desktop built for creative work, recovery-minded updates, and private, local AI — on the machine on your desk, with zero telemetry and no cloud account required.**
 
 It is an independent derivative that **builds on Debian rather than replacing it**: a curated KDE Plasma 6 (Wayland-first) desktop, a hand-picked creative stack, an in-house control surface, signed ISO releases, a signed APT repository, Btrfs snapshot safety, and an opt-in local-AI setup. It does not claim Debian endorsement — it stands on Debian's shoulders and states exactly what it adds.
 
-> **Current stable release: 3.0.0 "Umbra" — Backfire** (2026-08-26, amd64)
+> **Current stable release: 3.5.0 "Umbra" - Fire and Ice Workbench** (2026-08-27, amd64)
 >
-> - ISO: `shadowfetch-3.0.0-amd64.iso` — 3.97 GB (3.69 GiB)
-> - SHA-256: `110b0d075e699a05a8a2f8f8dcd05f19454bc8ae09acd0745ca0d947db8c5e3c`
+> - ISO: `shadowfetch-3.5.0-amd64.iso` - 3.98 GB (3.71 GiB), 3,980,310,528 bytes
+> - SHA-256: `2af853b1f5dedfca17a7a63783f4c881e72e912f26082b10c07d45aafe57b995`
 > - APT suite / codename: `umbra`
 > - Signing-key fingerprint: `8F13 CE15 35EE 1F4A 2916  A1F7 3C5C 900B 7BE8 0CA1`
 > - Base: Debian testing · Desktop: KDE Plasma 6 · Boot: BIOS + UEFI (hybrid ISO)
 >
-> **3.0 is the agent-safe local-AI workstation.** The new **Fireline** system
-> runs any coding agent full-auto inside a bubblewrap sandbox — system
-> read-only, only your project writable, network cuttable, API keys stripped —
-> takes a checkpoint first, and undoes everything the agent did with one
-> command. Four signed first-party MCP servers let agents call a checkpoint
-> before they act, and **AI Ignition** recommends an Apache-2.0 model that fits
-> your GPU. See [`docs/RELEASE-3.0.0.md`](docs/RELEASE-3.0.0.md).
+> **3.5 turns the Fire and Ice identity into an operating model.** Fire starts
+> agent work connected; Ice starts it with no network. Element Workbench creates
+> four consequence-aware project environments, while Buzz and each cloud coding
+> agent remain explicit, independent choices. See
+> [`RELEASE-3.5.0.md`](RELEASE-3.5.0.md).
 
 ---
 
@@ -49,25 +34,41 @@ Shadowfetch Linux is young and honest about its rough edges. If you want a borin
 
 ---
 
-## Highlights (what "Fire Edition" adds)
+## Highlights
 
 | Feature | What it does |
 | --- | --- |
-| **Element Workbench (release candidate in 3.5)** | Four consequence-aware profiles: Software Studio, AI Lab, Production Ops and Creative AI. Each shows disk, network, account and accelerator needs, installs from the signed snapshot through the protected bundle helper, and creates a private project with agent rules, provenance and receipts. |
-| **Fireline — run agents safely (new in 3.0)** | `shadowfetch-firebreak` runs any coding agent (Claude Code, Codex CLI, Cursor, Grok Build, Aider) full-auto inside bubblewrap: the system is **read-only**, only your `~/Workspaces` project is writable, the network can be cut with `--net none`, and API-key variables are stripped from the agent environment. A checkpoint is taken first — undo everything with `shadowfetch-checkpoint undo`. |
-| **Shadowfetch MCP + AI Ignition (new in 3.0)** | Four signed, dependency-free MCP servers (passport, phoenix, checkpoint, fs) give agents safe tools. `shadowfetch-ai-ignition` reads your VRAM and recommends an Apache-2.0 model that actually fits. |
+| **Element Workbench** | Four consequence-aware profiles: Software Studio, AI Lab, Production Ops and Creative AI. Each shows disk, network, account and accelerator needs before one signed transaction creates a private project with agent rules, provenance, tests, runbooks and receipts. |
+| **Fire and Ice execution postures** | Fire starts Firebreak sessions with network access; Ice starts them with no network. Both keep the system read-only, limit writes to the selected project, strip known secret variables and record a visible launch receipt. |
+| **Firebreak and checkpoints** | `shadowfetch-firebreak` scopes installed coding agents to the selected project and exposes an explicit network choice. `shadowfetch-checkpoint` records the project state before consequential work. |
 | **Shadowfetch Control Center** | One PyQt/Kirigami app for updates, health checks, first-run setup, graphics, recovery, snapshots and local-AI tooling. |
 | **Ember Mode** | One-switch performance profile that **always returns to Balanced on its own** (crash-safe auto-return). |
 | **Firewatch** | Live hardware + local-AI activity monitor: temperatures, resource pressure, a plain-language per-application heat-map, and **tokens/second** from local models. |
 | **Phoenix Recovery** | Automatic **Btrfs restore points before every update, driver install and AI-stack change**, restorable in one click; GRUB snapshot-boot for recovery. |
 | **Fireproof Updates** | Updates are **simulated and re-verified before applying**; they refuse to run on low disk, an active package manager, or bad power; they take a pre/post snapshot pair and offer rollback if verification fails. |
-| **Ignition Setup** | First-boot system chooser: Core / Creator / Developer / AI Workstation / Full Flame. |
+| **Welcome and Ignition** | First-run flow for Guide, Fire/Ice, Element Workbench, app profiles, graphics, optional apps, Buzz and coding agents. Every software plan is shown before it runs. |
 | **Shadowfetch Guide** | A read-only System Passport that explains graphics, network, audio, firmware, recovery and local-AI readiness before installation, then routes highlighted checks to the existing safe repair tools afterward. |
-| **Local AI via Buzz** | Opt-in and **consent-gated**. Buzz surveys the hardware, recommends an open model, downloads it **only after confirmation**, and serves it on a **loopback-only** shared-compute endpoint. Nothing is fetched until you confirm in Settings → Compute. (3.0.0 verifies Buzz Desktop 0.5.17 by SHA-256 before installing.) |
+| **Local AI via Buzz** | Opt-in and consent-gated. Buzz owns model selection and download after confirmation and uses loopback-only local services by default. No model weights are bundled in the ISO. |
 | **Optional coding agents** | Four unchecked first-run choices install release-pinned Codex, Claude Code, Grok Build, or Cursor Agent for the desktop user. Every selected artifact is verified independently; each tool owns its sign-in, and no account credential is embedded in or copied by Shadowfetch. |
-| **NVIDIA graphics path** | 3.0.0 verifies NVIDIA's Debian 13 keyring and uses `nvidia-driver-assistant` with **simulate-first, `--no-remove`, and Phoenix snapshots** — validated against a physical RTX 5060 Ti. Intel/AMD use the normal Mesa stack. |
+| **Graphics path** | Intel and AMD use Mesa. NVIDIA setup is simulate-first, refuses removals, and can create Phoenix Points on Btrfs. The 3.5.0 VM acceptance runs used Mesa llvmpipe without GPU passthrough, so they are not a physical-GPU performance claim. |
 | **Browser Migration** | Validates bookmark-HTML and password-CSV exports before staging/import. (Never attach a password CSV to a bug report.) |
-| **Signed everything** | Signed ISO, signed reprepro APT repo, public signing key, public verification instructions. |
+| **Published evidence** | Signed ISO and APT repository, public key and verification guide, 3,350-component CycloneDX SBOM, 16-binary/14-source package manifest, dossier and reproducible 58-input QA evidence bundle. |
+
+---
+
+## Release acceptance
+
+- 11 of 11 prepublication gates passed against ISO SHA-256 `2af853b1...b995`.
+- Fresh BIOS Fire and UEFI Ice installs completed and booted from disk.
+- All 15 required visual frames passed at 1366x768 and 1920x1080.
+- The installed Fire VM sustained 2,709 seconds of concurrent CPU, memory, disk,
+  I/O, rootless-container, Workbench and health-probe load: 214 container cycles,
+  239 probes and zero failures.
+- Cancellation, forced offline failure, retry, Phoenix and post-recovery audits passed.
+
+The current website links the checksum, detached signature, SBOM, package
+manifest, release dossier and reproducible QA evidence bundle from the
+[download page](https://www.shadowfetchlinux.org/download).
 
 ---
 
@@ -76,28 +77,29 @@ Shadowfetch Linux is young and honest about its rough edges. If you want a borin
 These commands download the current ISO, its checksum, its detached signature and the signing key, then verify authenticity and integrity. **They do not write to a USB stick.**
 
 ```sh
-curl -LO https://www.shadowfetch.com/linux/download/shadowfetch-3.0.0-amd64.iso
-curl -LO https://www.shadowfetch.com/linux/download/shadowfetch-3.0.0-amd64.iso.sha256
-curl -LO https://www.shadowfetch.com/linux/download/shadowfetch-3.0.0-amd64.iso.asc
+curl -LO https://www.shadowfetch.com/linux/download/shadowfetch-3.5.0-amd64.iso
+curl -LO https://www.shadowfetch.com/linux/download/shadowfetch-3.5.0-amd64.iso.sha256
+curl -LO https://www.shadowfetch.com/linux/download/shadowfetch-3.5.0-amd64.iso.asc
 curl -LO https://www.shadowfetch.com/linux/shadowfetch.gpg.asc
 gpg --import shadowfetch.gpg.asc \
-  && gpg --verify shadowfetch-3.0.0-amd64.iso.asc shadowfetch-3.0.0-amd64.iso \
-  && sha256sum -c shadowfetch-3.0.0-amd64.iso.sha256
+  && gpg --verify shadowfetch-3.5.0-amd64.iso.asc shadowfetch-3.5.0-amd64.iso \
+  && sha256sum -c shadowfetch-3.5.0-amd64.iso.sha256
 ```
 
 A GPG *"not certified with a trusted signature"* warning only means you have not personally trusted the key — it is **not** a failed signature. Compare the fingerprint before you trust the download:
 
 `8F13 CE15 35EE 1F4A 2916  A1F7 3C5C 900B 7BE8 0CA1`
 
-**Mirrors (same ISO, same checksums):**
-- Primary: https://www.shadowfetchlinux.org/download
-- Archive.org: https://archive.org/details/shadowfetch-linux-2-1-5 (ISO, `SHA256SUMS`, `.asc`, torrent)
+**Download:** https://www.shadowfetchlinux.org/download
+
+Archive.org is not yet claimed as a 3.5.0 mirror. Historical releases remain at
+https://archive.org/details/@rcorbin125.
 
 **Guides:** [Install](https://www.shadowfetchlinux.org/install) · [Verify](https://www.shadowfetchlinux.org/verify) · [Security model](https://www.shadowfetchlinux.org/security) · [Known issues](https://www.shadowfetchlinux.org/known-issues)
 
 ### Writing the USB stick
 
-Write the verified ISO to a USB device with an image writer (balenaEtcher, KDE ISO Image Writer, GNOME Disks) or `dd` — **do not** copy it onto a mounted filesystem. 3.0.0 is under the 4 GiB FAT32 single-file limit, so a FAT32 stick also works, but an image writer is still the recommended path.
+Write the verified ISO to a USB device with an image writer (balenaEtcher, KDE ISO Image Writer, GNOME Disks) or `dd` — **do not** copy it onto a mounted filesystem. 3.5.0 is under the 4 GiB FAT32 single-file limit, but an image writer is still the recommended installer path.
 
 ### The live session
 
@@ -113,9 +115,9 @@ The ISO boots a live KDE session as the user `shadow` (password `shadow`, passwo
 | **RAM** | 4 GB | 8 GB | 16 GB+ (models can consume several GB each) |
 | **Disk** | 40 GB | 100 GB | 100 GB+ |
 | **Firmware** | BIOS or UEFI | UEFI | UEFI |
-| **Graphics** | Intel/AMD (Mesa) or NVIDIA (proprietary) | — | NVIDIA/AMD for accelerated local models |
+| **Graphics** | Intel/AMD Mesa, virtual Mesa, or user-installed NVIDIA | — | Validate the exact model and accelerator on your hardware |
 
-- Intel and AMD graphics use the normal Mesa stack. NVIDIA systems ship with the proprietary NVIDIA stack; non-NVIDIA systems remove it after first boot. Hybrid laptops may need manual tuning.
+- Intel and AMD use the normal Mesa stack. NVIDIA setup is an explicit, simulate-first workflow that refuses removals and can create Phoenix Points on Btrfs. Hybrid laptops and physical accelerator performance still need hardware-specific validation.
 - **Secure Boot is not signed yet** — disable it, or use the [secure-boot guide](https://www.shadowfetchlinux.org/secure-boot).
 - Encrypted installs (LUKS2 on Btrfs) are supported and validated on both BIOS and UEFI paths.
 
@@ -163,8 +165,8 @@ shadowfetch-linux/
 
 The finished ISO is a **hybrid amd64 image** bootable on both BIOS and UEFI.
 Release pages live at `www.shadowfetchlinux.org`; verified ISO and APT objects
-remain on the existing R2-backed routes until replacement raw endpoints pass
-the release acceptance checks. Releases are also mirrored to Archive.org.
+remain on the established R2-backed `www.shadowfetch.com/linux/` routes.
+Historical releases are preserved on Archive.org; no 3.5.0 mirror is claimed yet.
 
 ---
 
@@ -180,7 +182,9 @@ sudo make iso   # build shadowfetch-$VERSION-amd64.iso in the repo root
 make qemu       # boot the freshly built ISO in QEMU to smoke-test it
 ```
 
-Useful targets: `make source-gate` (tests, parsers, linters, secret scans), `make iso-gate` (post-build ISO inventory checks), `make sign` (detached GPG signature), `make qemu`.
+Useful targets include the source gate, package gate, ISO gate, detached signing,
+QEMU launchers, acceptance recorder and evidence bundle generator. See
+[`RELEASE-3.5.0.md`](RELEASE-3.5.0.md) for the exact release contract.
 
 Version is controlled by the Makefile: `VERSION ?= 3.5.0` and `CODENAME ?= umbra`.
 Override it on the command line only when deliberately testing another release.
@@ -220,6 +224,6 @@ Shadowfetch Linux is an **aggregate**: the ISO bundles many upstream Debian pack
 
 ## Release notes & links
 
-- Current: [`docs/RELEASE-3.0.0.md`](docs/RELEASE-3.0.0.md) · previous: [`docs/RELEASE-2.1.5.md`](docs/RELEASE-2.1.5.md)
+- Current: [`RELEASE-3.5.0.md`](RELEASE-3.5.0.md) · previous: [`docs/RELEASE-3.0.0.md`](docs/RELEASE-3.0.0.md)
 - [Download](https://www.shadowfetchlinux.org/download) · [Verify](https://www.shadowfetchlinux.org/verify) · [Install](https://www.shadowfetchlinux.org/install) · [Security](https://www.shadowfetchlinux.org/security) · [Known issues](https://www.shadowfetchlinux.org/known-issues) · [Docs](https://www.shadowfetchlinux.org/docs)
 - Changelog / release feed: https://www.shadowfetchlinux.org/releases.json

@@ -1,8 +1,14 @@
 # Shadowfetch Linux 3.5.0 - Fire and Ice Workbench
 
-Status: release candidate under construction. This document is the source
-contract for build, VM validation and release evidence. It is not a publication
-claim.
+Status: released August 27, 2026. This document records the source contract,
+build identity, VM validation and release evidence for the signed 3.5.0 image.
+
+- ISO: `shadowfetch-3.5.0-amd64.iso`
+- Size: `3980310528` bytes
+- SHA-256: `2af853b1f5dedfca17a7a63783f4c881e72e912f26082b10c07d45aafe57b995`
+- Signing fingerprint: `8F13 CE15 35EE 1F4A 2916 A1F7 3C5C 900B 7BE8 0CA1`
+- Exact source commit: `d27e204b0dc929c57980a9cfb2a5541c0b39cbc3`
+- QA: 11 of 11 required prepublication gates passed
 
 ## Flagship hook
 
@@ -115,8 +121,10 @@ The 3.1.0 source tree and ISO are immutable inputs, not build destinations.
 10. Evidence: exact ISO hash, signature fingerprint, VM commands, screenshots,
     logs, SBOM and residual risks are collected before any publication decision.
 
-## Publication boundary
+## Publication record
 
-Building, signing and passing the local gates does not publish 3.5.0. Website,
-GitHub, R2 or Archive.org changes require a separate explicit release decision
-after the evidence bundle is complete.
+Building, signing and passing the local gates did not by itself publish 3.5.0.
+Publication was separately authorized after the evidence bundle was complete.
+The website, source tag, GitHub release, download endpoint and signed APT
+repository must expose the same artifact identity recorded above. Historical
+versions remain on Archive.org; no Archive.org mirror is claimed for 3.5.0.
