@@ -39,6 +39,7 @@ export default {
       if (route === "/linux/security")        return html(securityPage());
       if (route === "/linux/roadmap")         return html(roadmapPage(await latestRelease(env)));
       if (route === "/linux/faq")             return html(faqPage());
+      if (route === "/linux/benchmarks")      return html(benchmarksPage());
       if (route === "/linux/agents") {
         return new Response("This feature has been removed.\n", {
           status: 410,
@@ -1351,12 +1352,12 @@ function hardwarePage() {
     <li><strong>CPU:</strong> 64-bit Intel or AMD processor. Newer multi-core CPUs make local AI, video, and creative workloads much nicer.</li>
     <li><strong>Memory:</strong> 4 GB minimum, 8 GB recommended for the desktop, 16 GB+ recommended for local AI and heavier creative work.</li>
     <li><strong>Storage:</strong> 40 GB minimum, 100 GB+ recommended. Local AI models can consume several GB each.</li>
-    <li><strong>Graphics:</strong> Intel and AMD graphics use the normal Mesa stack. NVIDIA systems ship with the proprietary driver stack and hybrid laptops may still need manual tuning.</li>
+    <li><strong>Graphics:</strong> Intel and AMD graphics use the normal Mesa stack. NVIDIA setup is an explicit, simulate-first workflow that refuses removals and can create Phoenix Points on Btrfs. Hybrid laptops and physical accelerator performance still need hardware-specific validation.</li>
     <li><strong>Firmware:</strong> UEFI or legacy BIOS. Secure Boot is not signed yet, so disable Secure Boot before booting the ISO.</li>
   </ul>
 
   <h2>NVIDIA and hybrid laptops</h2>
-  <p>The ISO includes the proprietary NVIDIA stack so NVIDIA desktops and laptops have a working path on first boot. Non-NVIDIA systems remove the stack after first boot to reclaim disk. Hybrid laptops can still vary by vendor firmware. PRIME offload is the intended path for discrete-GPU apps.</p>
+  <p>NVIDIA is an explicit, simulate-first path. The proprietary stack is not auto-installed and is not included then removed after first boot. The workflow refuses removals and can create Phoenix Points on Btrfs. Hybrid laptops and physical accelerator performance still need hardware-specific validation. After a user-installed NVIDIA driver, PRIME offload is the intended path for discrete-GPU apps.</p>
   <pre><code>__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia blender</code></pre>
 
   <h2>Wi-Fi, Bluetooth, and peripherals</h2>
@@ -1486,7 +1487,7 @@ function faqPage() {
   <p>Anyone who needs Secure Boot signing, enterprise support, a Debian-stable base, or a zero-surprise production workstation should wait and follow the changelog.</p>
 
   <h2>Does it support NVIDIA?</h2>
-  <p>The proprietary NVIDIA stack is included and hybrid laptops use PRIME offload, but laptop firmware varies. Read the hardware notes and known issues before installing.</p>
+  <p>NVIDIA setup is an explicit, simulate-first workflow that refuses removals and can create Phoenix Points on Btrfs. It is not auto-installed and is not included then removed after first boot. Hybrid laptops and physical accelerator performance still need hardware-specific validation. Read the hardware notes and known issues before installing.</p>
 
   <h2>Does local AI phone home?</h2>
   <p>The local chat stack is designed to run on your machine. If you download models, those downloads come from the model host you choose. Shadowfetch does not add an account requirement or telemetry daemon to use the OS.</p>
@@ -1496,6 +1497,126 @@ function faqPage() {
 
   <h2>Why keep the App Shelf?</h2>
   <p>The 112 public iPhone and iPad apps are proof that Shadowfetch ships focused tools. The Linux workstation is the front door; the App Shelf is the supporting field kit.</p>
+</section>
+`,
+  });
+}
+
+function benchmarksPage() {
+  return shell({
+    title: "Historical 16GB local LLM benchmark — Shadowfetch Linux",
+    canonical: "/linux/benchmarks",
+    description: "A dated August 2026 Ollama benchmark on one NVIDIA RTX 5060 Ti: measured tokens per second, VRAM footprint, method, and explicit limits. It is not a Shadowfetch Linux 3.5.0 runtime claim.",
+    body: `
+<section class="narrow">
+  <h1>Historical 16GB local LLM benchmark</h1>
+  <p class="lede">Dated August 2026. This is the old RTX 5060 Ti / <code>ollama pull</code> run. It is not a Shadowfetch Linux 3.5.0 runtime claim, and no 3.5.0 benchmark results are published here.</p>
+
+  <h2>What fits your card?</h2>
+  <p>Speed is measured on the 16 GB card above. Whether a model fits is mostly its memory footprint, which travels between cards far better than its speed does.</p>
+
+  <h2>The measured ladder</h2>
+  <div style="overflow-x:auto">
+  <table>
+    <thead>
+      <tr>
+        <th>Model</th>
+        <th>Params</th>
+        <th>Quant</th>
+        <th>VRAM used</th>
+        <th>On GPU</th>
+        <th>Context</th>
+        <th>Generation</th>
+        <th>Prompt</th>
+        <th>Cold load</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Gemma 3 · 1B<br><code>ollama pull gemma3:1b</code></td>
+        <td>999.89M</td>
+        <td>Q4_K_M</td>
+        <td>1.3 GB</td>
+        <td>100% GPU</td>
+        <td>32768</td>
+        <td>263 tok/s</td>
+        <td>7931 tok/s</td>
+        <td>2.61s</td>
+      </tr>
+      <tr>
+        <td>Qwen2.5 · 3B Instruct<br><code>ollama pull qwen2.5:3b-instruct</code></td>
+        <td>3.1B</td>
+        <td>Q4_K_M</td>
+        <td>3.1 GB</td>
+        <td>100% GPU</td>
+        <td>32768</td>
+        <td>175 tok/s</td>
+        <td>9768 tok/s</td>
+        <td>2.66s</td>
+      </tr>
+      <tr>
+        <td>Gemma 3 · 4B<br><code>ollama pull gemma3:4b</code></td>
+        <td>4.3B</td>
+        <td>Q4_K_M</td>
+        <td>4.6 GB</td>
+        <td>100% GPU</td>
+        <td>131072</td>
+        <td>120 tok/s</td>
+        <td>3697 tok/s</td>
+        <td>3.14s</td>
+      </tr>
+      <tr>
+        <td>Llama 3.2 · 3B<br><code>ollama pull llama3.2:3b</code></td>
+        <td>3.2B</td>
+        <td>Q4_K_M</td>
+        <td>4.8 GB</td>
+        <td>100% GPU</td>
+        <td>131072</td>
+        <td>174 tok/s</td>
+        <td>8985 tok/s</td>
+        <td>2.92s</td>
+      </tr>
+      <tr>
+        <td>Qwen2.5 · 7B Instruct<br><code>ollama pull qwen2.5:7b-instruct</code></td>
+        <td>7.6B</td>
+        <td>Q4_K_M</td>
+        <td>6.3 GB</td>
+        <td>100% GPU</td>
+        <td>32768</td>
+        <td>88 tok/s</td>
+        <td>4960 tok/s</td>
+        <td>8.55s</td>
+      </tr>
+      <tr>
+        <td>Qwen2.5 · 14B<br><code>ollama pull qwen2.5:14b</code></td>
+        <td>14.8B</td>
+        <td>Q4_K_M</td>
+        <td>13 GB</td>
+        <td>100% GPU</td>
+        <td>32768</td>
+        <td>45 tok/s</td>
+        <td>2548 tok/s</td>
+        <td>9.97s</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h3>Where to start</h3>
+  <ul>
+    <li>On a 16 GB card, start with Qwen2.5 · 14B — the largest measured model that fits, at 13 GB and 45 tok/s.</li>
+    <li>Want it snappier? Drop to Qwen2.5 · 7B Instruct at 6.3 GB and 88 tok/s — about 2× the generation speed.</li>
+    <li>On an 8 GB card, run Llama 3.2 · 3B — 4.8 GB and 174 tok/s.</li>
+  </ul>
+  <p>For the current release boundary, see local AI and coding agents. Buzz owns current model selection and download after confirmation.</p>
+
+  <h2>How these were measured</h2>
+  <ul>
+    <li>One NVIDIA GeForce RTX 5060 Ti (16 GB). Generation rate is eval tokens ÷ eval time from the Ollama API, taken as the median of 3 timed runs of 200 tokens after a warm-up.</li>
+    <li>VRAM used and “on GPU” are what <code>ollama ps</code> reports for the resident model — the model's real footprint, and whether all of it sits on the GPU or spills to the CPU (which is the moment speed falls off a cliff).</li>
+    <li>Params, quantisation and architecture are read from <code>ollama show</code> — the model file's own metadata, not typed by us. Everything shown is Q4_K_M-class weights, the quant most people actually run.</li>
+    <li>Speed is specific to this card; your tokens/sec will differ on other hardware. Footprint and fit travel much better — that's why fit is judged by memory, not speed.</li>
+  </ul>
 </section>
 `,
   });
