@@ -38,7 +38,17 @@ jobs:
             reprepro gnupg \
             xorriso isolinux syslinux-common syslinux-utils \
             grub-pc-bin grub-efi-amd64-bin mtools \
-            xz-utils python3 awscli
+            xz-utils python3 unzip
+
+      # Ubuntu 24.04 (ubuntu-latest) dropped the awscli apt package.
+      # Official AWS CLI v2 is S3-compatible and reads AWS_ACCESS_KEY_ID /
+      # AWS_SECRET_ACCESS_KEY for make publish (Cloudflare R2).
+      - name: Install AWS CLI
+        run: |
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscliv2.zip
+          unzip -q /tmp/awscliv2.zip -d /tmp
+          sudo /tmp/aws/install --update
+          aws --version
 
       - name: Verify release version and source gates
         run: |
