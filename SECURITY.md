@@ -31,4 +31,4 @@ Please do not post:
 - full disk serial inventories if you do not want them public;
 - logs that include private hostnames, usernames, or network names without redaction.
 
-Use GitHub Issues for support questions, hardware reports, and non-sensitive installation notes: https://github.com/Realbobcorbin/shadowfetch-linux/issues
+Use GitHub Issues for support questions, hardware reports, and non-sensitive installation notes: https://github.com/ShadowfetchLinux/shadowfetch-linux/issues
