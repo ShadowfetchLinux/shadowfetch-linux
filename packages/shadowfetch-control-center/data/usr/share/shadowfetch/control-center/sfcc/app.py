@@ -1,17 +1,6 @@
-"""The Control Center shell: eight fixed sections, deep-link routing, one
-window.
+"""Native Mission Control shell, featured Grok Bot and system care pages.
 
-Sidebar order is fixed - Guide / Workbench / Ignite / Watch / Recover / Local AI /
-Drivers / Software & Updates (subtitle "Updates & bundles", the design's own
-fallback name so the headline safety feature never hides behind a word
-that means "app store").
-
-Routing: `shadowfetch-control --page <section>[:<tab>][:point=N]`.  A
-second launch activates the running window over the session bus instead of
-opening another — every deep link (Welcome, Firewatch empty-state, Phoenix
-overlay banner, Fireproof notification, hwscan fix buttons) lands in one
-window.  Only Software & Updates ever shows a badge (pending-update count
-from fireproofd).
+Single-instance deep links route over the local session bus.
 """
 
 import sys
@@ -35,6 +24,8 @@ from sfcc.drivers_page import DriversPage
 from sfcc.ember_page import EmberPage
 from sfcc.firewatch_page import FirewatchPage
 from sfcc.guide_page import GuidePage
+from sfcc.missions_page import MissionsPage
+from sfcc.grok_bot_page import GrokBotPage
 from sfcc.phoenix_page import PhoenixPage
 from sfcc.software_page import SoftwarePage
 from sfcc.workbench_page import WorkbenchPage
@@ -44,6 +35,8 @@ BUS_NAME = "com.shadowfetch.ControlCenter"
 OBJ_PATH = "/com/shadowfetch/ControlCenter"
 
 SECTIONS = [
+    ("missions", "Mission Control", "Work you can inspect"),
+    ("grok-bot", "Grok Bot", "Featured teammate"),
     ("guide", "Guide", "System Passport"),
     ("workbench", "Workbench", "Fire & Ice projects"),
     ("ignite", "Ignite", None),
@@ -55,6 +48,8 @@ SECTIONS = [
 ]
 
 ALIASES = {
+    "missions": "missions", "mission-control": "missions", "home": "missions",
+    "grok-bot": "grok-bot", "grokbot": "grok-bot",
     "guide": "guide", "passport": "guide", "system-passport": "guide",
     "workbench": "workbench", "forge": "workbench", "projects": "workbench",
     "ignite": "ignite", "ember": "ignite",
@@ -128,9 +123,9 @@ class SidebarEntry(QWidget):
 class ControlCenterWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Shadowfetch Control Center")
-        self.setMinimumSize(1000, 660)
-        self.resize(1080, 720)
+        self.setWindowTitle("Shadowfetch · Mission Control")
+        self.setMinimumSize(960, 640)
+        self.resize(1200, 720)
         icon = QIcon.fromTheme("shadowfetch")
         if not icon.isNull():
             self.setWindowIcon(icon)
@@ -148,7 +143,7 @@ class ControlCenterWindow(QWidget):
         side.setSpacing(0)
         side_wrap = QWidget()
         side_wrap.setStyleSheet("background: #101114;")
-        side_wrap.setFixedWidth(240)
+        side_wrap.setFixedWidth(216)
         side_wrap.setLayout(side)
 
         brand = QLabel("Shadowfetch")
@@ -156,7 +151,7 @@ class ControlCenterWindow(QWidget):
                             f"font-weight: 700; color: {theme.GOLD};"
                             "padding: 16px 16px 2px 16px;")
         side.addWidget(brand)
-        brand_sub = QLabel("Control Center")
+        brand_sub = QLabel("MISSION CONTROL  /  4.0")
         brand_sub.setStyleSheet(f"background: transparent; color: {theme.MUTED};"
                                 "padding: 0 16px 10px 16px;")
         side.addWidget(brand_sub)
@@ -167,7 +162,7 @@ class ControlCenterWindow(QWidget):
         for _key, title, subtitle in SECTIONS:
             item = QListWidgetItem()
             entry = SidebarEntry(title, subtitle)
-            item.setSizeHint(QSize(220, 52 if subtitle else 42))
+            item.setSizeHint(QSize(200, 46 if subtitle else 36))
             self.sidebar.addItem(item)
             self.sidebar.setItemWidget(item, entry)
             self._entries.append(entry)
@@ -196,8 +191,10 @@ class ControlCenterWindow(QWidget):
 
         self.stack = QStackedWidget()
         self.pages = [
+            MissionsPage(self.open_route),
+            GrokBotPage(self.open_route),
             GuidePage(self.open_route),
-            WorkbenchPage(),
+            WorkbenchPage(self.open_route),
             EmberPage(self.firewatch, self.open_route),
             FirewatchPage(self.firewatch),
             PhoenixPage(),
@@ -272,11 +269,23 @@ def _parse_page(argv: list[str]) -> str:
             return argv[i + 1]
         if arg.startswith("--page="):
             return arg.split("=", 1)[1]
-    return ""
+    return "missions"
 
 
 def run(argv: list[str]) -> int:
     route = _parse_page(argv)
+    # Encode paths for the existing single-instance D-Bus route. Shell and
+    # route separators in filenames never become command syntax.
+    from urllib.parse import quote
+    if "--workspace" in argv:
+        index = argv.index("--workspace")
+        if index + 1 < len(argv):
+            kind = "code"
+            if "--kind" in argv and argv.index("--kind") + 1 < len(argv):
+                candidate = argv[argv.index("--kind") + 1]
+                if candidate in ("code", "report", "media"):
+                    kind = candidate
+            route = "missions:new:workspace=" + quote(argv[index + 1], safe="") + ":kind=" + kind
 
     bus = busutil.session_bus()
     bus_name = None

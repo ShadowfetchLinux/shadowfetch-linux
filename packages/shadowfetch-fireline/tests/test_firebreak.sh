@@ -1,46 +1,41 @@
 #!/usr/bin/env bash
-# Firebreak containment acceptance test (uses installed /usr/bin binaries).
-set -uo pipefail
-FB=shadowfetch-firebreak
-export SHADOWFETCH_AGENT_WORKSPACES=/tmp/fb-accept
-rm -rf "$SHADOWFETCH_AGENT_WORKSPACES"; mkdir -p "$SHADOWFETCH_AGENT_WORKSPACES/w"
-echo "seed" > "$SHADOWFETCH_AGENT_WORKSPACES/w/keep.txt"
-pass=0; fail=0
-ck(){ if [ "$2" = "$3" ]; then echo "  PASS $1"; pass=$((pass+1)); else echo "  FAIL $1 (got '$3' want '$2')"; fail=$((fail+1)); fi; }
-run(){ "$FB" run "$@" 2>/dev/null | grep -oE 'PROBE:[^ ]+' | head -1; }
-
-# workspace writable
-$FB run --workspace w -- bash -c 'echo x > wrote.txt' >/dev/null 2>&1
-ck "workspace is writable" "yes" "$([ -f "$SHADOWFETCH_AGENT_WORKSPACES/w/wrote.txt" ] && echo yes || echo no)"
-# /etc read-only
-$FB run --workspace w -- bash -c 'echo x > /etc/sf_pwn 2>/dev/null' >/dev/null 2>&1
-ck "/etc is read-only" "no" "$([ -f /etc/sf_pwn ] && echo yes || echo no)"
-# /usr read-only
-$FB run --workspace w -- bash -c 'echo x > /usr/sf_pwn 2>/dev/null' >/dev/null 2>&1
-ck "/usr is read-only" "no" "$([ -f /usr/sf_pwn ] && echo yes || echo no)"
-# $HOME (outside workspace) read-only
-$FB run --workspace w -- bash -c "echo x > $HOME/sf_pwn 2>/dev/null" >/dev/null 2>&1
-ck "\$HOME outside workspace read-only" "no" "$([ -f "$HOME/sf_pwn" ] && { rm -f "$HOME/sf_pwn"; echo yes; } || echo no)"
-# network: --net none leaves ONLY loopback; robust and offline-safe
-nifaces_none=$(run --workspace w --net none -- bash -c 'echo PROBE:$(ip -o link show 2>/dev/null | wc -l)')
-ck "--net none exposes only loopback (1 iface)" "PROBE:1" "$nifaces_none"
-nifaces_allow=$(run --workspace w -- bash -c 'echo PROBE:$(ip -o link show 2>/dev/null | wc -l)')
-ck "--net allow exposes host interfaces (>1)" "yes" "$([ "${nifaces_allow#PROBE:}" -gt 1 ] 2>/dev/null && echo yes || echo no)"
-# secret scrub
-key_default=$(run --workspace w -- env OPENAI_API_KEY=sk-SECRET bash -c 'echo PROBE:${OPENAI_API_KEY:-ABSENT}')
-# NOTE: env inside is set AFTER scrub by our own probe; test the real path instead:
-key_default=$(OPENAI_API_KEY=sk-SECRET $FB run --workspace w -- bash -c 'echo PROBE:${OPENAI_API_KEY:-ABSENT}' 2>/dev/null | grep -oE 'PROBE:[^ ]+')
-ck "credential var scrubbed by default" "PROBE:ABSENT" "$key_default"
-key_keep=$(OPENAI_API_KEY=sk-SECRET $FB run --workspace w --keep-secrets -- bash -c 'echo PROBE:${OPENAI_API_KEY:-ABSENT}' 2>/dev/null | grep -oE 'PROBE:[^ ]+')
-ck "--keep-secrets passes it through" "PROBE:sk-SECRET" "$key_keep"
-# audit: pre-run checkpoint + session manifest + undo reverses
-out=$($FB run --workspace w -- bash -c 'echo CLOBBER > keep.txt; echo j > junk.txt' 2>&1)
-cid=$(printf '%s' "$out" | grep -oE 'checkpoint [0-9-]+ taken' | grep -oE '[0-9-]+' | head -1)
-ck "firebreak took a checkpoint" "yes" "$([ -n "$cid" ] && echo yes || echo no)"
-sdir="${XDG_STATE_HOME:-$HOME/.local/state}/shadowfetch/firebreak"
-ck "firebreak wrote a session manifest" "yes" "$(ls "$sdir"/*.session >/dev/null 2>&1 && echo yes || echo no)"
-shadowfetch-checkpoint undo w "$cid" >/dev/null 2>&1
-ck "undo restored clobbered file" "seed" "$(cat "$SHADOWFETCH_AGENT_WORKSPACES/w/keep.txt")"
-ck "undo removed agent's junk" "no" "$([ -f "$SHADOWFETCH_AGENT_WORKSPACES/w/junk.txt" ] && echo yes || echo no)"
-echo ""; echo "  $pass passed, $fail failed"
-exit $((fail>0))
+# Linux containment acceptance. Missing/unusable namespaces are a FAILURE.
+set -euo pipefail
+FB=${SHADOWFETCH_FIREBREAK_TEST_BIN:-shadowfetch-firebreak}
+CP=${SHADOWFETCH_CHECKPOINT_BIN:-shadowfetch-checkpoint}
+fixture=$(mktemp -d)
+trap 'rm -rf "$fixture"' EXIT
+export SHADOWFETCH_AGENT_WORKSPACES="$fixture/Workspaces"
+export XDG_STATE_HOME="$fixture/controller-state"
+mkdir -p "$SHADOWFETCH_AGENT_WORKSPACES/w"
+printf 'seed\n' > "$SHADOWFETCH_AGENT_WORKSPACES/w/keep.txt"
+printf 'private\n' > "$fixture/outside-secret"
+printf 'approved\n' > "$fixture/selected-document"
+export CUSTOM_PRIVATE_SECRET='secret-environment-sentinel'
+pass=0
+fail=0
+ck() { if [[ "$2" == "$3" ]]; then echo "PASS $1"; pass=$((pass+1)); else echo "FAIL $1: expected $2 got $3"; fail=$((fail+1)); fi; }
+run() { "$FB" run --workspace w --no-checkpoint "$@" 2>/dev/null; }
+"$FB" check
+run --net none -- sh -c 'echo written > wrote.txt'
+ck 'workspace writable' written "$(cat "$SHADOWFETCH_AGENT_WORKSPACES/w/wrote.txt")"
+ck 'outside home unreadable' hidden "$(run --net none -- sh -c 'test ! -r "$1" && echo hidden' sh "$fixture/outside-secret")"
+ck 'controller state hidden' hidden "$(run --net none -- sh -c 'test ! -e "$1" && echo hidden' sh "$XDG_STATE_HOME")"
+ck 'private home' /home/agent "$(run --net none -- sh -c 'printf %s "$HOME"')"
+ck 'arbitrary env scrubbed' absent "$(run --net none -- sh -c 'printf %s "${CUSTOM_PRIVATE_SECRET:-absent}"')"
+ck 'provider env scrubbed' absent "$(CODEX_API_KEY=test-provider-key run --net none -- sh -c 'printf %s "${CODEX_API_KEY:-absent}"')"
+ck 'specific provider grant' test-provider-key "$(CODEX_API_KEY=test-provider-key run --net none --credential-env CODEX_API_KEY -- sh -c 'printf %s "$CODEX_API_KEY"')"
+ck 'selected document readable' approved "$(run --net none --read "$fixture/selected-document" -- cat "$fixture/selected-document")"
+ck 'read parent stays hidden' hidden "$(run --net none --read "$fixture/selected-document" -- sh -c 'test ! -r "$1" && echo hidden' sh "$fixture/outside-secret")"
+ck 'root shadow hidden' hidden "$(run --net none -- sh -c 'test ! -e /etc/shadow && echo hidden')"
+ck 'network namespace isolated' 1 "$(run --net none -- sh -c 'ip -o link show | wc -l' | tr -d ' ')"
+ck 'memory resource limit' 524288 "$(run --net none --memory-mb 512 -- sh -c 'ulimit -v')"
+if run --net nonsense -- true; then ck 'invalid network rejected' yes no; else ck 'invalid network rejected' yes yes; fi
+out=$("$FB" run --workspace w --net none -- sh -c 'echo CLOBBER > keep.txt; echo junk > junk.txt' 2>/dev/null)
+cid=$(printf '%s\n' "$out" | awk '$1=="checkpoint" {print $2;exit}')
+ck 'checkpoint before mutation' yes "$([[ -n "$cid" ]] && echo yes || echo no)"
+"$CP" undo w "$cid" >/dev/null
+ck 'undo restores content' seed "$(cat "$SHADOWFETCH_AGENT_WORKSPACES/w/keep.txt")"
+ck 'undo removes additions' no "$([[ -e "$SHADOWFETCH_AGENT_WORKSPACES/w/junk.txt" ]] && echo yes || echo no)"
+echo "$pass passed, $fail failed"
+[[ "$fail" == 0 ]]

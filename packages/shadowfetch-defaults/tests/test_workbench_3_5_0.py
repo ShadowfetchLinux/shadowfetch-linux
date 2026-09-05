@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Release-specific source gates for the 3.5.0 Element Workbench."""
+"""Release-specific source gates for the 4.0.0 Element Workbench."""
 
 from __future__ import annotations
 
@@ -26,18 +26,17 @@ CATALOG = WELCOME / "data/usr/share/shadowfetch/welcome/catalog"
 
 
 class Workbench350Tests(unittest.TestCase):
-    def test_release_is_3_5_0_and_every_custom_package_matches(self):
+    def test_release_is_4_0_0_and_every_custom_package_matches(self):
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-        self.assertRegex(makefile, r"(?m)^VERSION\s+\?= 3\.5\.0$")
+        self.assertRegex(makefile, r"(?m)^VERSION\s+\?= 4\.0\.0$")
         for changelog in (ROOT / "packages").glob("shadowfetch-*/debian/changelog"):
-            self.assertIn("(3.5.0-1)", changelog.read_text().splitlines()[0], changelog)
+            self.assertIn("(4.0.0-1)", changelog.read_text().splitlines()[0], changelog)
 
     def test_element_and_firebreak_versions_are_stamped_and_home_is_optional(self):
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-        self.assertIn("data/usr/bin/shadowfetch-element", makefile)
-        self.assertIn("data/usr/bin/shadowfetch-firebreak", makefile)
-        self.assertIn("3.5.0", ELEMENT.read_text(encoding="utf-8"))
-        self.assertIn('VERSION="3.5.0"', FIREBREAK.read_text(encoding="utf-8"))
+        self.assertIn('tools/stamp_version.py "$(VERSION)"', makefile)
+        self.assertIn("4.0.0", ELEMENT.read_text(encoding="utf-8"))
+        self.assertIn('VERSION = "4.0.0"', FIREBREAK.read_text(encoding="utf-8"))
 
         env = dict(os.environ, SHADOWFETCH_ELEMENT="ice")
         env.pop("HOME", None)
@@ -56,7 +55,7 @@ class Workbench350Tests(unittest.TestCase):
         )
         self.assertEqual(0, proc.returncode, proc.stderr)
         self.assertEqual(
-            "shadowfetch-firebreak (Shadowfetch Linux) 3.5.0",
+            "shadowfetch-firebreak (Shadowfetch Linux) 4.0.0",
             proc.stdout.strip(),
         )
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Shadowfetch Control Center - one window runs the machine.
 
-3.5.0 "Fire and Ice": eight fixed sections - Guide, Element Workbench, Ignite
-(Ember Mode), Watch (Firewatch), Recover (Phoenix), Local AI, Drivers, and
+4.0.0 Mission Control: persistent missions, featured Grok Bot, Guide,
+Element Workbench, Ignite, Watch, Recover, Local AI, Drivers, and
 Software & Updates.
 The system tools (Safe Update, System Health, AI Workspaces, Local AI Tools,
 First-run Setup, Graphics & Recovery) all remain reachable inside their
@@ -22,10 +22,14 @@ if any(_a in ("-h", "--help") for _a in _sfsys.argv[1:]):
 USAGE
   shadowfetch-control                    open the control centre
   shadowfetch-control --page SECTION     open a section directly
+  shadowfetch-control --workspace PATH   create a mission for a project folder
   shadowfetch-control --cli              text-mode menu (no graphics needed)
 
 SECTIONS (for --page; a tab may follow after a colon)
-  guide      Private, read-only System Passport (aliases: passport)
+  missions    Persistent mission queue, results, changes and review
+  grok-bot    Official Grok Bot desktop installation and launch
+  workbench   Project profiles and scoped workspaces
+  guide       Private, read-only System Passport (aliases: passport)
   ignite      Ember Mode - one switch for speed, always returns to Balanced
   watch       Firewatch - live sensors, the heat map, local model telemetry
   recover     Phoenix - restore Points, repair tools, recovery report

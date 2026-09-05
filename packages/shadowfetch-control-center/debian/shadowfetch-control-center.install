@@ -19,3 +19,10 @@ data/usr/share/applications/shadowfetch-control.desktop usr/share/applications/
 data/usr/share/applications/shadowfetch-guide.desktop usr/share/applications/
 data/usr/share/applications/shadowfetch-local-ai.desktop usr/share/applications/
 data/usr/share/applications/firewatch.desktop usr/share/applications/
+data/usr/share/shadowfetch/control-center/sfcc/mission_client.py usr/share/shadowfetch/control-center/sfcc/
+data/usr/share/shadowfetch/control-center/sfcc/missions_page.py usr/share/shadowfetch/control-center/sfcc/
+data/usr/share/shadowfetch/control-center/sfcc/grok_bot_page.py usr/share/shadowfetch/control-center/sfcc/
+data/usr/share/applications/shadowfetch-mission-control.desktop usr/share/applications/
+data/usr/share/kio/servicemenus/shadowfetch-mission.desktop usr/share/kio/servicemenus/
+data/usr/share/shadowfetch/control-center/sfcc/local_model_card.py usr/share/shadowfetch/control-center/sfcc/
+data/usr/share/applications/shadowfetch-grok-bot-setup.desktop usr/share/applications/

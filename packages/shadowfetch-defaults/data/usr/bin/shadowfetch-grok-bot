@@ -1,0 +1,316 @@
+#!/usr/bin/python3
+"""Install and launch the official Grok Bot Linux desktop application.
+
+The proprietary vendor application is downloaded only after the user's choice.
+It is not redistributed in the ISO. This helper never handles account secrets.
+"""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timezone
+
+VERSION = "0.43.0"
+URL = "https://downloads.cursor.com/grokbot/stable/dd6e1fd3efb029e94e3c9d5c4d3e66510a917395/linux/x64/grok-bot_0.43.0_amd64.deb"
+SHA256 = "451ecae8fcbda48a7c75dfc74a0da8f1d6452f6063b72330cbbaad29f3455380"
+DOWNLOAD_BYTES = 103320044
+OFFICIAL_ENDPOINT = "https://api2.cursor.sh/updates/download/stable/linux-x64/grok-bot-fb0a830618be0c54"
+TERMS_URL = "https://cursor.com/terms/grok-bot"
+DOCS_URL = "https://docs.x.ai/grok-bot/get-started"
+HELPER = Path("/usr/bin/shadowfetch-grok-bot")
+NATIVE = Path("/opt/Grok Bot/grok-bot")
+DESKTOP = Path("/usr/share/applications/grok-bot.desktop")
+SYSTEM_STATE = Path("/var/lib/shadowfetch/grok-bot")
+LOCK = SYSTEM_STATE / "setup.lock"
+SYSTEM_ELEMENT = Path("/etc/shadowfetch/element")
+PINNED_FILES = {
+    "/opt/Grok Bot/grok-bot": "6d2a2ce754b755637076692a502cd29165d80d1b773d5b5482f4bfccf76a2acf",
+    "/opt/Grok Bot/resources/app.asar": "77fa229a29ef03799fec31e1b30f4d03823461ca4c60d9c02dd0a2297de4edef",
+    "/usr/share/applications/grok-bot.desktop": "162b72e4238313e87bf09f8a85584722c2848302efb8d245541972a45d18df7e",
+}
+CONSENT = """Grok Bot is an optional cloud agent desktop application from SpaceXAI/Cursor.
+This installs the official native Linux package for this computer (about 99 MiB
+download, 338 MiB installed) and may install required Debian dependencies.
+Administrator authentication is needed. The vendor package registers its signed
+APT update source at downloads.cursor.com, so system updates can update Grok Bot.
+Open the native app to sign in with your own eligible Cursor or linked SuperGrok
+account and plan. Service usage limits, charges and cloud data storage apply.
+Shadowfetch does not include a subscription or copy/store your credentials.
+Grok Bot is separate from the Grok Build coding CLI and local Mission Control.
+Review the vendor terms before choosing installation:
+https://cursor.com/terms/grok-bot
+https://cursor.com/terms-of-service
+https://cursor.com/privacy
+"""
+
+
+class SetupError(RuntimeError):
+    pass
+
+
+def run(argv, **kwargs):
+    return subprocess.run([str(x) for x in argv], check=False, **kwargs)
+
+
+def digest(path):
+    value = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            value.update(block)
+    return value.hexdigest()
+
+
+def element():
+    value = os.environ.get("SHADOWFETCH_ELEMENT", "").strip().lower()
+    for source in (Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "shadowfetch/element", SYSTEM_ELEMENT):
+        if value:
+            break
+        try:
+            value = source.read_text().strip().lower()
+        except OSError:
+            pass
+    return value if value in ("fire", "ice") else "fire"
+
+
+def require_fire():
+    if element() == "ice":
+        raise SetupError("Grok Bot uses cloud services. Switch to Fire before installing or opening it.")
+
+
+def require_platform():
+    if platform.system() != "Linux" or platform.machine() not in ("x86_64", "amd64"):
+        raise SetupError("This release installer supports x86_64 Linux only.")
+
+
+def trusted_regular(path):
+    try:
+        info = Path(path).lstat()
+        return stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022
+    except OSError:
+        return False
+
+
+def installed_package():
+    try:
+        result = run(["/usr/bin/dpkg-query", "-W", "-f=${Status}\t${Version}\t${Architecture}", "grok-bot"], capture_output=True, text=True, timeout=15)
+        parts = result.stdout.strip().split("\t")
+        if result.returncode == 0 and len(parts) == 3 and parts[0] == "install ok installed" and parts[2] == "amd64":
+            return parts[1]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def integrity(version):
+    if not version or not trusted_regular(NATIVE) or not os.access(NATIVE, os.X_OK) or not trusted_regular(DESKTOP):
+        return False, "missing-or-unsafe-files"
+    try:
+        if version == VERSION:
+            for path, expected in PINNED_FILES.items():
+                if not trusted_regular(path) or digest(path) != expected:
+                    return False, "release-pin-mismatch"
+        else:
+            # A normal vendor APT update must not be mistaken for a broken install
+            # or silently downgraded. Check its installed package manifest instead.
+            newer = run(["/usr/bin/dpkg", "--compare-versions", version, "gt", VERSION], timeout=15)
+            if newer.returncode != 0:
+                return False, "older-than-release-pin"
+        check = run(["/usr/bin/dpkg", "--verify", "grok-bot"], capture_output=True, text=True, timeout=90)
+        if check.returncode != 0 or check.stdout.strip():
+            return False, "package-manifest-mismatch"
+    except (OSError, subprocess.SubprocessError):
+        return False, "verification-failed"
+    return True, "shadowfetch-release-pin-and-dpkg" if version == VERSION else "vendor-updated-dpkg-manifest"
+
+
+def status():
+    version = installed_package()
+    verified, verification = integrity(version)
+    in_ice = element() == "ice"
+    return {
+        "name": "Grok Bot", "version": VERSION, "installed": bool(version),
+        "installed_version": version, "verified": verified,
+        "launchable": verified and not in_ice,
+        "state": "ready" if verified else "needs-repair" if version else "not-installed",
+        "verification": verification, "element": element(), "blocked_by_ice": in_ice,
+        "authentication": "sign-in-in-native-app", "authenticated": None,
+        "cloud": True, "requires_account": True, "requires_subscription": True,
+        "download_bytes": DOWNLOAD_BYTES, "artifact_sha256": SHA256,
+        "terms_url": TERMS_URL, "docs_url": DOCS_URL,
+        "executable": str(NATIVE), "vendor_update_source": "https://downloads.cursor.com/aptrepo",
+    }
+
+
+def verify_artifact(artifact):
+    if Path(artifact).stat().st_size != DOWNLOAD_BYTES or digest(artifact) != SHA256:
+        raise SetupError("Grok Bot download failed the release-pinned size/SHA-256 check. Nothing was installed.")
+    fields = {}
+    for field in ("Package", "Version", "Architecture"):
+        result = run(["/usr/bin/dpkg-deb", "-f", artifact, field], capture_output=True, text=True, timeout=20)
+        if result.returncode != 0:
+            raise SetupError("Could not inspect the verified Debian package.")
+        fields[field] = result.stdout.strip()
+    if fields != {"Package": "grok-bot", "Version": VERSION, "Architecture": "amd64"}:
+        raise SetupError("Grok Bot package identity did not match this release. Nothing was installed.")
+
+
+def write_receipt():
+    SYSTEM_STATE.mkdir(parents=True, exist_ok=True, mode=0o755)
+    receipt = {
+        "name": "Grok Bot", "version": VERSION, "artifact_url": URL,
+        "artifact_sha256": SHA256, "artifact_bytes": DOWNLOAD_BYTES,
+        "official_download_page": "https://x.ai/bot", "official_endpoint": OFFICIAL_ENDPOINT,
+        "installed_at": datetime.now(timezone.utc).isoformat(),
+        "verification": "Release-pinned HTTPS artifact digest and Debian package identity; not a detached vendor signature",
+        "credentials_stored_by_shadowfetch": False,
+        "account_authentication": "Not inspected; use native app sign-in",
+    }
+    target = SYSTEM_STATE / "installation.json"
+    with tempfile.NamedTemporaryFile(mode="w", dir=SYSTEM_STATE, delete=False, prefix=".receipt-") as output:
+        json.dump(receipt, output, indent=2)
+        output.write("\n")
+        staged = Path(output.name)
+    staged.chmod(0o644)
+    staged.replace(target)
+
+
+def system_install():
+    if os.geteuid() != 0:
+        raise SetupError("System installation requires administrator authentication.")
+    require_platform()
+    # No caller-controlled paths or URLs cross the privileged boundary.
+    os.environ["PATH"] = "/usr/sbin:/usr/bin:/sbin:/bin"
+    os.umask(0o022)
+    for tool in ("/usr/bin/curl", "/usr/bin/dpkg-deb", "/usr/bin/apt-get", "/usr/bin/dpkg"):
+        if not Path(tool).is_file():
+            raise SetupError(f"Required system tool is unavailable: {tool}")
+    SYSTEM_STATE.mkdir(parents=True, exist_ok=True, mode=0o755)
+    with LOCK.open("w") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SetupError("Another Grok Bot installation is already running.")
+        existing = installed_package()
+        if existing and integrity(existing)[0]:
+            print(f"Grok Bot {existing} is already installed and verified.", flush=True)
+            return
+        if shutil.disk_usage("/var/cache").free < 1024 ** 3:
+            raise SetupError("Grok Bot setup needs at least 1 GiB free on the system disk.")
+        with tempfile.TemporaryDirectory(prefix="shadowfetch-grok-bot-", dir="/var/cache") as folder:
+            Path(folder).chmod(0o755)
+            artifact = Path(folder) / f"grok-bot_{VERSION}_amd64.deb"
+            print(f"Downloading official Grok Bot {VERSION} (99 MiB)...", flush=True)
+            result = run(["/usr/bin/curl", "--proto", "=https", "--proto-redir", "=https", "--tlsv1.2", "--fail", "--location", "--silent", "--show-error", "--retry", "3", "--connect-timeout", "15", "--max-time", "900", "--max-filesize", str(DOWNLOAD_BYTES), URL, "--output", artifact])
+            if result.returncode != 0:
+                raise SetupError("The official download did not finish. Check the connection and retry setup.")
+            verify_artifact(artifact)
+            artifact.chmod(0o644)
+            print("Official package SHA-256, byte count and package identity verified. Installing...", flush=True)
+            result = run(["/usr/bin/apt-get", "install", "--yes", "--no-remove", "--no-install-recommends", "-o", "DPkg::Lock::Timeout=120", "-o", "Acquire::Retries=3", "-o", "Dpkg::Options::=--force-confold", artifact], env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"})
+            if result.returncode != 0:
+                raise SetupError("The package manager could not finish installing Grok Bot. Review its message and retry after resolving the package issue.")
+            actual = installed_package()
+            if actual != VERSION or not integrity(actual)[0]:
+                raise SetupError("Grok Bot did not pass its installed package and executable checks.")
+            write_receipt()
+            print(f"Grok Bot {VERSION} is installed and verified. Sign in inside the native app.", flush=True)
+
+
+def open_app():
+    require_platform()
+    require_fire()
+    if os.geteuid() == 0:
+        raise SetupError("Open Grok Bot from your desktop account, not as root.")
+    current = status()
+    if not current["verified"]:
+        raise SetupError("Grok Bot is not ready. Run shadowfetch-grok-bot setup, or doctor for details.")
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        raise SetupError("A graphical desktop session is required to open Grok Bot.")
+    # Preserve the vendor's normal desktop process and Chromium sandbox. No
+    # --no-sandbox, credentials, custom authentication or unofficial API paths.
+    state = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "shadowfetch/grok-bot"
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (state / "launch.log").open("ab") as log:
+        os.chmod(log.name, 0o600)
+        child = subprocess.Popen([str(NATIVE)], stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+    try:
+        code = child.wait(timeout=1.5)
+        if code != 0:
+            raise SetupError(f"Grok Bot exited during launch (code {code}). See {state / 'launch.log'}.")
+    except subprocess.TimeoutExpired:
+        pass
+    print("Opened native Grok Bot. Complete account sign-in in its own window.")
+
+
+def setup(args):
+    require_platform()
+    require_fire()
+    print(CONSENT, flush=True)
+    if not args.yes:
+        if not sys.stdin.isatty():
+            raise SetupError("Choose Install in Welcome, or review the terms and use setup --yes.")
+        if input("Install the official Grok Bot application? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("Installation skipped.")
+            return
+    if os.geteuid() == 0:
+        system_install()
+    else:
+        if not trusted_regular(HELPER):
+            raise SetupError("The installed root-owned Grok Bot setup helper is missing or unsafe.")
+        elevation = "/usr/bin/pkexec" if os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY") else "/usr/bin/sudo"
+        result = run([elevation, HELPER, "_install"])
+        if result.returncode != 0:
+            raise SetupError("Grok Bot setup was cancelled or failed. Read the preceding details and retry when ready.")
+    if not args.no_open and os.geteuid() != 0:
+        open_app()
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Install, verify and open the official Grok Bot native cloud agent app.", epilog="The vendor app requires its own account sign-in. xAI API keys are not used by this helper.")
+    parser.add_argument("--version", action="version", version=f"shadowfetch-grok-bot 4.0.0; official native Grok Bot {VERSION}")
+    commands = parser.add_subparsers(dest="command", required=True)
+    installer = commands.add_parser("setup", help="Review terms and install the pinned official native package")
+    installer.add_argument("--yes", action="store_true", help="Confirm the displayed download and installation choice")
+    installer.add_argument("--no-open", action="store_true", help="Install without opening the app")
+    for name in ("status", "doctor"):
+        commands.add_parser(name).add_argument("--json", action="store_true")
+    for name in ("open", "launch", "info", "_install"):
+        commands.add_parser(name, help=argparse.SUPPRESS if name == "_install" else None)
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "setup":
+            setup(args)
+        elif args.command == "_install":
+            # The public setup path already checks the requesting user's Fire/Ice
+            # choice. Root does not read that user's home or accept caller paths.
+            system_install()
+        elif args.command in ("open", "launch"):
+            open_app()
+        elif args.command == "info":
+            print(CONSENT)
+        else:
+            current = status()
+            if args.json:
+                print(json.dumps(current, sort_keys=True))
+            else:
+                print(f"Grok Bot: {current['state']}; installed version: {current['installed_version'] or 'none'}; integrity: {current['verification']}.")
+                print("Account sign-in and subscription access are checked in the native app.")
+                if current["blocked_by_ice"]:
+                    print("Cloud launch is paused in Ice. Switch to Fire to open Grok Bot.")
+            return 0 if args.command == "status" or current["verified"] else 1
+        return 0
+    except (SetupError, OSError, subprocess.SubprocessError) as exc:
+        print(f"Grok Bot: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

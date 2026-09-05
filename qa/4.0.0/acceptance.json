@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "release": {
+    "version": "4.0.0",
+    "edition": "Fire and Ice",
+    "codename": "Umbra",
+    "subtitle": "Mission Control"
+  },
+  "evidence_root": "work/qa-4.0.0/evidence",
+  "artifact": {},
+  "cases": [
+    {
+      "id": "SRC-01",
+      "phase": "prepublish",
+      "area": "src",
+      "required": true,
+      "status": "pending",
+      "title": "Source, behavioral tests, linters and secret scans",
+      "evidence": []
+    },
+    {
+      "id": "PKG-01",
+      "phase": "prepublish",
+      "area": "pkg",
+      "required": true,
+      "status": "pending",
+      "title": "Exact binary and corresponding-source package inventory, signed APT and clean installation",
+      "evidence": []
+    },
+    {
+      "id": "ISO-01",
+      "phase": "prepublish",
+      "area": "iso",
+      "required": true,
+      "status": "pending",
+      "title": "Fresh signed BIOS/UEFI ISO, exact embedded 4.0 packages and no credentials",
+      "evidence": []
+    },
+    {
+      "id": "FIRE-01",
+      "phase": "prepublish",
+      "area": "fire",
+      "required": true,
+      "status": "pending",
+      "title": "Fire live desktop and Mission Control render and work",
+      "evidence": []
+    },
+    {
+      "id": "ICE-01",
+      "phase": "prepublish",
+      "area": "ice",
+      "required": true,
+      "status": "pending",
+      "title": "Ice live desktop, external network isolation and actual local inference",
+      "evidence": []
+    },
+    {
+      "id": "INSTALL-01",
+      "phase": "prepublish",
+      "area": "install",
+      "required": true,
+      "status": "pending",
+      "title": "Fresh BIOS and UEFI Calamares installs boot from disk",
+      "evidence": []
+    },
+    {
+      "id": "UPGRADE-01",
+      "phase": "prepublish",
+      "area": "upgrade",
+      "required": true,
+      "status": "pending",
+      "title": "Existing 3.5 installed system upgrades with preserved user data and working recovery",
+      "evidence": []
+    },
+    {
+      "id": "MISSION-01",
+      "phase": "prepublish",
+      "area": "mission",
+      "required": true,
+      "status": "pending",
+      "title": "Real code, cited document and media missions complete with validated artifacts",
+      "evidence": []
+    },
+    {
+      "id": "DURABLE-01",
+      "phase": "prepublish",
+      "area": "durable",
+      "required": true,
+      "status": "pending",
+      "title": "Cancellation, retry, interrupted service recovery and no duplicated side effects",
+      "evidence": []
+    },
+    {
+      "id": "SCOPE-01",
+      "phase": "prepublish",
+      "area": "scope",
+      "required": true,
+      "status": "pending",
+      "title": "Private home, file/network scope, credential separation and required checkpoint failure behavior",
+      "evidence": []
+    },
+    {
+      "id": "GROK-01",
+      "phase": "prepublish",
+      "area": "grok",
+      "required": true,
+      "status": "pending",
+      "title": "Official Grok Bot package integrity, install, native launch and browser sign-in entry",
+      "evidence": []
+    },
+    {
+      "id": "GROK-VISUAL-01",
+      "phase": "prepublish",
+      "area": "grok",
+      "required": true,
+      "status": "pending",
+      "title": "Prominent actual Grok Bot screenshot plus featured installer and desktop entry",
+      "evidence": []
+    },
+    {
+      "id": "RESOURCE-01",
+      "phase": "prepublish",
+      "area": "resource",
+      "required": true,
+      "status": "pending",
+      "title": "Resource admission limits protect desktop during model and media workloads",
+      "evidence": []
+    },
+    {
+      "id": "RECOVERY-01",
+      "phase": "prepublish",
+      "area": "recovery",
+      "required": true,
+      "status": "pending",
+      "title": "Project diff/undo and supported system rollback verified after injected failures",
+      "evidence": []
+    },
+    {
+      "id": "STRESS-01",
+      "phase": "prepublish",
+      "area": "stress",
+      "required": true,
+      "status": "pending",
+      "title": "At least 45 minutes concurrent CPU/memory/storage/container/mission/UI stress with clean audits",
+      "evidence": []
+    },
+    {
+      "id": "VISUAL-01",
+      "phase": "prepublish",
+      "area": "visual",
+      "required": true,
+      "status": "pending",
+      "title": "Fire/Ice, Welcome, Mission Control, Grok Bot, installer and under-load screenshots at both resolutions",
+      "evidence": []
+    },
+    {
+      "id": "EVIDENCE-01",
+      "phase": "prepublish",
+      "area": "evidence",
+      "required": true,
+      "status": "pending",
+      "title": "Exact ISO checksum/signature, SBOM, manifests, QA bundle and reviewer letter",
+      "evidence": []
+    },
+    {
+      "id": "PUB-01",
+      "phase": "postpublish",
+      "area": "pub",
+      "required": true,
+      "status": "pending",
+      "title": "GitHub, website, signed downloads/APT and screenshots expose the same verified 4.0 release",
+      "evidence": []
+    }
+  ]
+}

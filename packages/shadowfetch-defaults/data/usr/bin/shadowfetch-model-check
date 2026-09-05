@@ -1,0 +1,112 @@
+#!/usr/bin/python3
+"""Inspect and verify the existing local Buzz compute service without downloading."""
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+
+def compute_module():
+    sys.path.insert(0, '/usr/lib/shadowfetch/missions')
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / 'packages/shadowfetch-missions/data/usr/lib/shadowfetch/missions'
+        if (candidate / 'sf_local_compute.py').is_file():
+            sys.path.insert(0, str(candidate))
+            break
+    try:
+        import sf_local_compute
+        return sf_local_compute
+    except ImportError:
+        raise ValueError('Install shadowfetch-missions to verify native Buzz model locality')
+
+
+def hardware():
+    memory = {}
+    try:
+        for line in Path('/proc/meminfo').read_text().splitlines():
+            key, value = line.split(':', 1)
+            if key in ('MemTotal', 'MemAvailable'):
+                memory[key] = int(value.split()[0]) * 1024
+    except (OSError, ValueError):
+        pass
+    gpus = []
+    if shutil.which('nvidia-smi'):
+        try:
+            result = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total,memory.used', '--format=csv,noheader,nounits'], capture_output=True, text=True, timeout=5, check=True)
+            for row in result.stdout.splitlines():
+                name, total, used = [part.strip() for part in row.rsplit(',', 2)]
+                gpus.append({'name': name, 'memory_total_bytes': int(total) * 1024**2, 'memory_used_bytes': int(used) * 1024**2})
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    return {'cpu_count': os.cpu_count(), 'ram_total_bytes': memory.get('MemTotal'), 'ram_available_bytes': memory.get('MemAvailable'), 'nvidia_gpus': gpus, 'disk_free_bytes': shutil.disk_usage(Path.home()).free}
+
+
+def inspect():
+    result = {'schema_version': 1, 'local_only': False, 'upload_performed': False, 'endpoint': 'http://127.0.0.1:3131/api/runtime/processes', 'hardware': hardware(), 'models': [], 'ready': False, 'setup_command': 'shadowfetch-buzz setup', 'checked_at': datetime.now(timezone.utc).isoformat()}
+    try:
+        compute = compute_module()
+        models = compute.local_models()
+        result['models'] = [dict(entry, id=entry['name'], owned_by='this computer') for entry in models]
+        result['ready'] = bool(models)
+        result['local_only'] = bool(models)
+        result['message'] = 'Native model process and owned loopback socket verified. Run a real response check before starting a mission.' if result['ready'] else 'Open Buzz Settings > Compute and load a model on this computer. Mesh-only models do not qualify as offline compute.'
+    except (OSError, ValueError) as error:
+        result['message'] = str(error)
+    return result
+
+
+def verify(model):
+    before = inspect()
+    if model not in [entry['id'] for entry in before['models']]:
+        raise ValueError('Select a verified native model on this computer; no model was downloaded or invoked')
+    compute = compute_module()
+    started = time.monotonic()
+    data = compute.complete({'model': model, 'messages': [{'role': 'user', 'content': 'Reply with the single word READY.'}], 'max_tokens': 24, 'stream': False}, allow_network=False, timeout=120)
+    elapsed = time.monotonic() - started
+    choices = data.get('choices', [])
+    content = choices[0].get('message', {}).get('content') if choices and isinstance(choices[0], dict) else None
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError('Native compute returned no usable text; verification did not pass')
+    proof = data.get('shadowfetch_compute', {})
+    if proof.get('local_only_verified') is not True:
+        raise ValueError('Native target locality was not verified')
+    result = {'schema_version': 1, 'status': 'pass', 'local_only': True, 'upload_performed': False, 'model': model, 'served_model': data.get('model'), 'compute': proof, 'response': content[:512], 'elapsed_seconds': round(elapsed, 3), 'usage': data.get('usage'), 'hardware_before': before['hardware'], 'hardware_after': hardware(), 'checked_at': datetime.now(timezone.utc).isoformat(), 'scope': 'Small real inference through a verified native model process and its owned loopback socket; not a general speed or quality benchmark'}
+    directory = Path(os.environ.get('XDG_STATE_HOME', str(Path.home() / '.local/state'))) / 'shadowfetch/model-check'
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.NamedTemporaryFile('w', dir=directory, prefix='.verify-', delete=False) as handle:
+        json.dump(result, handle, indent=2)
+        handle.write('\n')
+        staged = Path(handle.name)
+    staged.chmod(0o600)
+    target = directory / 'last-verification.json'
+    staged.replace(target)
+    result['receipt'] = str(target)
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('command', choices=('status', 'verify'), nargs='?', default='status')
+    parser.add_argument('--model')
+    parser.add_argument('--json', action='store_true')
+    args = parser.parse_args()
+    try:
+        if args.command == 'verify' and not args.model:
+            raise ValueError('--model is required for verification')
+        result = verify(args.model) if args.command == 'verify' else inspect()
+        print(json.dumps(result, indent=2))
+        return 0
+    except (OSError, ValueError, urllib.error.URLError) as error:
+        print(json.dumps({'status': 'fail', 'error': str(error), 'local_only': False, 'upload_performed': False}))
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())

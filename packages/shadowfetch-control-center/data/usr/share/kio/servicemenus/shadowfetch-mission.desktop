@@ -1,0 +1,23 @@
+[Desktop Entry]
+Type=Service
+MimeType=inode/directory;
+Actions=CodeMission;ReportMission;MediaMission;
+X-KDE-ServiceTypes=KonqPopupMenu/Plugin
+X-KDE-Priority=TopLevel
+X-KDE-Submenu=Shadowfetch Mission
+X-KDE-RequiredNumberOfUrls=1
+
+[Desktop Action CodeMission]
+Name=Code and verify this project
+Icon=shadowfetch
+Exec=shadowfetch-control --workspace %f --kind code
+
+[Desktop Action ReportMission]
+Name=Create a report with sources
+Icon=document-edit
+Exec=shadowfetch-control --workspace %f --kind report
+
+[Desktop Action MediaMission]
+Name=Export and verify media
+Icon=video-x-generic
+Exec=shadowfetch-control --workspace %f --kind media

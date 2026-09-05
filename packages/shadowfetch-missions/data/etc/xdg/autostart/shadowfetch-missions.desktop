@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Shadowfetch Mission Queue
+Exec=systemctl --user start shadowfetch-missions.service
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

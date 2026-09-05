@@ -23,7 +23,7 @@ from pathlib import Path
 
 CATALOG = os.environ.get("SHADOWFETCH_AI_CATALOG",
                          "/usr/share/shadowfetch/ai-ignition/models.json")
-VERSION = "3.5.0"
+VERSION = "4.0.0"
 
 
 def load_catalog() -> dict:

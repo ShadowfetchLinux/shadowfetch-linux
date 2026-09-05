@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=Shadowfetch Control Center
-Comment=Ignite, Watch, Recover, Local AI, Drivers and Software & Updates
+Comment=Mission Control, Grok Bot, local AI and system care
 Exec=shadowfetch-control
 Icon=shadowfetch
 Terminal=false

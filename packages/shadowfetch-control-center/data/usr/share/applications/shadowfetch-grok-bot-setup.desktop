@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Grok Bot · Setup & launch
+GenericName=Official Cloud Teammate
+Comment=Install the verified official Grok Bot desktop and open native account sign-in
+Exec=shadowfetch-control --page grok-bot
+Icon=shadowfetch
+Terminal=false
+Categories=Utility;
+Keywords=grok;bot;agents;teammate;cloud;shadowfetch;
+StartupNotify=true

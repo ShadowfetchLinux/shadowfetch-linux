@@ -35,6 +35,10 @@ data/usr/libexec/shadowfetch-buzz-bootstrap  usr/libexec/
 data/usr/libexec/shadowfetch-buzz-stack  usr/libexec/
 data/usr/libexec/shadowfetch-migrate-2.1.3-ai  usr/libexec/
 data/usr/bin/shadowfetch-buzz  usr/bin/
+data/usr/bin/shadowfetch-grok-bot usr/bin/
+data/usr/bin/shadowfetch-model-check usr/bin/
+data/usr/share/shadowfetch/grok-bot/release.json usr/share/shadowfetch/grok-bot/
+data/usr/share/doc/shadowfetch/GROK-BOT.md usr/share/doc/shadowfetch/
 data/usr/bin/shadowfetch-codex  usr/bin/
 data/usr/bin/shadowfetch-code-agent  usr/bin/
 data/usr/share/applications/shadowfetch-buzz.desktop  usr/share/applications/

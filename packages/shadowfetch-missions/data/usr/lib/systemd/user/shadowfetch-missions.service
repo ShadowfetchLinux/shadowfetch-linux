@@ -1,0 +1,19 @@
+[Unit]
+Description=Shadowfetch Mission Control task queue
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/shadowfetch-missions worker
+Restart=on-failure
+RestartSec=5
+UMask=0077
+CPUQuota=200%
+MemoryHigh=3G
+MemoryMax=4G
+TasksMax=128
+KillMode=control-group
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

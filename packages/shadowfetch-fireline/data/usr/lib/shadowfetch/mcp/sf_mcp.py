@@ -36,7 +36,7 @@ import time
 from pathlib import Path
 
 PROTOCOL_VERSION = "2025-06-18"
-SERVER_VERSION = "3.5.0"
+SERVER_VERSION = "4.0.0"
 
 
 # --------------------------------------------------------------------------- #
@@ -140,18 +140,31 @@ def _run(cmd, timeout=20):
 
 def _workspaces_root() -> Path:
     return Path(os.environ.get("SHADOWFETCH_AGENT_WORKSPACES",
-                               str(Path.home() / "Workspaces")))
+                               str(Path.home() / "Workspaces"))).expanduser().resolve()
 
 
 def _safe_name(name: str) -> str:
-    if not name or not re.fullmatch(r"[A-Za-z0-9._-]+", name) or name in (".", ".."):
+    if not isinstance(name, str) or not name.strip() or len(name) > 160 or name in (".", "..") or any(char in name for char in ("/", "\\")) or any(ord(char) < 32 or ord(char) == 127 for char in name):
         raise _ToolError(f"invalid workspace name: {name!r}")
     return name
 
 
+def _workspace(name: str) -> Path:
+    root = _workspaces_root()
+    path = root / _safe_name(name)
+    if path.is_symlink() or path.resolve().parent != root or not path.is_dir():
+        raise _ToolError("workspace is missing or escapes the configured root")
+    return path.resolve()
+
+
 def _ckpt_store(ws: Path) -> Path:
-    d = ws.parent / ".sf-checkpoints" / ws.name
-    d.mkdir(parents=True, exist_ok=True)
+    parent = ws.parent / ".sf-checkpoints"
+    d = parent / ws.name
+    if parent.is_symlink() or d.is_symlink():
+        raise _ToolError("checkpoint storage cannot be a symbolic link")
+    d.mkdir(parents=True, mode=0o700, exist_ok=True)
+    parent.chmod(0o700)
+    d.chmod(0o700)
     return d
 
 
@@ -270,7 +283,7 @@ def build_checkpoint() -> Server:
                 "workspace": {"type": "string", "description": "workspace name under ~/Workspaces"},
                 "label": {"type": "string", "description": "optional human label"}}})
     def snapshot(args):
-        ws = _workspaces_root() / _safe_name(args["workspace"])
+        ws = _workspace(args["workspace"])
         if not ws.is_dir():
             raise _ToolError(f"workspace does not exist: {ws}")
         meta = _snapshot(ws, args.get("label", "manual"))
@@ -281,7 +294,7 @@ def build_checkpoint() -> Server:
             {"type": "object", "required": ["workspace"], "properties": {
                 "workspace": {"type": "string"}}})
     def _list(args):
-        ws = _workspaces_root() / _safe_name(args["workspace"])
+        ws = _workspace(args["workspace"])
         store = _ckpt_store(ws)
         pts = sorted(p.stem for p in store.glob("*.json"))
         if not pts:
@@ -298,7 +311,7 @@ def build_checkpoint() -> Server:
             {"type": "object", "required": ["workspace", "checkpoint"], "properties": {
                 "workspace": {"type": "string"}, "checkpoint": {"type": "string"}}})
     def diff(args):
-        ws = _workspaces_root() / _safe_name(args["workspace"])
+        ws = _workspace(args["workspace"])
         store = _ckpt_store(ws)
         cid = _safe_name(args["checkpoint"])
         meta_p = store / f"{cid}.json"
@@ -320,7 +333,7 @@ def build_checkpoint() -> Server:
             {"type": "object", "required": ["workspace", "checkpoint"], "properties": {
                 "workspace": {"type": "string"}, "checkpoint": {"type": "string"}}})
     def undo(args):
-        ws = _workspaces_root() / _safe_name(args["workspace"])
+        ws = _workspace(args["workspace"])
         store = _ckpt_store(ws)
         cid = _safe_name(args["checkpoint"])
         meta_p = store / f"{cid}.json"
@@ -338,10 +351,12 @@ def build_checkpoint() -> Server:
                 child.unlink()
         for child in base.iterdir():
             dst = ws / child.name
-            if child.is_dir():
+            if child.is_symlink():
+                dst.symlink_to(os.readlink(child))
+            elif child.is_dir():
                 shutil.copytree(child, dst, symlinks=True)
             else:
-                shutil.copy2(child, dst)
+                shutil.copy2(child, dst, follow_symlinks=False)
         _cleanup_tmp(base, meta)
         return (f"workspace '{ws.name}' restored to checkpoint {cid}. "
                 f"A safety checkpoint of the pre-undo state was taken first.")
@@ -357,8 +372,54 @@ def _restore_tree(store: Path, meta: dict) -> Path:
     if tmp.exists():
         shutil.rmtree(tmp)
     tmp.mkdir(parents=True)
-    with tarfile.open(store / meta["archive"], "r:gz") as tf:
-        tf.extractall(tmp)
+    # Restore archive members without following links or allowing traversal.
+    # Links are created LAST, so no later member can write through them.
+    if _safe_name(meta["workspace"]) != store.name:
+        raise _ToolError("checkpoint workspace metadata mismatch")
+    archive = _safe_name(meta["archive"])
+    with tarfile.open(store / archive, "r:gz") as tf:
+        members = tf.getmembers()
+        links = []
+        names = set()
+        for item in members:
+            relative = Path(item.name)
+            if relative.is_absolute() or ".." in relative.parts or not relative.parts or relative.parts[0] != meta["workspace"]:
+                raise _ToolError("unsafe checkpoint archive path")
+            if item.name in names:
+                raise _ToolError("duplicate checkpoint archive path")
+            names.add(item.name)
+            destination = tmp / relative
+            if item.issym() or item.islnk():
+                links.append(item)
+                continue
+            if not (item.isdir() or item.isfile()):
+                raise _ToolError("special files cannot be restored from a checkpoint")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if item.isdir():
+                destination.mkdir(exist_ok=True)
+            else:
+                source = tf.extractfile(item)
+                if source is None:
+                    raise _ToolError("missing checkpoint file data")
+                with source, destination.open("xb") as output:
+                    shutil.copyfileobj(source, output)
+            destination.chmod(item.mode & 0o777)
+        for item in links:
+            destination = tmp / item.name
+            # Link directories cannot contain any archived child.
+            if any(name.startswith(item.name.rstrip("/") + "/") for name in names):
+                raise _ToolError("checkpoint contains children beneath a link")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if item.issym():
+                destination.symlink_to(item.linkname)
+            else:
+                target = Path(item.linkname)
+                if target.is_absolute() or ".." in target.parts or not target.parts or target.parts[0] != meta["workspace"]:
+                    raise _ToolError("unsafe checkpoint hard link")
+                source = tmp / target
+                if source.is_symlink() or not source.is_file():
+                    raise _ToolError("invalid checkpoint hard link target")
+                os.link(source, destination)
     return tmp / meta["workspace"]
 
 

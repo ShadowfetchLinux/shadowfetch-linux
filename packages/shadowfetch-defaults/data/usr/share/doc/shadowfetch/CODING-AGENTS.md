@@ -44,3 +44,10 @@ Official documentation:
 - Cursor Agent: https://docs.cursor.com/en/cli/installation
 
 Third-party account, service, and license terms apply to each downloaded tool.
+
+Shadowfetch 4.0 also offers **Grok Bot**, the separate native cloud teammate app,
+as a featured first-boot choice. Use `shadowfetch-grok-bot setup` and
+`shadowfetch-grok-bot open`. Grok Bot uses its own browser-based account sign-in
+and requires an eligible vendor plan; it is not the Grok Build CLI and does
+not accept an xAI API key through this installer. See `GROK-BOT.md` for setup,
+provenance, privacy and update behavior.

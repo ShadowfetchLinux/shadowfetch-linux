@@ -1,6 +1,7 @@
 # Element Workbench
 
-Shadowfetch Linux 3.5.0 turns Fire and Ice into two operating postures for the
+Shadowfetch Linux 4.0.0 connects Mission Control to the same two Fire and Ice
+operating postures and the
 same four production profiles:
 
 - **Software Studio**: Python, TypeScript, rootless containers, database tools,
@@ -32,3 +33,35 @@ Useful commands:
 Profile installs use the same root-owned package catalog as Welcome. They are
 one APT transaction and receive an automatic Phoenix Point on a supported
 Btrfs installation. Projects live under `~/Workspaces` and contain no secrets.
+
+## From project to mission
+
+Open Mission Control from the application menu, or choose **New mission** in
+Workbench. Give the mission a title, project folder, workflow and instructions.
+Use an existing project directly inside `~/Workspaces`; create one in
+Workbench first. Choose one of:
+
+- **Code & tests**: use a local Buzz model or your signed-in Codex CLI. Enter
+  the actual test program and arguments. Inspect changes and test receipts
+  before accepting the result.
+- **Private report**: select text documents by their paths inside the project
+  and an installed local Buzz model. Inspect the report and its source
+  citations.
+- **Media export**: select media paths inside the project. The engine performs
+  a deterministic FFmpeg export and records validation in its receipt.
+
+The connection selector makes external network access explicit. Codex needs
+Fire for its cloud connection; local model and deterministic media workflows
+can use Ice. A queued mission persists locally. Activity, Changes and Results
+show its execution evidence. Failed and cancelled missions can be retried;
+completed work waits for your review. Restore changes uses the mission's local
+checkpoint and reports conflicts instead of silently overwriting newer work.
+
+In Dolphin, right-click a project folder and choose **Shadowfetch Mission** to
+open the same scoped creation form. Folders outside the workspace root are not
+accepted; move or copy only the files you want the agent to use into a project.
+
+**Grok Bot** has a featured page in Mission Control and a native installation
+choice during Welcome. Its cloud tasks and account sign-in live in the official
+Grok Bot app. The Grok Build coding CLI is a separate tool. No API keys or app
+accounts are included in the distro.

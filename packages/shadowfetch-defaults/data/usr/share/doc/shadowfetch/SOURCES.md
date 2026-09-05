@@ -28,14 +28,24 @@ artifact SHA-256, and installs it only for that desktop user. These third-party
 products remain subject to their vendors' account, service, and license terms.
 Official documentation is linked from `CODING-AGENTS.md`.
 
+Grok Bot is a separate optional native cloud-agent desktop application. The
+Shadowfetch setup helper is MIT licensed; the proprietary vendor application
+is not included in this source tree or the ISO. After selection and
+administrator authentication, the helper downloads the exact official Debian
+package and checks its SHA-256, byte count, package name, version and
+architecture before installing it through APT. The vendor package adds its
+normal signed update source. See `GROK-BOT.md` and
+`/usr/share/shadowfetch/grok-bot/release.json` for provenance and vendor terms.
+
 ### Written offer for corresponding source
 
-The complete corresponding source for the Shadowfetch packages of THIS release
-is published as a signed tarball alongside the release:
+The complete corresponding source for this release is published in the signed
+APT source index, alongside the matching binary packages:
 
-    https://shadowfetch.com/linux/apt/sources/shadowfetch-source-3.0.0.tar.gz
+    https://www.shadowfetch.com/linux/apt/dists/umbra/main/source/Sources
 
-Its SHA-256 is published next to it (…tar.gz.sha256). The project's public home
+The signed InRelease authenticates the index and its SHA-256 references each
+source archive and Debian source control file. The project's public home
 and issue tracker are at https://github.com/ShadowfetchLinux/shadowfetch-linux .
 For the corresponding source of any upstream Debian/KDE component shipped in
 this image, email signing@shadowfetch.com and we will provide the exact source

@@ -20,9 +20,9 @@ Description: Shadowfetch Fireline - contain, checkpoint and audit local AI agent
  Fireline is the agent-safety system of Shadowfetch Linux Fire and Ice. It lets
  you run any coding agent full-auto without handing it your whole machine.
  .
- shadowfetch-firebreak runs an agent inside bubblewrap with the system mounted
- read-only and only the project workspace writable; it can cut the network,
- strips known credential variables from the agent environment by default, takes
+ shadowfetch-firebreak runs an agent inside bubblewrap with public system runtimes mounted
+ read-only, a private home, explicit read grants and only the project workspace
+ writable; it can cut the network, starts from a clean environment, takes
  a workspace checkpoint before the agent runs, and records every session to the
  audit journal.
  .

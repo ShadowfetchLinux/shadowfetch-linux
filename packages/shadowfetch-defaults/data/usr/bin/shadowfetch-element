@@ -17,6 +17,7 @@
 # The element steers more than color: Welcome's setup profiles, the Control
 # Center accent, and shadowfetch-firebreak's network default all read it.
 set -uo pipefail
+VERSION="4.0.0"
 
 home_dir="${HOME:-}"
 if [ -z "$home_dir" ]; then
@@ -105,7 +106,7 @@ case "${1:-}" in
     if [ "$(id -u)" != 0 ]; then warn "--system needs root"; exit 1; fi
     mkdir -p "$(dirname "$SYS_CONF")"; printf '%s\n' "$v" > "$SYS_CONF"
     ok "system element: $v" ;;
-  --version) echo "shadowfetch-element (Shadowfetch Linux) 3.5.0" ;;
+  --version) echo "shadowfetch-element (Shadowfetch Linux) $VERSION" ;;
   -h|--help) usage ;;
   *) usage; exit 2 ;;
 esac

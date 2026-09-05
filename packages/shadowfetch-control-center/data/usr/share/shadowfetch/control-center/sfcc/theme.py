@@ -125,6 +125,13 @@ STYLESHEET = f"""
 
     QPlainTextEdit {{ background: #101114; border: 1px solid {BORDER}; border-radius: 6px;
                       color: {TEXT}; font-family: monospace; font-size: 12px; }}
+    QLineEdit {{ background: #101114; border: 1px solid {BORDER}; border-radius: 6px;
+                  padding: 7px 9px; selection-background-color: {GOLD}; }}
+    QLineEdit:focus, QPlainTextEdit:focus {{ border-color: {GOLD}; }}
+    QListWidget {{ background: #101114; border: 1px solid {BORDER}; border-radius: 6px; }}
+    QListWidget::item {{ padding: 12px 9px; border-bottom: 1px solid {BORDER}; }}
+    QListWidget::item:selected {{ background: #302c24; color: {TEXT}; }}
+    QSplitter::handle {{ background: {BORDER}; width: 1px; }}
     QScrollArea {{ border: 0; }}
 """
 
@@ -133,6 +140,7 @@ STYLESHEET = f"""
 
 def label(text: str, object_name: str | None = None, wrap: bool = False) -> QLabel:
     lab = QLabel(text)
+    lab.setTextFormat(Qt.TextFormat.PlainText)
     if object_name:
         lab.setObjectName(object_name)
     if wrap:

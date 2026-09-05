@@ -127,8 +127,9 @@ class ProfileCard(Card):
 class WorkbenchPage(QWidget):
     """Operational profile launcher; all root work stays in the bundle helper."""
 
-    def __init__(self):
+    def __init__(self, open_route=None):
         super().__init__()
+        self.open_route = open_route
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 12, 24, 18)
         root.setSpacing(10)
@@ -139,13 +140,17 @@ class WorkbenchPage(QWidget):
                    else "agent sessions may use the network")
         root.addWidget(label(
             f"{element} posture: {posture}. Each setup shows disk, network, account "
-            "and accelerator requirements before it changes the system.",
+            "and accelerator requirements before it changes the system. Create a project, then queue its work in Mission Control.",
             "subtitle", wrap=True))
 
         head = QHBoxLayout()
         self.summary = label("", "detail")
         head.addWidget(self.summary)
         head.addStretch(1)
+        if self.open_route is not None:
+            mission = QPushButton("New mission")
+            mission.clicked.connect(lambda: self.open_route("missions:new"))
+            head.addWidget(mission)
         refresh = QPushButton("Refresh")
         refresh.setObjectName("quiet")
         refresh.setIcon(QIcon.fromTheme("view-refresh"))

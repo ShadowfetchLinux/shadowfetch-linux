@@ -43,7 +43,7 @@ Presentation
             anchors.margins: 24; height: 82
             color: "#FFFFFF"; wrapMode: Text.WordWrap; textFormat: Text.RichText
             font.pixelSize: 17; horizontalAlignment: Text.AlignLeft
-            text: qsTr("<b>Shadowfetch Linux 3.5.0</b><br/>Fire keeps connected production work close. Ice starts agent sessions offline. Both retain the same KDE desktop and recovery tools.")
+            text: qsTr("<b>Shadowfetch Linux 4.0.0</b><br/>Mission Control brings plans, scoped work and results together. Fire keeps connected production work close. Ice starts agent sessions offline. Both retain the same KDE desktop and recovery tools.")
         }
     }
 
@@ -79,7 +79,7 @@ Presentation
             anchors.margins: 24; height: 82
             color: "#FFFFFF"; wrapMode: Text.WordWrap; textFormat: Text.RichText
             font.pixelSize: 17; horizontalAlignment: Text.AlignLeft
-            text: qsTr("<b>AI with visible boundaries</b><br/>Buzz, local models, Codex, Claude Code, Grok Build and Cursor remain optional. No model, account or credential is bundled or downloaded without consent.")
+            text: qsTr("<b>Meet Grok Bot after installation</b><br/>Welcome features the official Grok Bot desktop alongside Buzz and coding agents. Choose its verified native installation, then sign in with an eligible account and plan. Ice keeps this cloud setup paused.")
         }
     }
 

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Mission Control
+GenericName=Agent Task Queue
+Comment=Create scoped tasks and review progress, results and local changes
+Exec=shadowfetch-control --page missions
+Icon=shadowfetch
+Terminal=false
+Categories=Utility;
+Keywords=agents;missions;code;reports;media;shadowfetch;
+StartupNotify=true

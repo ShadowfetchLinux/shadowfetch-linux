@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""Run real offline FFmpeg missions, validate outputs, and undo them under load.
+
+A private controller state keeps test work separate from the desktop queue. The
+real worker executes each mission; no inference or successful result is mocked.
+"""
+import argparse
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import shutil
+import signal
+import struct
+import subprocess
+import sys
+import time
+import wave
+
+
+def digest(path):
+    h = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        for block in iter(lambda: source.read(1024 ** 2), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def check_artifacts(receipt, workspace):
+    if receipt.get("state") != "waiting-review" or not receipt.get("checkpoint"):
+        raise ValueError("Missing successful state or checkpoint")
+    rows = receipt.get("artifacts", [])
+    if len(rows) < 2:
+        raise ValueError("Missing actual export or its manifest")
+    paths = []
+    for row in rows:
+        path = Path(row["path"])
+        if path.is_symlink() or workspace.resolve() not in path.resolve().parents:
+            raise ValueError("Artifact is outside this QA workspace")
+        if not path.is_file() or path.stat().st_size != row["bytes"] or digest(path) != row["sha256"]:
+            raise ValueError("Published artifact hash/size does not match its receipt")
+        paths.append(path)
+    manifest = next((p for p in paths if p.name == "exports.json"), None)
+    exports = json.loads(manifest.read_text()) if manifest else []
+    if not exports or not all(row.get("decode_verified") for row in exports):
+        raise ValueError("Missing actual decode verification")
+    return paths
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--duration", type=int, required=True)
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    if os.geteuid() == 0 or not args.run_id.replace("-", "").isalnum() or args.duration < 10:
+        parser.error("Run as the QA desktop user with a simple run id and duration >=10")
+    out = args.output
+    out.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if (out / "result.json").exists():
+        parser.error("Refusing to overwrite a completed run")
+    state = out / "controller"
+    workspace = Path.home() / "Workspaces" / ("qa-media-" + args.run_id)
+    workspace.mkdir(parents=True, exist_ok=False)
+    source = workspace / "tone.wav"
+    with wave.open(str(source), "wb") as stream:
+        stream.setparams((1, 2, 48000, 0, "NONE", "not compressed"))
+        stream.writeframes(b"".join(struct.pack("<h", int(9000 * math.sin(2 * math.pi * 440 * i / 48000))) for i in range(48000)))
+    expected = digest(source)
+    env = {**os.environ, "SHADOWFETCH_MISSIONS_STATE": str(state)}
+    stopped = False
+    active_id = None
+    failures = []
+    cycles = []
+    sequence = 0
+    def stop(sig, frame):
+        nonlocal stopped
+        stopped = True
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, stop)
+    def record(file, data):
+        with (out / file).open("a") as log:
+            log.write(json.dumps(data) + "\n")
+    def command(argv, timeout=40):
+        nonlocal sequence
+        sequence += 1
+        started = time.monotonic()
+        result = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=timeout)
+        (out / f"command-{sequence:05d}.out").write_text(result.stdout)
+        (out / f"command-{sequence:05d}.err").write_text(result.stderr)
+        record("commands.jsonl", {"sequence": sequence, "argv": argv, "exit": result.returncode, "seconds": round(time.monotonic() - started, 3)})
+        if result.returncode:
+            raise RuntimeError(f"Command {sequence} failed: {result.returncode}")
+        return result.stdout
+    def mission(action, *values):
+        return json.loads(command(["shadowfetch-missions", "--json", action, *map(str, values)]))
+    started = time.monotonic()
+    with (out / "worker.log").open("w") as log:
+        worker = subprocess.Popen(["shadowfetch-missions", "worker"], env=env, stdout=log, stderr=log, start_new_session=True)
+        try:
+            while time.monotonic() - started < args.duration and not stopped:
+                cycle_start = time.monotonic()
+                try:
+                    item = mission("create", "--kind", "media", "--workspace", workspace.name, "--title", "QA verified audio export", "--prompt", "Export and decode-verify the selected audio.", "--runtime", "local", "--network", "none", "--input", "tone.wav", "--timeout", "120")
+                    active_id = item["id"]
+                    while time.monotonic() - cycle_start < 150 and not stopped:
+                        if worker.poll() is not None:
+                            raise RuntimeError("Mission worker exited")
+                        item = mission("show", active_id)
+                        if item.get("state") == "waiting-review":
+                            break
+                        if item.get("state") in ("failed", "cancelled", "undone", "completed"):
+                            raise RuntimeError("Unexpected mission state: " + str(item))
+                        time.sleep(.5)
+                    if item.get("state") != "waiting-review":
+                        raise RuntimeError("Mission did not complete within its bounded timeout")
+                    receipt_path = Path(item["receipt"])
+                    if state.resolve() not in receipt_path.resolve().parents:
+                        raise ValueError("Receipt escapes the private QA controller")
+                    receipt = json.loads(receipt_path.read_text())
+                    artifacts = check_artifacts(receipt, workspace)
+                    evidence = out / active_id
+                    evidence.mkdir()
+                    shutil.copy2(receipt_path, evidence / "receipt.json")
+                    for path in artifacts:
+                        shutil.copy2(path, evidence / path.name)
+                        if path.suffix == ".wav":
+                            command(["ffmpeg", "-nostdin", "-v", "error", "-i", str(path), "-f", "null", "-"])
+                            metadata = json.loads(command(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)]))
+                            audio = next((s for s in metadata.get("streams", []) if s.get("codec_type") == "audio"), {})
+                            if audio.get("codec_name") != "pcm_s16le" or audio.get("sample_rate") != "48000" or not .99 <= float(metadata.get("format", {}).get("duration", 0)) <= 1.01:
+                                raise ValueError("Real exported codec, rate or duration does not match the fixture")
+                    (evidence / "events.json").write_text(json.dumps(mission("events", active_id), indent=2))
+                    reviewed = mission("review", active_id, "--decision", "undo")
+                    if reviewed.get("state") != "undone" or (workspace / "mission-output").exists() or digest(source) != expected:
+                        raise ValueError("Undo did not restore exact workspace state")
+                    row = {"mission": active_id, "elapsed": round(time.monotonic() - started, 3), "seconds": round(time.monotonic() - cycle_start, 3), "hashes_verified": True, "decode_verified": True, "undo_verified": True}
+                    cycles.append(row)
+                    record("cycles.jsonl", row)
+                    print(json.dumps(row), flush=True)
+                    active_id = None
+                except Exception as exc:
+                    row = {"error": str(exc), "mission": active_id, "elapsed": round(time.monotonic() - started, 3)}
+                    failures.append(row)
+                    record("failures.jsonl", row)
+                    # Preserve the failed state and workspace; repeated operations
+                    # on a failed recovery boundary could hide the original error.
+                    break
+                for _ in range(30):
+                    if stopped or time.monotonic() - started >= args.duration:
+                        break
+                    time.sleep(.5)
+        finally:
+            if active_id:
+                try:
+                    current = mission("show", active_id)
+                    if current.get("state") in ("running", "queued"):
+                        mission("cancel", active_id)
+                        for _ in range(20):
+                            if mission("show", active_id).get("state") == "cancelled":
+                                break
+                            time.sleep(.2)
+                        else:
+                            raise RuntimeError("Mission did not reach cancelled state")
+                except Exception as exc:
+                    failures.append({"error": "Cancellation not verified: " + str(exc)})
+            if worker.poll() is None:
+                os.killpg(worker.pid, signal.SIGTERM)
+                try:
+                    worker.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(worker.pid, signal.SIGKILL)
+                    worker.wait(timeout=5)
+    elapsed = time.monotonic() - started
+    coverage = cycles[-1]["elapsed"] - cycles[0]["elapsed"] if len(cycles) > 1 else 0
+    if len(cycles) < max(1, args.duration // 120) or (args.duration >= 120 and coverage < args.duration * .75) or elapsed < args.duration:
+        failures.append({"error": "Insufficient sustained real mission activity", "cycles": len(cycles), "coverage": coverage, "elapsed": elapsed})
+    result = {"cycles": len(cycles), "coverage_seconds": coverage, "elapsed_seconds": elapsed, "required_seconds": args.duration, "source_sha256": expected, "failures": failures, "cancelled": stopped, "model_inference": False, "status": "CANCELLED" if stopped else "FAIL" if failures else "PASS"}
+    (out / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+    print(json.dumps(result), flush=True)
+    return 130 if stopped else 1 if failures else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

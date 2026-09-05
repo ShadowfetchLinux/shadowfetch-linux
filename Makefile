@@ -10,7 +10,7 @@
 #   make distclean  Wipe everything regenerable
 
 SHELL := /bin/bash
-VERSION  ?= 3.5.0
+VERSION  ?= 4.0.0
 CODENAME ?= umbra
 ISO_NAME := shadowfetch-$(VERSION)-amd64.iso
 VERSION_TOKEN := $(subst .,_,$(VERSION))
@@ -34,7 +34,8 @@ PACKAGES := \
 	shadowfetch-control-center \
 	shadowfetch-fireproof \
 	shadowfetch-hwscan \
-	shadowfetch-fireline
+	shadowfetch-fireline \
+	shadowfetch-missions
 
 # GPG key the APT repo signs with. Override with `make REPO_KEY_ID=...` if
 # you've regenerated the key. The default matches the key on shadowfetch-linux.
@@ -79,7 +80,7 @@ R2_REGION   ?= auto
 
 # Used by sync-from-linux (Mac-side flow): host + path to the build box.
 LINUX_HOST ?= shadowfetch-linux
-LINUX_PATH ?= ~/projects/shadowfetch-3.5.0
+LINUX_PATH ?= ~/projects/shadowfetch-4.0.0
 
 .PHONY: all help test source-gate package-gate iso-gate acceptance-audit deps packages repo iso sign pre-release-check publish qemu clean distclean \
         sync-from-linux deploy-worker ship stamp-version
@@ -102,6 +103,8 @@ help:
 	@echo "  make distclean  Wipe all regenerable files"
 
 test:
+	python3 -m unittest discover -s packages/shadowfetch-missions/tests -v
+	QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s packages/shadowfetch-control-center/tests -v
 	python3 -m unittest discover -s packages/shadowfetch-defaults/tests -v
 	python3 -m unittest discover -s packages/shadowfetch-firewatchd/tests -v
 	python3 -m unittest discover -s packages/shadowfetch-fireproof/tests -v
@@ -109,6 +112,7 @@ test:
 	python3 packages/shadowfetch-fireline/tests/test_ai_ignition.py
 	python3 packages/shadowfetch-fireline/tests/test_fireline_mcp.py
 	python3 packages/shadowfetch-fireline/tests/test_checkpoint_roundtrip.py
+	python3 packages/shadowfetch-fireline/tests/test_firebreak_4.py
 	python3 -m unittest discover -s tools/tests -v
 
 source-gate:
@@ -145,13 +149,7 @@ packages: $(PACKAGES_STAMP)
 # was itself stale. A single source of truth that a human maintains is the same
 # bug with one fewer copy, so the build stamps it now.
 stamp-version:
-	@printf '%s\n' '$(VERSION)' > $(ROOT)/packages/shadowfetch-branding/data/usr/share/shadowfetch/version
-	@sed -i -E 's/[0-9]+\.[0-9]+\.[0-9]+/$(VERSION)/g' \
-		$(ROOT)/packages/shadowfetch-branding/data/usr/share/shadowfetch/os-release.shadowfetch
-	@for f in $(ROOT)/packages/shadowfetch-themes/data/usr/share/sddm/themes/umbra/metadata.desktop $(ROOT)/packages/shadowfetch-defaults/data/usr/share/doc/shadowfetch/LICENSES.md $(ROOT)/packages/shadowfetch-defaults/data/usr/share/doc/shadowfetch/SOURCES.md $(ROOT)/packages/shadowfetch-defaults/data/usr/bin/shadowfetch-element $(ROOT)/packages/shadowfetch-fireline/data/usr/bin/shadowfetch-firebreak; do \
-		sed -i -E 's/\b[0-9]+\.[0-9]+\.[0-9]+\b/$(VERSION)/g' "$$f"; \
-	done
-	@echo ">>> stamped version $(VERSION) into branding, themes, docs and CLI surfaces"
+	python3 tools/stamp_version.py "$(VERSION)"
 
 $(PACKAGES_STAMP): stamp-version
 	@mkdir -p $(BUILD_DIR)

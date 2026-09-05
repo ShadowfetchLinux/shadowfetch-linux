@@ -16,6 +16,7 @@ Depends:
  shadowfetch-welcome (= ${binary:Version}),
  shadowfetch-creative-base (= ${binary:Version}),
  shadowfetch-fireline (= ${binary:Version}),
+ shadowfetch-missions (= ${binary:Version}),
  kde-plasma-desktop,
  sddm,
  pipewire,

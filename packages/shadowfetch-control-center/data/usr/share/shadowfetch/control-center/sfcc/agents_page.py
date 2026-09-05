@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
 
 from sfcc import busutil, theme
 from sfcc.theme import Card, label
+from sfcc.local_model_card import LocalModelCard
 
 WORKSPACES_DIR = Path.home() / "Workspaces"
 
@@ -99,6 +100,8 @@ class AgentsPage(QWidget):
         self.scan_stamp = label("", "detail")
         b_lay.addWidget(self.scan_stamp)
         root.addWidget(banner)
+        self.local_check = LocalModelCard()
+        root.addWidget(self.local_check)
 
         # ---- Buzz models (Firewatch1 is the only live source) -------------
         root.addWidget(label("Buzz shared compute", "subtitle"))

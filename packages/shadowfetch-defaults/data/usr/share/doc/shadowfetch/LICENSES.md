@@ -26,6 +26,13 @@ embedded in the ISO. They are third-party products governed by their vendors'
 terms and are downloaded only after explicit user consent. Shadowfetch's MIT
 license does not grant rights to those downloaded products.
 
+The optional native Grok Bot desktop application is also downloaded from its
+official vendor only after the user selects installation. Its proprietary
+binary is not embedded in the ISO. Grok Bot and Cursor service terms apply;
+Shadowfetch's MIT license does not grant redistribution rights to that app.
+The shipped `GROK-BOT.md` explains its native package, cloud account, and
+vendor update source. This integration does not imply vendor endorsement.
+
 ## Written offer for source
 
 The complete corresponding source for the Shadowfetch packages is:

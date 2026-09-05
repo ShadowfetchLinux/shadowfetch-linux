@@ -15,7 +15,7 @@ A small, focused PyQt6 wizard that:
   - Offers a curated set of optional apps to install from Flathub
   - Offers Buzz; Buzz ranks and downloads open models in its Compute settings
   - Offers verified, user-level installs of Codex, Claude Code, Grok Build,
-    and Cursor Agent
+    Cursor Agent, and the official native Grok Bot desktop
   - Offers the one-click software catalog (media apps, presets, local AI)
 
 Honest, fast, private, AI-ready - built on Debian + KDE Plasma 6.
@@ -154,6 +154,17 @@ RED        = "#E2533B"
 
 CODING_AGENTS = (
     {
+        "key": "grok-bot",
+        "name": "Grok Bot",
+        "label": "Grok Bot · official native desktop",
+        "description": "Cloud teammates. Eligible account and plan required; sign in in the native app.",
+        "helper": "shadowfetch-grok-bot",
+        "helper_tool": None,
+        "install_title": "Installing official Grok Bot...",
+        "checking": "Verifying the pinned native package before administrator approval...",
+        "receipt": "The official Grok Bot desktop passed its pinned package and version checks. Sign in in the native app.",
+    },
+    {
         "key": "codex",
         "name": "Codex",
         "label": "OpenAI Codex CLI",
@@ -247,6 +258,17 @@ def open_system_guide():
         except OSError:
             pass
     return False
+
+
+def open_control_page(page):
+    control = shutil.which("shadowfetch-control")
+    if not control:
+        return False
+    try:
+        subprocess.Popen([control, "--page", page])
+        return True
+    except OSError:
+        return False
 
 
 def open_workbench():
@@ -1883,76 +1905,67 @@ class WelcomePage(QWidget):
                  on_guide=None, on_workbench=None):
         super().__init__()
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(56, 56, 56, 48)
-        lay.setSpacing(18)
-
-        logo = QLabel()
-        icon = QIcon.fromTheme("shadowfetch")
-        if not icon.isNull():
-            logo.setPixmap(icon.pixmap(QSize(72, 72)))
-
-        title = _label("Welcome to Shadowfetch Linux", 30, TEXT, bold=True)
+        lay.setContentsMargins(40, 34, 40, 30)
+        lay.setSpacing(14)
         version_file = Path("/usr/share/shadowfetch/version")
         version = os.environ.get("SHADOWFETCH_VERSION_OVERRIDE", "").strip()
         if not version and version_file.is_file():
             version = version_file.read_text().strip()
         element_name = "Ice" if ELEMENT == "ice" else "Fire"
-        edition = f"{element_name} Edition {version}" if version else f"{element_name} Edition"
-        tag = _label(f"{edition}  |  Fire and Ice Workbench", 15, GOLD, bold=True)
-        body = _label(
-            "A fast, private, AI-ready desktop - honestly built on Debian and "
-            "KDE Plasma 6.\nOn the default Btrfs install every update is snapshotted, "
-            "so you can roll back a bad change with the built-in Btrfs Assistant.\n"
-            "Shadowfetch Guide checks what works without uploading your computer's "
-            "identity. Element Workbench creates production-ready software, AI, "
-            "operations and creative projects with explicit safety boundaries. Then "
-            "pick an app profile and optionally install Buzz or one "
-            "or more coding agents. Buzz ranks and downloads an open model from its "
-            "Compute settings.",
-            13, MUTED, wrap=True,
-        )
-
-        nxt = QPushButton("Get started  →")
-        nxt.setFixedHeight(46)
-        nxt.clicked.connect(on_next)
-
-        lay.addStretch(1)
-        if logo.pixmap() is not None and not logo.pixmap().isNull():
-            lay.addWidget(logo)
-        lay.addWidget(title)
-        lay.addWidget(tag)
-        lay.addSpacing(6)
-        lay.addWidget(body)
-
-        # Passive, non-modal Ignition badge: discovery survives 'Decide
-        # later' without any full-screen re-offer (judge fold, nag rule).
-        links = QHBoxLayout()
-        if on_guide is not None:
-            guide = QPushButton("Check this computer")
-            guide.setFixedHeight(38)
-            guide.setToolTip("Open the private, read-only Shadowfetch System Passport")
-            guide.clicked.connect(on_guide)
-            links.addWidget(guide)
-        if on_workbench is not None:
-            workbench = QPushButton("Open Element Workbench")
-            workbench.setFixedHeight(38)
-            workbench.setToolTip("Plan tools and create a production workspace")
-            workbench.clicked.connect(on_workbench)
-            links.addWidget(workbench)
-        if on_ignition is not None:
-            badge = QPushButton("Ignition - pick your flame  →")
-            badge.setFixedHeight(38)
-            badge.clicked.connect(on_ignition)
-            links.addWidget(badge)
-        if on_catalog is not None:
-            cat = QPushButton("Browse the software catalog  →")
-            cat.setFixedHeight(38)
-            cat.clicked.connect(on_catalog)
-            links.addWidget(cat)
-        links.addStretch(1)
+        lay.addWidget(_label(f"SHADOWFETCH LINUX {version}  /  {element_name.upper()}", 13, GOLD, bold=True))
+        lay.addWidget(_label("Your computer. Your agents.", 30, TEXT, bold=True))
+        lay.addWidget(_label(
+            "Work you can inspect. Mission Control brings tasks, progress, output files "
+            "and review together on your Debian + KDE Plasma desktop.",
+            13, MUTED, wrap=True))
+        feature = Card()
+        feature.setStyleSheet(f"QFrame {{ background: {CARD}; border: 1px solid {GOLD}; border-radius: 10px; }} QLabel {{border: 0;}}")
+        feature_row = QHBoxLayout(feature)
+        feature_row.setContentsMargins(22, 18, 22, 18)
+        copy = QVBoxLayout()
+        copy.setSpacing(6)
+        copy.addWidget(_label("FEATURED TEAMMATE", 11, GOLD, bold=True))
+        copy.addWidget(_label("Grok Bot", 28, TEXT, bold=True))
+        copy.addWidget(_label("Install the official native desktop during setup. Sign in inside Grok Bot with an eligible account and plan. This is a cloud service; API keys do not replace app sign-in.", 11, MUTED, wrap=True))
+        feature_row.addLayout(copy, 1)
+        explore = QPushButton("Explore Grok Bot  →")
+        explore.clicked.connect(lambda: open_control_page("grok-bot"))
+        feature_row.addWidget(explore)
+        lay.addWidget(feature)
+        points = QGridLayout()
+        for i, (title, detail) in enumerate((
+            ("01  Choose your scope", "One project, an explicit connection and the provider you choose."),
+            ("02  Watch work progress", "Persistent code, private report and media missions with activity receipts."),
+            ("03  Review the evidence", "Inspect files and changes. Accept results or restore local mission changes."),
+        )):
+            card = Card()
+            row = QVBoxLayout(card)
+            row.setContentsMargins(14, 12, 14, 12)
+            row.addWidget(_label(title, 12, GOLD, bold=True))
+            row.addWidget(_label(detail, 11, MUTED, wrap=True))
+            points.addWidget(card, 0, i)
+        lay.addLayout(points)
+        lay.addWidget(_label("Local-first · No Shadowfetch account required · No telemetry", 11, MUTED, wrap=True))
+        links = QGridLayout()
+        callbacks = [("Open Mission Control", lambda: open_control_page("missions"))]
+        if on_guide:
+            callbacks.append(("Check this computer", on_guide))
+        if on_workbench:
+            callbacks.append(("Open Element Workbench", on_workbench))
+        if on_catalog:
+            callbacks.append(("Software catalog", on_catalog))
+        if on_ignition:
+            callbacks.append(("Ignition bundles", on_ignition))
+        for i, (name, callback) in enumerate(callbacks):
+            button = QPushButton(name)
+            button.setFixedHeight(36)
+            button.clicked.connect(callback)
+            links.addWidget(button, i // 3, i % 3)
         lay.addLayout(links)
-
-        lay.addStretch(2)
+        lay.addStretch(1)
+        nxt = QPushButton("Set up my desktop  →")
+        nxt.setFixedHeight(44)
+        nxt.clicked.connect(on_next)
         lay.addWidget(nxt, alignment=Qt.AlignmentFlag.AlignRight)
 
 
@@ -2493,87 +2506,98 @@ class AppsPage(QWidget):
 
 
 class BuzzPage(QWidget):
-    """Offer official Buzz, native open models, and optional coding agents."""
+    """Explicit native Grok Bot, local models and coding-agent setup choices."""
     def __init__(self, on_next):
         super().__init__()
         self._on_next = on_next
-        self.choice = "install-buzz"
+        self.choice = "none" if ELEMENT == "ice" else "install-buzz"
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(48, 40, 48, 32)
-        lay.setSpacing(12)
-        lay.addWidget(_label("Choose your AI workspace", 22, TEXT, bold=True))
-        element_line = (
-            "Ice element: any coding agent you pick runs in Firebreak with NO network "
-            "by default — you grant it per session."
-            if ELEMENT == "ice" else
-            "Fire element: coding agents you pick run in Firebreak with network "
-            "allowed by default."
-        )
+        lay.setContentsMargins(36, 26, 36, 24)
+        lay.setSpacing(10)
+        lay.addWidget(_label("Build your agent team", 24, TEXT, bold=True))
         lay.addWidget(_label(
-            "Buzz gives people and AI agents shared rooms, project context, and native shared "
-            "compute. Shadowfetch installs the official desktop and a private relay. Buzz then "
-            "ranks open-source models for this hardware and asks before downloading one. "
-            "Cloud coding agents are separate, optional tools with their own sign-in. "
-            + element_line,
-            12, MUTED, wrap=True))
-        lay.addSpacing(6)
+            "Choose the tools to install. Every selected download runs during the next setup step. "
+            "Cloud tools need their own account; local models are selected separately in Buzz. "
+            + ("Ice is active: Grok Bot cloud setup is paused and no AI tool is selected automatically." if ELEMENT == "ice" else "Fire is active: cloud connections are available when you choose them."),
+            11, MUTED, wrap=True))
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        body = QWidget()
+        content = QVBoxLayout(body)
+        content.setContentsMargins(0, 0, 6, 4)
+        content.setSpacing(10)
+        self.coding_agents = {}
+        featured = Card()
+        featured.setStyleSheet(f"QFrame {{background: {CARD}; border: 1px solid {GOLD}; border-radius: 10px;}} QLabel {{border: 0;}}")
+        row = QHBoxLayout(featured)
+        row.setContentsMargins(18, 15, 18, 15)
+        grok = QCheckBox()
+        grok.setAccessibleName("Install official Grok Bot desktop")
+        grok.setEnabled(ELEMENT != "ice")
+        grok.setChecked(False)
+        self.coding_agents["grok-bot"] = grok
+        row.addWidget(grok, 0, Qt.AlignmentFlag.AlignTop)
+        copy = QVBoxLayout()
+        copy.setSpacing(4)
+        copy.addWidget(_label("FEATURED  /  OFFICIAL NATIVE DESKTOP", 10, GOLD, bold=True))
+        copy.addWidget(_label("Grok Bot", 24, TEXT, bold=True))
+        copy.addWidget(_label("AI teammates you can give real work to.", 12, TEXT, bold=True))
+        copy.addWidget(_label("Select to download and install the verified native package. Administrator approval is required; the vendor package adds its update source. Grok Bot uses cloud services and needs an eligible account and plan. Sign in in its native app after setup.", 10, MUTED, wrap=True))
+        if ELEMENT == "ice":
+            copy.addWidget(_label("Paused in Ice. Switch to Fire deliberately to install and use Grok Bot.", 10, GOLD, wrap=True))
+        row.addLayout(copy, 1)
+        content.addWidget(featured)
         self.group = QButtonGroup(self)
-        opts = [
-            ("install-buzz", "Install Buzz", "Recommended. Verifies Buzz Desktop, starts its loopback-only relay, then opens Buzz for its native model choice."),
-            ("none", "Not now", "Skip Buzz. It remains available from the Local AI menu."),
-        ]
         self.choice_radios = {}
-        for key, name, desc in opts:
+        buzz_row = QHBoxLayout()
+        for key, name, desc in (("install-buzz", "Install Buzz", "Official desktop, private relay and hardware-aware local model selection."), ("none", "Skip local AI setup", "Continue without a local model download; set it up later in Local AI.")):
             card = Card()
-            row = QHBoxLayout(card)
-            row.setContentsMargins(16, 12, 16, 12)
+            line = QHBoxLayout(card)
+            line.setContentsMargins(14, 12, 14, 12)
             rb = QRadioButton()
-            self.choice_radios[key] = rb
-            rb.setChecked(key == "install-buzz")
+            rb.setChecked(key == self.choice)
             rb.toggled.connect(lambda checked, k=key: self._set(k) if checked else None)
             self.group.addButton(rb)
-            txt = QVBoxLayout()
-            txt.setSpacing(2)
-            txt.addWidget(_label(name, 13, GOLD if key == "install-buzz" else TEXT, bold=True))
-            txt.addWidget(_label(desc, 11, MUTED, wrap=True))
-            row.addWidget(rb, 0, Qt.AlignmentFlag.AlignTop)
-            row.addLayout(txt, 1)
-            lay.addWidget(card)
-
+            self.choice_radios[key] = rb
+            text = QVBoxLayout()
+            text.addWidget(_label(name, 12, TEXT, bold=True))
+            text.addWidget(_label(desc, 10, MUTED, wrap=True))
+            line.addWidget(rb, 0, Qt.AlignmentFlag.AlignTop)
+            line.addLayout(text, 1)
+            buzz_row.addWidget(card)
+        content.addLayout(buzz_row)
         agent_heading = QHBoxLayout()
-        agent_heading.addWidget(_label("Optional coding agents", 12, MUTED, bold=True))
+        agent_heading.addWidget(_label("Coding agents", 12, MUTED, bold=True))
         agent_heading.addStretch(1)
-        self.select_all_agents = QCheckBox("Select all four")
-        self.select_all_agents.setChecked(False)
+        self.select_all_agents = QCheckBox("Select available agents")
         self.select_all_agents.toggled.connect(self._toggle_all_agents)
         agent_heading.addWidget(self.select_all_agents)
-        lay.addLayout(agent_heading)
-
-        self.coding_agents = {}
+        content.addLayout(agent_heading)
+        grok.toggled.connect(self._sync_select_all_agents)
         agent_grid = QGridLayout()
-        agent_grid.setHorizontalSpacing(10)
-        agent_grid.setVerticalSpacing(10)
-        for index, agent in enumerate(CODING_AGENTS):
+        agent_grid.setSpacing(8)
+        for index, agent in enumerate(a for a in CODING_AGENTS if a["key"] != "grok-bot"):
             card = Card()
-            card.setMinimumHeight(88)
             row = QHBoxLayout(card)
-            row.setContentsMargins(14, 10, 14, 10)
+            row.setContentsMargins(12, 9, 12, 9)
             checkbox = QCheckBox()
             checkbox.setChecked(False)
+            checkbox.setAccessibleName("Install " + agent["name"])
             checkbox.toggled.connect(self._sync_select_all_agents)
             text = QVBoxLayout()
             text.setSpacing(2)
-            text.addWidget(_label(agent["label"], 12, GOLD, bold=True))
+            text.addWidget(_label(agent["label"], 11, GOLD, bold=True))
             text.addWidget(_label(agent["description"], 10, MUTED, wrap=True))
             row.addWidget(checkbox, 0, Qt.AlignmentFlag.AlignTop)
             row.addLayout(text, 1)
             self.coding_agents[agent["key"]] = checkbox
             agent_grid.addWidget(card, index // 2, index % 2)
-        lay.addLayout(agent_grid)
-
-        lay.addStretch(1)
+        content.addLayout(agent_grid)
+        content.addStretch(1)
+        scroll.setWidget(body)
+        lay.addWidget(scroll, 1)
         nxt = QPushButton("Continue  →")
-        nxt.setFixedHeight(44)
+        nxt.setFixedHeight(42)
         nxt.clicked.connect(self._submit)
         lay.addWidget(nxt, alignment=Qt.AlignmentFlag.AlignRight)
 
@@ -2581,44 +2605,36 @@ class BuzzPage(QWidget):
         self.choice = key
 
     def apply_profiles(self, profile_keys):
-        """Preseed this page from the chosen profiles — their AI statements are
-        promises, and this is where the promise is kept (still fully editable)."""
+        if ELEMENT == "ice":
+            return
         agents = set()
         want_buzz = False
         for key in profile_keys:
             preset = PROFILE_BY_KEY.get(key)
-            if not preset:
-                continue
-            agents.update(preset.get("agents", []))
-            if preset.get("ai_choice") == "install-buzz":
-                want_buzz = True
+            if preset:
+                agents.update(preset.get("agents", []))
+                want_buzz = want_buzz or preset.get("ai_choice") == "install-buzz"
         for key, checkbox in self.coding_agents.items():
-            if key in agents:
-                checkbox.setChecked(True)   # plain setChecked keeps select-all in sync
-        if want_buzz and "install-buzz" in self.choice_radios:
+            if key in agents and checkbox.isEnabled():
+                checkbox.setChecked(True)
+        if want_buzz:
             self.choice_radios["install-buzz"].setChecked(True)
 
     def _toggle_all_agents(self, checked):
         for checkbox in self.coding_agents.values():
             checkbox.blockSignals(True)
-            checkbox.setChecked(checked)
+            checkbox.setChecked(checked and checkbox.isEnabled())
             checkbox.blockSignals(False)
 
     def _sync_select_all_agents(self, _checked=None):
-        all_selected = all(checkbox.isChecked() for checkbox in self.coding_agents.values())
+        available = [checkbox for checkbox in self.coding_agents.values() if checkbox.isEnabled()]
         self.select_all_agents.blockSignals(True)
-        self.select_all_agents.setChecked(all_selected)
+        self.select_all_agents.setChecked(bool(available) and all(c.isChecked() for c in available))
         self.select_all_agents.blockSignals(False)
 
     def _submit(self):
-        coding_agents = {
-            key: checkbox.isChecked() for key, checkbox in self.coding_agents.items()
-        }
-        self._on_next({
-            "choice": self.choice,
-            "coding_agents": coding_agents,
-            "codex": coding_agents["codex"],
-        })
+        coding_agents = {key: checkbox.isChecked() and checkbox.isEnabled() for key, checkbox in self.coding_agents.items()}
+        self._on_next({"choice": self.choice, "coding_agents": coding_agents, "codex": coding_agents["codex"]})
 
 
 class InstallPage(QWidget):
@@ -2793,6 +2809,11 @@ class InstallPage(QWidget):
         self._start_next_ai()
 
     def _start_coding_agent_setup(self, agent):
+        if agent["key"] == "grok-bot" and ELEMENT == "ice":
+            self.coding_agent_states[agent["key"]] = "failed"
+            self.failure_details.append("Grok Bot: Ice is active. Switch to Fire deliberately before downloading this cloud app.")
+            self._start_next_ai()
+            return
         helper = shutil.which(agent["helper"])
         if not helper:
             self.coding_agent_states[agent["key"]] = "failed"
@@ -2972,7 +2993,7 @@ class ShadowfetchWelcome(QMainWindow):
         self.setMinimumSize(QSize(940, 680))
         self.setStyleSheet(f"""
             QMainWindow {{ background-color: {BG}; }}
-            QWidget {{ color: {TEXT}; }}
+            QWidget {{ color: {TEXT}; background-color: {BG}; }}
             QLabel {{ background: transparent; }}
             QCheckBox {{ spacing: 10px; }}
             QCheckBox::indicator {{

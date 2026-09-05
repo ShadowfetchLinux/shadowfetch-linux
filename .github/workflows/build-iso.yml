@@ -1,117 +1,63 @@
-name: Build & publish Shadowfetch Linux ISO
+name: Source and package checks
 
 on:
   push:
-    tags: ['v*']            # Tag push (v1.0.0, v1.0.1, ...) triggers full release pipeline
-  workflow_dispatch:        # Manual trigger for dry-run / test builds
-    inputs:
-      publish:
-        description: 'Publish to R2 + deploy Worker?'
-        required: true
-        default: 'false'
-        type: choice
-        options: ['true', 'false']
+    branches: [main, 'release/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 180   # ISO build alone is ~30-60 min; with publish more
-    permissions:
-      contents: write       # for creating GitHub releases
+  source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Free up disk space
-        # Default ubuntu-latest gives ~14GB free; squashfs + chroot need more.
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force || true
-          df -h
-
-      - name: Install build dependencies
+      - uses: actions/checkout@v4
+      - name: Install source and package test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            live-build live-config live-boot \
-            debhelper devscripts equivs dh-python \
-            reprepro gnupg \
-            xorriso isolinux syslinux-common syslinux-utils \
-            grub-pc-bin grub-efi-amd64-bin mtools \
-            xz-utils python3 awscli
-
-      - name: Verify release version and source gates
+          sudo apt-get install -y debhelper dh-python devscripts fakeroot python3 python3-yaml python3-pyqt6 python3-dbus shellcheck desktop-file-utils bubblewrap ffmpeg
+      - name: Test behavior
+        run: make test
+      - name: Validate source syntax and desktop entries
         run: |
-          VERSION=$(awk '/^VERSION[[:space:]]*\?=/{print $3; exit}' Makefile)
-          if [[ "$GITHUB_REF" == refs/tags/* && "${GITHUB_REF_NAME}" != "v${VERSION}" ]]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} does not match Makefile VERSION ${VERSION}"
-            exit 1
-          fi
-          make test
-
-      - name: Import GPG signing key
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.SHADOWFETCH_GPG_PRIVATE_KEY }}
-        run: |
-          if [ -z "$GPG_PRIVATE_KEY" ]; then
-            echo "::error::SHADOWFETCH_GPG_PRIVATE_KEY secret not set; can't sign release"
-            exit 1
-          fi
-          echo "$GPG_PRIVATE_KEY" | gpg --batch --import
-          gpg --list-secret-keys
-
-      - name: Build packages + ISO
-        run: |
-          make iso
-
-      - name: Compute checksums (also done by Makefile; double-check)
-        run: |
-          ls -lh *.iso *.iso.sha256 *.iso.asc
-          cat *.iso.sha256
-
-      - name: Pre-release publication gate
-        run: |
-          make pre-release-check
-
-      - name: Upload ISO as workflow artifact (always)
-        uses: actions/upload-artifact@v4
+          python3 - <<'PY'
+          import ast, json, pathlib, subprocess
+          files = subprocess.check_output(['git', 'ls-files', '-z']).split(b'\0')
+          for name in filter(None, files):
+              p = pathlib.Path(name.decode())
+              if not p.is_file():
+                  continue
+              try:
+                  text = p.read_text()
+              except UnicodeError:
+                  continue
+              first = text.splitlines()[0] if text.splitlines() else ''
+              if p.suffix == '.py' or first.startswith('#!') and 'python' in first:
+                  ast.parse(text, filename=str(p))
+              if p.suffix == '.json':
+                  json.loads(text)
+              if p.suffix == '.desktop' and ('applications' in p.parts or 'autostart' in p.parts):
+                  subprocess.run(['desktop-file-validate', str(p)], check=True)
+          PY
+          git diff --check
+      - name: Build unsigned candidate packages
+        run: make packages
+      - uses: actions/upload-artifact@v4
         with:
-          name: shadowfetch-iso
-          path: |
-            *.iso
-            *.iso.sha256
-            *.iso.asc
-          retention-days: 30
+          name: unsigned-candidate-packages
+          path: build/*.deb
+          retention-days: 14
 
-      - name: Publish to R2 (tag or manual-with-publish=true)
-        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
-        env:
-          AWS_ACCESS_KEY_ID:     ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-        run: |
-          make publish
-
-      - name: Deploy Worker (tag or manual-with-publish=true)
-        if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish == 'true')
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          npm install -g wrangler
-          cd web/shadowfetch-linux-worker && wrangler deploy
-
-      - name: Create GitHub release on tag
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN }}
-        with:
-          name: ${{ github.ref_name }}
-          draft: true
-          generate_release_notes: true
-          body: |
-            The signed ISO is hosted on Shadowfetch's release storage because
-            GitHub release assets have a 2 GiB per-file limit. Verify the R2
-            download with the attached checksum and detached signature.
-          files: |
-            *.iso.sha256
-            *.iso.asc
+# The signed release is built, tested in installed VMs, and published from the
+# authorized Linux publisher. A tag must not rebuild and overwrite the tested
+# ISO or deploy an unrelated Worker. See RELEASE-4.0.0.md.

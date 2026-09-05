@@ -96,7 +96,7 @@ class FireEdition215Tests(unittest.TestCase):
 
     def test_debian_revision_versions_use_quilt_source_format(self):
         formats = sorted((ROOT / "packages").glob("*/debian/source/format"))
-        self.assertEqual(14, len(formats))
+        self.assertEqual(15, len(formats))
         for source_format in formats:
             self.assertEqual("3.0 (quilt)", source_format.read_text().strip())
         makefile = (ROOT / "Makefile").read_text()
@@ -381,8 +381,8 @@ class FireEdition215Tests(unittest.TestCase):
             "Cursor Agent",
         ):
             self.assertIn(label, welcome)
-        self.assertIn("Optional coding agents", welcome)
-        self.assertIn("Select all four", welcome)
+        self.assertIn("Coding agents", welcome)
+        self.assertIn("Select available agents", welcome)
         self.assertIn("QGridLayout", welcome)
         self.assertIn("agent_grid.addWidget(card, index // 2, index % 2)", welcome)
         self.assertIn("checkbox.setChecked(False)", welcome)
@@ -977,7 +977,7 @@ class FireEdition215Tests(unittest.TestCase):
             check["summary"],
         )
 
-    def test_guide_is_first_and_live_setup_exposes_the_passport(self):
+    def test_missions_are_first_and_live_setup_keeps_the_passport(self):
         app = (
             CONTROL / "usr/share/shadowfetch/control-center/sfcc/app.py"
         ).read_text()
@@ -989,7 +989,7 @@ class FireEdition215Tests(unittest.TestCase):
             ROOT / "packages/shadowfetch-control-center/debian/"
             "shadowfetch-control-center.install"
         ).read_text()
-        self.assertRegex(app, r"SECTIONS\s*=\s*\[\s*\(\"guide\"")
+        self.assertRegex(app, r"SECTIONS\s*=\s*\[\s*\(\"missions\"")
         self.assertIn('"passport": "guide"', app)
         self.assertIn("GuidePage(self.open_route)", app)
         self.assertIn("shadowfetch-passport", guide)
@@ -1107,8 +1107,9 @@ class FireEdition215Tests(unittest.TestCase):
             app = module.QApplication([])
 
             submitted = []
+            module.ELEMENT = "fire"
             choice = module.BuzzPage(submitted.append)
-            assert tuple(choice.coding_agents) == ("codex", "claude", "grok", "cursor")
+            assert tuple(choice.coding_agents) == ("grok-bot", "codex", "claude", "grok", "cursor")
             assert not any(box.isChecked() for box in choice.coding_agents.values())
             choice.select_all_agents.setChecked(True)
             assert all(box.isChecked() for box in choice.coding_agents.values())
@@ -1116,13 +1117,13 @@ class FireEdition215Tests(unittest.TestCase):
             assert not choice.select_all_agents.isChecked()
             choice._submit()
             assert submitted[-1]["coding_agents"] == {{
-                "codex": True, "claude": True, "grok": False, "cursor": True,
+                "grok-bot": True, "codex": True, "claude": True, "grok": False, "cursor": True,
             }}
 
             install = module.InstallPage(lambda: None)
             install.buzz_state = "not-requested"
             install.coding_agent_states = {{
-                "codex": "failed", "claude": "pending",
+                "grok-bot": "not-requested", "codex": "failed", "claude": "pending",
                 "grok": "pending", "cursor": "pending",
             }}
             started = []
@@ -1238,10 +1239,10 @@ class FireEdition215Tests(unittest.TestCase):
             "class InstallPage", 1
         )[0]
         self.assertIn('("install-buzz", "Install Buzz"', buzz_page)
-        self.assertIn('("none", "Not now"', buzz_page)
+        self.assertIn('("none", "Skip local AI setup"', buzz_page)
         self.assertNotIn("QComboBox", welcome)
         self.assertNotIn("Buzz plus model", welcome)
-        self.assertIn("ranks open-source models", buzz_page)
+        self.assertIn("hardware-aware local model selection", buzz_page)
 
     def test_first_run_completion_waits_for_buzz_or_explicit_skip(self):
         welcome = WELCOME.read_text()
