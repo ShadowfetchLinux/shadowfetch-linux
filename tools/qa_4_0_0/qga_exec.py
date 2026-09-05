@@ -11,6 +11,7 @@ from pathlib import Path
 import json
 import socket
 import sys
+import tempfile
 import time
 from typing import Any
 
@@ -103,6 +104,19 @@ def main() -> int:
         parser.error("Provide either one command or --pid, and a positive observation timeout")
     pid = args.pid
     handle_file = args.handle_file
+    previous_handle = {}
+    if pid is not None:
+        handle_file = handle_file or Path(args.socket_path).parent / f"guest-command-{pid}.json"
+        try:
+            previous_handle = json.loads(handle_file.read_text())
+            if previous_handle.get("pid") != pid or previous_handle.get("socket_path") != args.socket_path:
+                previous_handle = {}
+        except (OSError, ValueError):
+            previous_handle = {}
+        if previous_handle.get("state") == "exited" and previous_handle.get("terminal") is True:
+            print(json.dumps(previous_handle), file=sys.stderr)
+            print("This guest command was already observed to exit. Its output was consumed by the original observer; consult the guest's log files. No new RPC or command was started.", file=sys.stderr)
+            return int(previous_handle.get("exitcode", 1))
     deadline = time.monotonic() + args.timeout
     def save(state, **values):
         nonlocal handle_file
@@ -113,9 +127,12 @@ def main() -> int:
         data = {"pid": pid, "socket_path": args.socket_path, "state": state, "handle_file": str(handle_file), **values}
         if args.command is not None:
             data["command_sha256"] = hashlib.sha256(args.command.encode()).hexdigest()
+        elif "command_sha256" in previous_handle:
+            data["command_sha256"] = previous_handle["command_sha256"]
         handle_file.parent.mkdir(parents=True, exist_ok=True)
-        tmp = handle_file.with_name(handle_file.name + ".tmp")
-        tmp.write_text(json.dumps(data, indent=2) + "\n")
+        with tempfile.NamedTemporaryFile("w", prefix=handle_file.name + ".", dir=handle_file.parent, delete=False) as staged:
+            staged.write(json.dumps(data, indent=2) + "\n")
+            tmp = Path(staged.name)
         tmp.replace(handle_file)
         return data
     try:

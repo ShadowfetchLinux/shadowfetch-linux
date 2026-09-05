@@ -904,7 +904,9 @@ def identity_and_installer_gate(squashfs: Path, inventory: dict[str, str]) -> No
     for token in (
         "Shadowfetch Linux 4.0.0",
         "Element Workbench",
-        "AI with visible boundaries",
+        "Mission Control brings plans, scoped work and results together",
+        "Meet Grok Bot after installation",
+        "Choose its verified native installation",
         "Built to come back",
         'source: "slide-fire.jpg"',
         'source: "slide-ice.jpg"',

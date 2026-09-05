@@ -480,7 +480,7 @@ class Executor:
             text = result["choices"][0]["message"]["content"]
         except (ValueError, KeyError, TypeError, IndexError):
             raise MissionError("Local inference returned an invalid response")
-        self.inferences.append({"model": model, "usage": result.get("usage"), "compute": result.get("shadowfetch_compute", {})})
+        self.inferences.append({"model": model, "usage": result.get("usage"), "compute": result.get("shadowfetch_compute", {}), "observed_at": now(), "attempt": self.mission["attempt"], "response_sha256": hashlib.sha256(data).hexdigest(), "reused": False})
         self.event("inference-finished", f"{model}: {len(text)} characters")
         return text
 
@@ -529,6 +529,10 @@ class Executor:
             # Do not overwrite a person's updated sources or output on retry.
             # Keep the old recovery index so Undo also refuses those newer edits.
             self.preserve_recovery_index = True
+            provenance = self.store.step(self.mid, "report-provenance")
+            if not isinstance(provenance, dict) or not isinstance(provenance.get("inferences"), list) or not all(isinstance(item, dict) for item in provenance["inferences"]):
+                raise MissionError("The prior report has no retained inference provenance. Create a new mission; no inference was replayed")
+            self.inferences = [dict(item, reused=True, reused_at=now(), original_report_attempt=provenance.get("attempt"), original_report_published_at=provenance.get("published_at"), verification_scope="Historical evidence from the original report inference; no fresh process verification or inference on this retry") for item in provenance["inferences"]]
             if not all(Path(p).is_file() and not Path(p).is_symlink() and digest(p) == h for p, h in previous.items()):
                 raise MissionError("Published report files changed after this attempt. Preserve those edits and create a new mission with a fresh recovery checkpoint")
             self.artifacts.extend(previous)
@@ -544,7 +548,7 @@ class Executor:
             if current != original:
                 raise MissionError("Source inputs changed after this report. Create a new mission to preserve the updated files as a fresh recovery baseline; no inference was replayed")
             self.preserve_recovery_index = False
-            self.event("step-resumed", "Verified report and source hashes; skipped repeated inference")
+            self.event("step-resumed", "Verified report and source hashes; reused historical inference evidence; no new inference or process verification")
             return
         sources = self.input_text()
         context = "\n\n".join(f"[{source['id']}] {source['path']}\n" + "\n".join(f"{number}: {line}" for number, line in enumerate(source["text"].splitlines(), 1)) for source in sources)
@@ -561,6 +565,7 @@ class Executor:
         appendix += "\n\n" + ("Generated on a verified native model process on this computer." if local else "Generated with Buzz shared compute; inspect the receipt for routing details.") + " Citation ranges were checked; a person must review whether each source supports the associated claim.\n"
         self.publish("report.md", answer + appendix)
         self.publish("sources.json", json.dumps([{k:v for k,v in source.items() if k != "text"} for source in sources], indent=2) + "\n")
+        self.store.step(self.mid, "report-provenance", {"schema": 1, "attempt": self.mission["attempt"], "published_at": now(), "inferences": self.inferences})
         self.store.step(self.mid, "report-published", {path: digest(path) for path in self.artifacts})
         self.event("report-published", f"{len(sources)} sources; {len(citations)} citation ranges validated")
 

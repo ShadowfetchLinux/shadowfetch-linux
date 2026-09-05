@@ -110,3 +110,6 @@ packages/shadowfetch-welcome/debian/shadowfetch-welcome/
 # QA evidence + release scratch (regenerable; matches the /work/qa-2.1.4 precedent)
 /work/
 /live-build/binary.contents
+
+# Reviewed public signatures retained for immutable source packages.
+!vendor/release-signatures/*.dsc

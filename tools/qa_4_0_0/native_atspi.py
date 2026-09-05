@@ -13,6 +13,7 @@ parser.add_argument("--app", default="buzz-desktop")
 parser.add_argument("--click")
 parser.add_argument("--fields", action="store_true", help="List editable field labels, never their values")
 parser.add_argument("--field", help="Exact observed field label to fill")
+parser.add_argument("--focus-field", help="Focus one observed input for native keyboard entry")
 parser.add_argument("--text", help="Text to enter through the native editable-text action")
 args = parser.parse_args()
 session = dbus.SessionBus()
@@ -41,12 +42,12 @@ def walk(name, path, depth=0):
         obj = bus.get_object(name, path)
         role = int(obj.GetRole(dbus_interface=interface))
         # WebKitGTK sometimes returns an empty GetRoleName despite a valid role.
-        if role == 43:
+        if role in (11, 35, 43, 62):  # combo box, menu item, push button, or link
             label = str(obj.Get(interface, "Name", dbus_interface=properties))
             buttons.append({"label": label, "bus": name, "path": path})
-        if args.fields or args.field is not None:
+        if args.fields or args.field is not None or args.focus_field is not None:
             interfaces = [str(value) for value in obj.GetInterfaces(dbus_interface=interface)]
-            if "org.a11y.atspi.EditableText" in interfaces:
+            if role == 79 or "org.a11y.atspi.EditableText" in interfaces:
                 fields.append({"label": str(obj.Get(interface, "Name", dbus_interface=properties)), "bus": name, "path": path})
         for child_name, child_path in obj.GetChildren(dbus_interface=interface):
             walk(str(child_name), str(child_path), depth + 1)
@@ -56,7 +57,14 @@ def walk(name, path, depth=0):
 
 
 walk(*apps[0])
-if args.field is not None:
+if args.focus_field is not None:
+    matches = [field for field in fields if field["label"] == args.focus_field]
+    if len(matches) != 1:
+        raise SystemExit("Require exactly one observed input")
+    match = matches[0]
+    obj = bus.get_object(match["bus"], match["path"])
+    print(json.dumps({"field": args.focus_field, "focused": bool(obj.GrabFocus(dbus_interface="org.a11y.atspi.Component", timeout=3))}))
+elif args.field is not None:
     matches = [field for field in fields if field["label"] == args.field]
     if len(matches) != 1 or args.text is None:
         raise SystemExit("Require exactly one observed field and explicit text")

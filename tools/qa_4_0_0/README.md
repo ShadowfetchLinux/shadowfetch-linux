@@ -92,3 +92,15 @@ Buzz. Native application installation, verified executable integrity, account
 sign-in, cloud connectivity and a completed agent task are separate states.
 Exclude dialogs containing private identity material and retain only reviewed
 screenshots as release evidence.
+
+`installed_audit.sh fire|ice bios|uefi` requires a completed disk installation
+and a logged-in `QA_USER` (default `sfqa`). It checks the installed system; it is
+not a live-session substitute. `native_mission_acceptance.py` runs actual code
+repair and source report missions against a loaded native model, independently
+checks the results, and verifies receipt hashes, local process proof, Accept
+and Undo. `engine_acceptance.py` covers bounded deterministic engine behavior.
+
+`upgrade_recovery_acceptance.py` is restricted to the disposable
+`sfqa-final-upgrade` QEMU guest with Btrfs. It does not reboot automatically;
+retain its evidence and perform the explicit recovery boot/readback before
+claiming that a restored system actually starts.

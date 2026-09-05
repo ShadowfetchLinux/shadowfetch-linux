@@ -198,6 +198,11 @@ repo: packages
 		( cd $(BUILD_DIR)/src && dpkg-source -b $$pkg ) || exit 1 ; \
 		GNUPGHOME=$(BUILDER_HOME)/.gnupg debsign --no-conf -k$(REPO_KEY_ID) \
 			$(BUILD_DIR)/src/$${pkg}_$${version}.dsc || exit 1 ; \
+		retained=$(ROOT)/vendor/release-signatures/$${pkg}_$${version}.dsc ; \
+		if [ -f "$$retained" ]; then \
+			GNUPGHOME=$(BUILDER_HOME)/.gnupg python3 $(ROOT)/tools/retain_source_signature.py \
+				$(BUILD_DIR)/src/$${pkg}_$${version}.dsc "$$retained" || exit 1 ; \
+		fi ; \
 		rm -rf $(BUILD_DIR)/src/$$pkg ; \
 		$(REPREPRO) -b $(REPO_DIR) -T dsc remove $(CODENAME) $$pkg >/dev/null 2>&1 || true ; \
 	done

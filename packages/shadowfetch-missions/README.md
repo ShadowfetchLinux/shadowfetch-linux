@@ -63,6 +63,10 @@ An explicit Retry retains the original checkpoint. Previously published reports
 and individual media exports are resumed only when their recorded input and output
 hashes match. Changed report sources or edited output refuse retry before inference;
 start a new mission to preserve those edits as a fresh recovery baseline.
+Report retries retain the original inference time, attempt, model, usage, response
+hash and process proof. Receipts explicitly mark that evidence as historical and
+reused; resuming a published report performs no new inference or process check.
+If original provenance is unavailable, retry fails with a new-mission instruction.
 
 Accept marks successful work reviewed. Undo restores the original workspace using
 its checkpoint, after proving no newer mission or manual file change intervened.

@@ -188,6 +188,45 @@ class MissionTests(unittest.TestCase):
         with self.assertRaisesRegex(m.MissionError, "changed after"):
             m.review(self.store, mission["id"], "undo")
         self.assertTrue(json.loads(Path(result["receipt"]).read_text())["recovery_index_preserved"])
+    def test_report_resume_retains_historical_native_inference_provenance(self):
+        mission = self.create()
+        # Controlled unit fixture; release integration uses a real native server.
+        original = {"model": "fixture-model", "usage": {"completion_tokens": 11}, "compute": {"local_only_verified": True, "pid": 1234, "process_start": "123", "proof": "unit fixture"}, "observed_at": "2026-09-05T00:00:00Z", "attempt": 1, "response_sha256": "a" * 64, "reused": False}
+        def inference(executor, *args, **kwargs):
+            executor.inferences.append(original.copy())
+            return "Friday. [S1:L1]"
+        with patch.object(m.Executor, "infer", inference):
+            first = m.run_mission(self.store, mission["id"])
+        self.assertEqual(first["state"], "waiting-review")
+        provenance = self.store.step(mission["id"], "report-provenance")
+        for change_source in (False, True):
+            self.store.update(mission["id"], state="failed")
+            self.store.retry(mission["id"])
+            if change_source:
+                (self.ws / "facts.md").write_text("A newer personal source edit.\n")
+            with patch.object(m.Executor, "infer", side_effect=AssertionError("must not replay inference")):
+                result = m.run_mission(self.store, mission["id"])
+            self.assertEqual(result["state"], "failed" if change_source else "waiting-review")
+            receipt = json.loads(Path(result["receipt"]).read_text())
+            reused = receipt["inferences"][0]
+            for key in ("model", "usage", "compute", "observed_at", "attempt", "response_sha256"):
+                self.assertEqual(reused[key], original[key])
+            self.assertTrue(reused["reused"])
+            self.assertEqual(reused["original_report_attempt"], 1)
+            self.assertEqual(reused["original_report_published_at"], provenance["published_at"])
+            self.assertIn("Historical", reused["verification_scope"])
+            self.assertEqual(self.store.step(mission["id"], "report-provenance"), provenance)
+    def test_report_resume_refuses_missing_inference_provenance(self):
+        mission = self.create()
+        with patch.object(m.Executor, "infer", return_value="Friday. [S1:L1]"):
+            m.run_mission(self.store, mission["id"])
+        self.store.step(mission["id"], "report-provenance", {})
+        self.store.update(mission["id"], state="failed")
+        self.store.retry(mission["id"])
+        with patch.object(m.Executor, "infer", side_effect=AssertionError("no repeat inference")):
+            result = m.run_mission(self.store, mission["id"])
+        self.assertEqual(result["state"], "failed")
+        self.assertIn("no retained inference provenance", result["error"])
     def test_missing_execution_baseline_does_not_claim_added_files(self):
         mission = self.create()
         executor = m.Executor(self.store, mission)
