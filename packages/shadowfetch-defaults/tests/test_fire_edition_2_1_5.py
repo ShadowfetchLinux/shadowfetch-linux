@@ -96,7 +96,7 @@ class FireEdition215Tests(unittest.TestCase):
 
     def test_debian_revision_versions_use_quilt_source_format(self):
         formats = sorted((ROOT / "packages").glob("*/debian/source/format"))
-        self.assertEqual(15, len(formats))
+        self.assertEqual(16, len(formats))
         for source_format in formats:
             self.assertEqual("3.0 (quilt)", source_format.read_text().strip())
         makefile = (ROOT / "Makefile").read_text()

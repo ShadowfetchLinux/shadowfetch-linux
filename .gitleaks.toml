@@ -21,3 +21,15 @@ id = "generic-api-key"
     regexTarget = "line"
     paths = ['''web/shadowfetch-linux-worker/src/index\.js$''']
     regexes = ['''CLOUDFLARE_WEB_ANALYTICS_TOKEN\s*=\s*"[0-9a-f]{32}"''']
+
+    # KDE publishes these OpenPGP fingerprints for release-source verification.
+    # They identify public signing keys and cannot authenticate to a service.
+    [[rules.allowlists]]
+    description = "Verified public KDE release signing fingerprints"
+    condition = "AND"
+    regexTarget = "line"
+    paths = ['''packages/shadowfetch-drkonqi-pickup/vendor/provenance\.json$''']
+    regexes = [
+      '''^\s*"verified_release_key_fingerprint":\s*"0AAC775BB6437A8D9AF7A3ACFE0784117FBCE11D",\s*$''',
+      '''^\s*"verified_signing_subkey_fingerprint":\s*"B3CB366552540BE06EE9AD9711968C44928CAEFC",\s*$''',
+    ]

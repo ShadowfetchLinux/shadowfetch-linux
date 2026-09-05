@@ -43,6 +43,7 @@ QA_SOURCES = (
     "tools/qa_4_0_0/container_stress.py",
     "tools/qa_4_0_0/latency_probe.py",
     "tools/qa_4_0_0/engine_acceptance.py",
+    "tools/qa_4_0_0/durable_worker_acceptance.py",
     "tools/qa_4_0_0/native_mission_acceptance.py",
     "tools/qa_4_0_0/upgrade_recovery_acceptance.py",
     "tools/qa_4_0_0/installed_audit.sh",

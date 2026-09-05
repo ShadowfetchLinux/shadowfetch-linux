@@ -43,7 +43,7 @@ def walk(name, path, depth=0):
         obj = bus.get_object(name, path)
         role = int(obj.GetRole(dbus_interface=interface))
         # WebKitGTK sometimes returns an empty GetRoleName despite a valid role.
-        if role in (11, 32, 35, 43, 62):  # combo box, option, menu item, button, link
+        if role in (7, 8, 11, 32, 35, 43, 44, 45, 62):  # checks, combo, option, menu, button, radios, link
             label = str(obj.Get(interface, "Name", dbus_interface=properties))
             buttons.append({"label": label, "bus": name, "path": path})
         if args.fields or args.field is not None or args.focus_field is not None:

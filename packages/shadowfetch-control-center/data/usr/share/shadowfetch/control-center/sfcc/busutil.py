@@ -3,11 +3,11 @@
 Every function here is tolerant: a missing daemon, a missing python3-dbus,
 or an unexpected member name returns None (or a False-ish value) instead of
 raising, and the calling page renders its honest degradation state.  Pages
-never poll Buzz model endpoints or read sensors themselves — Firewatch1 is the one
-sensor source, per the double-source rule.
+read hardware sensors through Firewatch1. Mission and model verification use
+the separate mission client and its explicit runtime/connection policy.
 
-Nothing here opens a network connection.  All buses are the local system
-and session buses; all subprocesses are local commands with timeouts.
+The bus connections here use the local system and session buses. Subprocess
+helpers and optional applications retain their declared connection behavior.
 """
 
 import glob
@@ -686,16 +686,19 @@ def sf_version() -> str:
 
 
 def system_summary() -> tuple[str, str]:
-    """The 2.1.1 status line, preserved verbatim in behaviour."""
+    """Summarize disk use and system units; desktop user units are separate."""
     try:
         usage = shutil.disk_usage("/")
         used = round((usage.used / usage.total) * 100)
-        failed = subprocess.run(
+        result = subprocess.run(
             ["systemctl", "--failed", "--no-legend", "--plain"],
             capture_output=True, text=True, timeout=3, check=False,
-        ).stdout.strip().splitlines()
+        )
+        if result.returncode:
+            return "Status unavailable", "Open Watch for a complete report"
+        failed = result.stdout.strip().splitlines()
         if failed or used >= 90:
-            return "Needs attention", f"{len(failed)} failed services · disk {used}% used"
-        return "System ready", f"No failed services · disk {used}% used"
+            return "Needs attention", f"{len(failed)} failed system units · disk {used}% used"
+        return "System check passed", f"No failed system units · disk {used}% used"
     except Exception:
         return "Status available", "Open Watch for a complete report"

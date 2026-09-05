@@ -16,9 +16,9 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "packages/shadowfetch-control-center/data/usr/share/shadowfetch/control-center"))
-from PyQt6.QtCore import QEventLoop, QTimer
+from PyQt6.QtCore import QEventLoop, QTimer, Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QLabel, QPushButton
 from sfcc import theme
 from sfcc.mission_client import JsonCommand, workspace_path
 from sfcc.missions_page import NewMissionDialog, MissionsPage
@@ -335,6 +335,53 @@ class WelcomeTests(unittest.TestCase):
             page._submit()
             self.assertFalse(values[0]["coding_agents"]["grok-bot"])
             page.deleteLater()
+
+    def test_profile_disclosures_remain_readable_at_minimum_window(self):
+        submitted = []
+        page = self.welcome.ProfilePage(submitted.append)
+        page.resize(940, 680)
+        page.show()
+        QTest.qWait(100)
+        descriptions = [label for label in page.profile_scroll.widget().findChildren(QLabel) if label.wordWrap()]
+        self.assertEqual(len(self.welcome.PROFILE_PRESETS), len(descriptions))
+        for label in descriptions:
+            self.assertGreaterEqual(label.height(), label.heightForWidth(label.width()), label.text())
+        self.assertGreater(page.profile_scroll.verticalScrollBar().maximum(), 0)
+        first_checkbox, key = page.checks[0]
+        first_checkbox.setChecked(True)
+        page.profile_scroll.verticalScrollBar().setValue(page.profile_scroll.verticalScrollBar().maximum())
+        submit = next(button for button in page.findChildren(QPushButton) if button.text().startswith("Apply presets"))
+        self.assertLessEqual(submit.geometry().bottom(), page.height())
+        QTest.mouseClick(submit, Qt.MouseButton.LeftButton)
+        self.assertEqual([[key]], submitted)
+        page.close()
+        page.deleteLater()
+
+    def test_all_wallpaper_choices_are_reachable_without_overlap(self):
+        wallpapers = [f"/usr/share/wallpapers/Umbra{i}/contents/images/3840x2160.jpg" for i in range(11)]
+        with patch("glob.glob", return_value=wallpapers):
+            page = self.welcome.AccentPage(lambda *_: None)
+        page.resize(940, 680)
+        page.show()
+        QTest.qWait(100)
+        self.assertLessEqual(page.width(), 940)
+        self.assertLessEqual(page.height(), 680)
+        for left, right in zip(page._wp_btns, page._wp_btns[1:]):
+            self.assertLess(left.geometry().right(), right.geometry().left())
+        scrollbar = page.wallpaper_scroll.horizontalScrollBar()
+        self.assertGreater(scrollbar.maximum(), 0)
+        scrollbar.setValue(scrollbar.maximum())
+        last = page._wp_btns[-1]
+        viewport = page.wallpaper_scroll.viewport()
+        origin = last.mapTo(viewport, last.rect().topLeft())
+        self.assertGreaterEqual(origin.x(), 0)
+        self.assertLessEqual(origin.x() + last.width(), viewport.width())
+        with patch.object(self.welcome.subprocess, "Popen"):
+            QTest.mouseClick(last, Qt.MouseButton.LeftButton)
+        self.assertTrue(last.isChecked())
+        self.assertEqual(1, sum(button.isChecked() for button in page._wp_btns))
+        page.close()
+        page.deleteLater()
 
     def test_welcome_and_agents_fit_laptop(self):
         for page in (self.welcome.WelcomePage(lambda: None), self.welcome.BuzzPage(lambda _: None)):

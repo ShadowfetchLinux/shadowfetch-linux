@@ -30,9 +30,14 @@ for command in hwclock lvm ffmpeg ffprobe bwrap shadowfetch-missions shadowfetch
     command -v "$command" >/dev/null || fail "missing $command"
 done
 mapfile -t packages < <(dpkg-query -W -f='${Package}\t${Version}\t${db:Status-Abbrev}\n' 'shadowfetch-*' | awk -F '\t' '$3 == "ii " { print $1 "\t" $2 }' | sort)
-[[ ${#packages[@]} -eq 15 ]] || fail "expected15 installed Shadowfetch packages, got${#packages[@]}"
+[[ ${#packages[@]} -eq 16 ]] || fail "expected 16 installed Shadowfetch packages, got ${#packages[@]}"
 printf '%s\n' "${packages[@]}" | awk -F '\t' '$2 != "4.0.0-1" { exit 1 }' || fail 'mixed package release versions'
 [[ -z $(dpkg --audit) ]] || fail 'incomplete package transaction'
+[[ $(dpkg-query -W -f='${Version}' drkonqi) == 6.6.5-3 ]] || fail 'unexpected DrKonqi protocol version'
+[[ -z $(dpkg --verify drkonqi) ]] || fail 'upstream DrKonqi package was modified'
+[[ -z $(dpkg --verify shadowfetch-drkonqi-pickup) ]] || fail 'pickup correction package was modified'
+[[ -x /usr/libexec/shadowfetch-drkonqi-pickup ]] || fail 'pickup correction helper absent'
+/usr/libexec/shadowfetch-drkonqi-pickup --help >/dev/null
 [[ -z $(systemctl --failed --no-legend --plain) ]] || fail 'failed system units'
 for unit in shadowfetch-firewatchd.service shadowfetch-hwscan.service phoenix-postboot.service; do
     systemctl is-active --quiet "$unit" || fail "$unit inactive"
@@ -46,6 +51,9 @@ user_env=(runuser -u "$qa_user" -- env "HOME=$qa_home" "XDG_RUNTIME_DIR=/run/use
 "${user_env[@]}" systemctl --user is-enabled --quiet shadowfetch-missions.service || fail 'mission worker is not enabled'
 "${user_env[@]}" systemctl --user is-active --quiet shadowfetch-missions.service || fail 'mission worker is not running'
 [[ -z $("${user_env[@]}" systemctl --user --failed --no-legend --plain) ]] || fail 'failed desktop user units'
+pickup_exec=$("${user_env[@]}" systemctl --user show drkonqi-coredump-pickup.service -p ExecStart --value)
+[[ $pickup_exec == *'/usr/libexec/shadowfetch-drkonqi-pickup --settle-first --pickup --uid '* ]] || fail 'pickup service is not using the narrow correction'
+"${user_env[@]}" systemctl --user show drkonqi-coredump-pickup.service -p FragmentPath -p DropInPaths -p ActiveState -p SubState -p Result -p ExecStart
 "${user_env[@]}" shadowfetch-missions --json list
 "${user_env[@]}" shadowfetch-model-check status --json
 "${user_env[@]}" shadowfetch-grok-bot status --json

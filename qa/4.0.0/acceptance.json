@@ -7,7 +7,17 @@
     "subtitle": "Mission Control"
   },
   "evidence_root": "work/qa-4.0.0/evidence",
-  "artifact": {},
+  "artifact": {
+    "iso_path": "shadowfetch-4.0.0-amd64.iso",
+    "iso_sha256": null,
+    "iso_size_bytes": null,
+    "signature_path": "shadowfetch-4.0.0-amd64.iso.asc",
+    "signing_fingerprint": "8F13CE1535EE1F4A2916A1F73C5C900B7BE80CA1",
+    "evidence_bundle_path": "work/release-4.0.0/evidence-bundle-4.0.0.tar.gz",
+    "source_commit": null,
+    "source_tree": null,
+    "evidence_bundle_sha256": null
+  },
   "cases": [
     {
       "id": "SRC-01",
@@ -70,14 +80,7 @@
       "required": true,
       "status": "pending",
       "title": "Existing 3.5 installed system upgrades with preserved user data and working recovery",
-      "evidence": [
-        {
-          "kind": "json",
-          "path": "package/final-upgrade-recovery.json",
-          "sha256": "77edf24a83b84c0f57ed189f37e5879f197006df8747961e3e1f4a0d332d75da"
-        }
-      ],
-      "notes": "Candidate 2 rehearsal passed: separate immutable 3.5 BIOS disk overlay, upgrade/reboot to 4.0, real Phoenix root rollback/reboot to 3.5, second upgrade/reboot to 4.0, preserved personal data and clean audits. Exact final package refresh and recovery verification remain required before final acceptance."
+      "evidence": []
     },
     {
       "id": "MISSION-01",
@@ -178,5 +181,6 @@
       "title": "GitHub, website, signed downloads/APT and screenshots expose the same verified 4.0 release",
       "evidence": []
     }
-  ]
+  ],
+  "candidate_note": "Candidate4 is preserved under work/qa-4.0.0/candidates/candidate-4 on the Linux builder. An upstream DrKonqi pickup correction and reviewed Welcome layout fixes require a new signed ISO and fresh installed-image acceptance. Previous evidence is retained with its original artifact identity."
 }

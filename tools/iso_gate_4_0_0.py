@@ -18,6 +18,11 @@ from typing import Iterator
 
 import yaml
 
+from drkonqi_pickup_contract import (
+    DROPIN, HELPER, UPSTREAM_UNITS, UPSTREAM_VERSION,
+    validate_dropin, validate_upstream_unit,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = "4.0.0"
@@ -33,6 +38,7 @@ EXPECTED_CUSTOM_PACKAGES = {
     "shadowfetch-creative-base": "4.0.0-1",
     "shadowfetch-defaults": "4.0.0-1",
     "shadowfetch-desktop": "4.0.0-1",
+    "shadowfetch-drkonqi-pickup": "4.0.0-1",
     "shadowfetch-ember": "4.0.0-1",
     "shadowfetch-fireproof": "4.0.0-1",
     "shadowfetch-fireline": "4.0.0-1",
@@ -54,6 +60,9 @@ REQUIRED_IMAGE_FILES = {
 }
 
 REQUIRED_ROOT_FILES = {
+    HELPER,
+    DROPIN,
+    *UPSTREAM_UNITS,
     "etc/apt/sources.list.d/shadowfetch.list",
     "etc/calamares/branding/debian/branding.desc",
     "etc/calamares/branding/debian/show.qml",
@@ -113,6 +122,7 @@ REQUIRED_ROOT_FILES = {
 }
 
 REQUIRED_EXECUTABLES = {
+    HELPER,
     "usr/bin/add-calamares-desktop-icon",
     "usr/bin/shadowfetch-buzz",
     "usr/bin/shadowfetch-missions",
@@ -154,6 +164,7 @@ FORBIDDEN_BUILD_TIME_PACKAGES = frozenset(
 )
 
 CRITICAL_PACKAGE_PAYLOADS = {
+    "shadowfetch-drkonqi-pickup": (HELPER, DROPIN),
     "shadowfetch-missions": (
         "usr/bin/shadowfetch-missions",
         "usr/lib/shadowfetch/missions/sf_missions.py",
@@ -645,6 +656,8 @@ def package_gate(squashfs: Path) -> None:
             f"installed custom package mismatch; missing={missing}, extra={extra}, "
             f"versions={[(name, custom[name]) for name in mismatched]}"
         )
+    if installed.get("drkonqi") != UPSTREAM_VERSION:
+        raise RuntimeError("DrKonqi differs from the tested upstream package " + UPSTREAM_VERSION)
     retired = sorted(package for package in installed if RETIRED_PACKAGE.search(package))
     if retired:
         raise RuntimeError("retired runtime packages remain installed: " + ", ".join(retired))
@@ -701,6 +714,17 @@ def critical_payload_parity_gate(squashfs: Path) -> None:
                     )
                 checked += 1
     print(f"PASS: {checked} critical installed helpers match freshly built package payloads")
+
+
+def drkonqi_gate(squashfs: Path) -> None:
+    dropin = squash_cat(squashfs, DROPIN)
+    assert isinstance(dropin, str)
+    validate_dropin(dropin)
+    for path in UPSTREAM_UNITS:
+        content = squash_cat(squashfs, path, binary=True)
+        assert isinstance(content, bytes)
+        validate_upstream_unit(path, content)
+    print("PASS: pickup-only override; original upstream pickup and per-crash units intact")
 
 
 def retired_path(path: str) -> bool:
@@ -982,6 +1006,7 @@ def main() -> int:
         inventory, _ = squashfs_inventory(squashfs)
         package_gate(squashfs)
         critical_payload_parity_gate(squashfs)
+        drkonqi_gate(squashfs)
         payload_gate(squashfs, inventory)
         identity_and_installer_gate(squashfs, inventory)
     print("\nISO_GATE_PASSED")

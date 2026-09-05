@@ -4,6 +4,9 @@
 # Shadowfetch metas (from our local apt repo, wired in via archives/)
 shadowfetch-desktop
 shadowfetch-creative-base
+# Tested upstream crash-routing protocol plus pickup-only lifecycle correction.
+drkonqi=6.6.5-3
+shadowfetch-drkonqi-pickup
 # shadowfetch-nvidia removed from chroot install — moved to first-boot hook
 # (NVIDIA driver DKMS doesn't build cleanly against the chroot's kernel
 # headers; building during first-boot on the real installed kernel works.)

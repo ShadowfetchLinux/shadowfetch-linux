@@ -59,10 +59,14 @@ def verify_data(state):
         raise RuntimeError('Machine identity changed')
 
 
-def audit(state, version):
+def audit(state, version, *, allow_previous_candidate=False):
     verify_data(state)
-    expected = set(state['packages']) | ({'shadowfetch-missions'} if version == '4.0.0' else set())
+    expected = set(state['packages']) | ({'shadowfetch-missions', 'shadowfetch-drkonqi-pickup'} if version == '4.0.0' else set())
     installed = packages()
+    # Only the pre-refresh check may admit the preserved candidate4 inventory.
+    # Post-upgrade and final acceptance always require the correction package.
+    if allow_previous_candidate and version == '4.0.0' and 'shadowfetch-drkonqi-pickup' not in installed:
+        expected.discard('shadowfetch-drkonqi-pickup')
     if set(installed) != expected or any(row[0] != version + '-1' for row in installed.values()):
         raise RuntimeError('Unexpected installed package names or versions: ' + repr(installed))
     if Path('/usr/share/shadowfetch/version').read_text().strip() != version:
@@ -86,10 +90,25 @@ def audit(state, version):
     if Path('/var/lib/shadowfetch/phoenix-update-grub').exists():
         raise RuntimeError('Phoenix postboot GRUB completion is still pending')
     if version == '4.0.0':
+        if 'shadowfetch-drkonqi-pickup' in installed:
+            run('/usr/libexec/shadowfetch-drkonqi-pickup', '--help')
+            if run('dpkg-query', '-W', '-f=${Version}', 'drkonqi').stdout != '6.6.5-3':
+                raise RuntimeError('DrKonqi protocol version differs from tested release')
+            if run('dpkg', '--verify', 'drkonqi', 'shadowfetch-drkonqi-pickup').stdout.strip():
+                raise RuntimeError('DrKonqi or correction package payload was changed')
         for executable in ('shadowfetch-missions', 'shadowfetch-grok-bot'):
             run(executable, '--version')
         run('runuser', '-u', 'sfqa', '--', 'shadowfetch-model-check', 'status', '--json')
         run('runuser', '-u', 'sfqa', '--', 'env', 'HOME=/home/sfqa', 'XDG_RUNTIME_DIR=/run/user/1000', 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus', 'systemctl', '--user', 'is-active', '--quiet', 'shadowfetch-missions.service')
+        user_env = ['runuser', '-u', 'sfqa', '--', 'env', 'HOME=/home/sfqa',
+                    'XDG_RUNTIME_DIR=/run/user/1000', 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus']
+        if not allow_previous_candidate:
+            if run(*user_env, 'systemctl', '--user', '--failed', '--no-legend', '--plain').stdout.strip():
+                raise RuntimeError('Failed desktop user services after upgrade')
+            pickup_exec = run(*user_env, 'systemctl', '--user', 'show',
+                              'drkonqi-coredump-pickup.service', '-p', 'ExecStart', '--value').stdout
+            if '/usr/libexec/shadowfetch-drkonqi-pickup --settle-first --pickup --uid ' not in pickup_exec:
+                raise RuntimeError('Login pickup is not using the correction')
         run('runuser', '-u', 'sfqa', '--', 'shadowfetch-missions', '--json', 'list')
     return {'status': 'PASS', 'version': version, 'packages': installed, 'personal_data_sha256': sha(USER_FILE), 'kernel': os.uname().release, 'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip(), 'root': run('findmnt', '-no', 'SOURCE,FSTYPE,OPTIONS', '/').stdout.strip(), 'home': run('findmnt', '-no', 'SOURCE,FSTYPE', '/home').stdout.strip(), 'failed_system_units': [], 'dpkg_audit': 'clean'}
 
@@ -120,10 +139,12 @@ def main():
     else:
         state = json.loads((STATE / 'state.json').read_text())
         if args.action in ('upgrade', 'refresh'):
-            audit(state, '4.0.0' if args.action == 'refresh' else '3.5.0')
+            audit(state, '4.0.0' if args.action == 'refresh' else '3.5.0',
+                  allow_previous_candidate=args.action == 'refresh')
             dest = STATE / ('packages-' + args.phase)
             dest.mkdir(exist_ok=False)
-            wanted = {**state['packages'], 'shadowfetch-missions': ['4.0.0-1', 'all']}
+            wanted = {**state['packages'], 'shadowfetch-missions': ['4.0.0-1', 'all'],
+                      'shadowfetch-drkonqi-pickup': ['4.0.0-1', 'amd64']}
             hashes = {}
             for package, (_, architecture) in sorted(wanted.items()):
                 filename = package + '_4.0.0-1_' + architecture + '.deb'

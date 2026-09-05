@@ -1,7 +1,11 @@
 shadowfetch-welcome (4.0.0-1) umbra; urgency=medium
 
   * Shadowfetch Linux 4.0 Mission Control release.
+  * Scope privacy wording to local records and selected setup actions,
+    with vendor onboarding and network behavior described separately.
   * Integrate persistent missions, scoped execution and featured Grok Bot setup.
+  * Keep setup profile disclosures readable and every wallpaper reachable at
+    the minimum window size with scrollable choices and fixed navigation.
 
  -- Shadowfetch Project <signing@shadowfetch.com>  Sat, 05 Sep 2026 03:00:00 +0000
 

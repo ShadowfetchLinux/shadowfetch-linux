@@ -54,6 +54,7 @@ printf 'start=%s\nepoch=%s\nboot_id=%s\nduration_seconds=%s\n' \
     "$start_iso" "$start_epoch" "$boot_id" "$duration" > "$out/timing.txt"
 
 systemctl --failed --no-legend --plain > "$out/failed-units-before.txt" || true
+as_user systemctl --user --failed --no-legend --plain > "$out/failed-user-units-before.txt" || record_failure "initial user service status unavailable"
 dpkg --audit > "$out/dpkg-audit-before.txt" || record_failure "initial dpkg audit command failed"
 as_user podman info --format json > "$out/podman-info-before.json" || record_failure "initial rootless podman info failed"
 as_user podman pull "$image" > "$out/podman-pull.log" 2>&1
@@ -138,6 +139,7 @@ journalctl -k -b --since "@$start_epoch" --no-pager > "$out/kernel-since-start.l
 grep -Eai 'kernel panic|BUG:|Oops:|Call Trace:|out of memory|oom-kill|general protection fault|segfault|I/O error|EXT4-fs error|BTRFS.*(error|corrupt)' \
     "$out/kernel-since-start.log" > "$out/kernel-faults.txt" || true
 systemctl --failed --no-legend --plain > "$out/failed-units-after.txt" || true
+as_user systemctl --user --failed --no-legend --plain > "$out/failed-user-units-after.txt" || record_failure "final user service status unavailable"
 systemctl --failed --no-legend --plain | grep -E 'shadowfetch|phoenix|fireproof' \
     > "$out/failed-shadowfetch-units.txt" || true
 dpkg --audit > "$out/dpkg-audit-after.txt" || record_failure "final dpkg audit command failed"
@@ -163,7 +165,7 @@ if (( load_elapsed < duration )); then failures=$((failures + 1)); fi
 minimum_cycles=$((duration / 120)); ((minimum_cycles >= 1)) || minimum_cycles=1
 if (( container_cycles < minimum_cycles )); then failures=$((failures + 1)); record_failure "too few container cycles"; fi
 if (( probe_cycles < minimum_cycles )); then failures=$((failures + 1)); record_failure "too few responsiveness probes"; fi
-for file in failures.log service-faults.txt dpkg-audit-before.txt failed-units-before.txt kernel-faults.txt failed-units-after.txt failed-shadowfetch-units.txt dpkg-audit-after.txt btrfs-device-errors.txt; do
+for file in failures.log service-faults.txt dpkg-audit-before.txt failed-units-before.txt failed-user-units-before.txt kernel-faults.txt failed-units-after.txt failed-user-units-after.txt failed-shadowfetch-units.txt dpkg-audit-after.txt btrfs-device-errors.txt; do
     if [[ -s "$out/$file" ]]; then failures=$((failures + 1)); fi
 done
 

@@ -1,0 +1,49 @@
+--- a/src/coredump/processor/main.cpp
++++ b/src/coredump/processor/main.cpp
+@@ -144,7 +144,22 @@
+         return;
+     });
+ 
+-    QObject::connect(&watcher, &CoredumpWatcher::finished, &app, &QCoreApplication::quit, Qt::QueuedConnection);
++    // Pickup is a finite scan of old crashes. A per-crash processor instead
++    // waits for its matching live journal entry, then stops after forwarding it.
++    bool pickupFailed = false;
++    if (pickup) {
++        QObject::connect(&watcher, &CoredumpWatcher::error, &app, [&pickupFailed] {
++            pickupFailed = true;
++        });
++        QObject::connect(&watcher, &CoredumpWatcher::atLogEnd, &app, [&app, &pickupFailed] {
++            // An earlier queued error must not be overwritten by successful EOF.
++            if (!pickupFailed) {
++                app.quit();
++            }
++        }, Qt::QueuedConnection);
++    } else {
++        QObject::connect(&watcher, &CoredumpWatcher::finished, &app, &QCoreApplication::quit, Qt::QueuedConnection);
++    }
+     QObject::connect(
+         &watcher,
+         &CoredumpWatcher::error,
+--- a/src/coredump/coredumpwatcher.cpp
++++ b/src/coredump/coredumpwatcher.cpp
+@@ -74,7 +74,8 @@
+ void CoredumpWatcher::processLog()
+ {
+     int i = 0;
+-    while (sd_journal_next(context.get()) > 0) {
++    int result = 0;
++    while ((result = sd_journal_next(context.get())) > 0) {
+         ++i;
+         const auto optionalDump = makeDump(context.get());
+         if (!optionalDump.has_value()) {
+@@ -106,6 +107,10 @@
+             QMetaObject::invokeMethod(this, &CoredumpWatcher::processLog, Qt::QueuedConnection);
+             return;
+         }
++    }
++    if (result < 0) {
++        errnoError(QStringLiteral("Failed to read journal"), -result);
++        return;
+     }
+     Q_EMIT atLogEnd();
+ }

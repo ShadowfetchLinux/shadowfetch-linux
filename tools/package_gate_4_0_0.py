@@ -19,6 +19,10 @@ import sys
 import tarfile
 import tempfile
 
+from drkonqi_pickup_contract import (
+    DROPIN, HELPER, PACKAGE as PICKUP_PACKAGE, validate_dropin, validate_package_paths,
+)
+
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "build"
@@ -31,6 +35,7 @@ EXPECTED_BINARIES = {
     "shadowfetch-creative-base": "4.0.0-1",
     "shadowfetch-defaults": "4.0.0-1",
     "shadowfetch-desktop": "4.0.0-1",
+    "shadowfetch-drkonqi-pickup": "4.0.0-1",
     "shadowfetch-ember": "4.0.0-1",
     "shadowfetch-fireproof": "4.0.0-1",
     "shadowfetch-fireline": "4.0.0-1",
@@ -48,6 +53,7 @@ EXPECTED_SOURCES = {
     "shadowfetch-branding",
     "shadowfetch-control-center",
     "shadowfetch-defaults",
+    "shadowfetch-drkonqi-pickup",
     "shadowfetch-ember",
     "shadowfetch-fireproof",
     "shadowfetch-fireline",
@@ -65,6 +71,7 @@ SMOKE_INSTALL = (
     "shadowfetch-branding",
     "shadowfetch-control-center",
     "shadowfetch-defaults",
+    "shadowfetch-drkonqi-pickup",
     "shadowfetch-ember",
     "shadowfetch-fireproof",
     "shadowfetch-fireline",
@@ -199,6 +206,18 @@ def payload_gate(package_paths: dict[str, Path], extracted: Path) -> None:
     if bad_modes:
         raise RuntimeError("non-executable program payloads: " + ", ".join(sorted(bad_modes)))
     print(f"PASS: executable modes ({len(executable_candidates)} program payloads)")
+
+    pickup_paths = [path for path, packages in owners.items() if PICKUP_PACKAGE in packages]
+    validate_package_paths(pickup_paths)
+    for path in (HELPER, DROPIN):
+        if owners.get(path) != [PICKUP_PACKAGE]:
+            raise RuntimeError("Pickup correction has missing or wrong file owner: " + path)
+        if (extracted / path).is_symlink() or not (extracted / path).is_file():
+            raise RuntimeError("Pickup correction must contain a regular payload file: " + path)
+    validate_dropin((extracted / DROPIN).read_text())
+    if (extracted / HELPER).read_bytes()[:4] != b"\x7fELF":
+        raise RuntimeError("DrKonqi pickup helper must be a compiled ELF executable")
+    print("PASS: compiled pickup helper owns only its narrow service override")
 
     release_payload = {
         "usr/bin/shadowfetch-missions": "shadowfetch-missions",
@@ -502,6 +521,8 @@ done
 /usr/bin/shadowfetch-codex --help >/dev/null
 /usr/bin/shadowfetch-gpu --help >/dev/null
 /usr/bin/shadowfetch-update --help >/dev/null
+/usr/libexec/shadowfetch-drkonqi-pickup --help >/dev/null
+[ -z "$(dpkg --verify drkonqi)" ]
 dpkg --audit
 echo DEBIAN13_PACKAGE_INSTALL_PASS
 """

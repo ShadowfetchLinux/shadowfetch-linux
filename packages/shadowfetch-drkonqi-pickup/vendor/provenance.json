@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "upstream": "KDE DrKonqi",
+  "version": "6.6.5",
+  "source_url": "https://download.kde.org/stable/plasma/6.6.5/drkonqi-6.6.5.tar.xz",
+  "source_bytes": 906472,
+  "source_sha256": "b2b104d5f30224bca88280246ca990ac314d81cb1bf0d3857613ff683db92d82",
+  "release_hash_and_key_authority": "https://kde.org/info/plasma-6.6.5/",
+  "verified_release_key_fingerprint": "0AAC775BB6437A8D9AF7A3ACFE0784117FBCE11D",
+  "verified_signing_subkey_fingerprint": "B3CB366552540BE06EE9AD9711968C44928CAEFC",
+  "signature_verification": "GnuPG VALIDSIG; detached signature verified against the fingerprint published by KDE, on 2026-09-05. No network required when building.",
+  "patch": "patches/pickup-drains-journal.patch",
+  "scope": "Compile only upstream coredump processor/watch library; install own helper plus pickup ExecStart drop-in. Original drkonqi binary and per-crash service remain owned by Debian.",
+  "tested_runtime_protocol": "KDE drkonqi 6.6.5-3 native SOCK_SEQPACKET launcher; UID/cursor/pickup metadata unchanged.",
+  "licenses": [
+    "GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL"
+  ]
+}

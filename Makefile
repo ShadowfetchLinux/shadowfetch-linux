@@ -35,7 +35,8 @@ PACKAGES := \
 	shadowfetch-fireproof \
 	shadowfetch-hwscan \
 	shadowfetch-fireline \
-	shadowfetch-missions
+	shadowfetch-missions \
+	shadowfetch-drkonqi-pickup
 
 # GPG key the APT repo signs with. Override with `make REPO_KEY_ID=...` if
 # you've regenerated the key. The default matches the key on shadowfetch-linux.
@@ -103,6 +104,7 @@ help:
 	@echo "  make distclean  Wipe all regenerable files"
 
 test:
+	bash tools/build_drkonqi_pickup.sh --test
 	python3 -m unittest discover -s packages/shadowfetch-missions/tests -v
 	QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s packages/shadowfetch-control-center/tests -v
 	python3 -m unittest discover -s packages/shadowfetch-defaults/tests -v
@@ -155,7 +157,11 @@ $(PACKAGES_STAMP): stamp-version
 	@mkdir -p $(BUILD_DIR)
 	@for pkg in $(PACKAGES); do \
 		echo ">>> Building $$pkg" ; \
-		( cd $(ROOT)/packages/$$pkg && dpkg-buildpackage -us -uc -b ) || exit 1 ; \
+		if [ "$$pkg" = shadowfetch-drkonqi-pickup ]; then \
+			bash $(ROOT)/tools/build_drkonqi_pickup.sh --build || exit 1 ; \
+		else \
+			( cd $(ROOT)/packages/$$pkg && dpkg-buildpackage -us -uc -b ) || exit 1 ; \
+		fi ; \
 		mv $(ROOT)/packages/*.deb $(BUILD_DIR)/ 2>/dev/null || true ; \
 		mv $(ROOT)/packages/*.changes $(ROOT)/packages/*.buildinfo $(BUILD_DIR)/ 2>/dev/null || true ; \
 	done

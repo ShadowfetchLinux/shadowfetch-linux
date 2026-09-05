@@ -1,0 +1,6 @@
+/build*/
+/debian/.debhelper/
+/debian/*.debhelper
+/debian/*.substvars
+/debian/files
+/debian/shadowfetch-drkonqi-pickup/

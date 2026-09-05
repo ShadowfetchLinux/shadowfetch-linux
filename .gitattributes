@@ -1,0 +1,3 @@
+# Preserve upstream signature-verifiable armor and unified-diff context bytes.
+packages/shadowfetch-drkonqi-pickup/vendor/kde-release-key.asc whitespace=-blank-at-eol
+packages/shadowfetch-drkonqi-pickup/patches/pickup-drains-journal.patch whitespace=-blank-at-eol

@@ -1,0 +1,7 @@
+shadowfetch-drkonqi-pickup (4.0.0-1) unstable; urgency=medium
+
+  * Build the pinned, signed KDE DrKonqi 6.6.5 processor source with finite
+    pickup completion, complete batch draining and retained error results.
+  * Select it only for login pickup through an upstream service drop-in.
+
+ -- Shadowfetch Project <maintainers@shadowfetch.com>  Sat, 05 Sep 2026 02:26:00 -0400

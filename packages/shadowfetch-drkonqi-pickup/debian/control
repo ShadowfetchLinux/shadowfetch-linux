@@ -1,0 +1,18 @@
+Source: shadowfetch-drkonqi-pickup
+Section: utils
+Priority: optional
+Maintainer: Shadowfetch Project <maintainers@shadowfetch.com>
+Build-Depends: debhelper-compat (= 13), cmake (>= 3.18), g++, pkg-config, patch, qt6-base-dev, libsystemd-dev, python3, bubblewrap
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+Homepage: https://www.shadowfetchlinux.org/
+
+Package: shadowfetch-drkonqi-pickup
+Architecture: any
+Depends: ${misc:Depends}, ${shlibs:Depends}, drkonqi
+Description: finite login crash pickup for the Shadowfetch Plasma session
+ Builds the KDE DrKonqi journal processor with a focused correction to its
+ login pickup lifecycle. Empty scans and all pending batches finish cleanly,
+ while journal and socket errors remain failures. A user service drop-in
+ selects the helper only for pickup, retaining the upstream crash launcher,
+ per-crash processor and maximum runtime safety limit.

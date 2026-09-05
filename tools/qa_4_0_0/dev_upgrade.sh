@@ -15,6 +15,7 @@ while read -r package version; do
     curl --fail --silent --show-error --max-time 120 "http://10.0.2.2:8094/build/${package}_4.0.0-1_${architecture}.deb" -o "${package}_4.0.0-1_${architecture}.deb"
 done < packages-before.txt
 curl --fail --silent --show-error --max-time 120 http://10.0.2.2:8094/build/shadowfetch-missions_4.0.0-1_all.deb -o shadowfetch-missions_4.0.0-1_all.deb
+curl --fail --silent --show-error --max-time 120 http://10.0.2.2:8094/build/shadowfetch-drkonqi-pickup_4.0.0-1_amd64.deb -o shadowfetch-drkonqi-pickup_4.0.0-1_amd64.deb
 DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 --no-remove -s install ./*.deb > simulation.txt
 ! rg '^Remv ' simulation.txt
 DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=120 --no-remove -y install ./*.deb

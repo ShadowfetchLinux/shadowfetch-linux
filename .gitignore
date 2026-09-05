@@ -73,6 +73,7 @@ packages/*/debian/grub-btrfs/
 packages/*/debian/.debhelper/
 packages/*/debian/files
 packages/*/debian/*.substvars
+packages/*/debian/*.debhelper
 packages/*/debian/debhelper-build-stamp
 __pycache__/
 *.pyc
@@ -113,3 +114,9 @@ packages/shadowfetch-welcome/debian/shadowfetch-welcome/
 
 # Reviewed public signatures retained for immutable source packages.
 !vendor/release-signatures/*.dsc
+
+# Verified corresponding source for the narrowly patched KDE pickup helper.
+!packages/shadowfetch-drkonqi-pickup/vendor/drkonqi-6.6.5.tar.xz
+!packages/shadowfetch-drkonqi-pickup/vendor/drkonqi-6.6.5.tar.xz.sig
+packages/shadowfetch-drkonqi-pickup/build-debian/
+packages/shadowfetch-drkonqi-pickup/build-test/

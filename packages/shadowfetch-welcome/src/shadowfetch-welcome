@@ -18,10 +18,9 @@ A small, focused PyQt6 wizard that:
     Cursor Agent, and the official native Grok Bot desktop
   - Offers the one-click software catalog (media apps, presets, local AI)
 
-Honest, fast, private, AI-ready - built on Debian + KDE Plasma 6.
-Everything here is reliable on Plasma 6; nothing is left half-working.
-Zero telemetry: the only network activity is apt talking to the pinned
-mirrors and downloads the user starts by clicking a card.
+Built on Debian + KDE Plasma 6. Optional application installs are selected
+during setup. Vendor applications retain their own onboarding downloads,
+network behavior and account requirements.
 """
 
 import json
@@ -66,7 +65,8 @@ if __name__ == "__main__" and {"-h", "--help", "--version"}.intersection(sys.arg
             "Workstation / Full Flame); afterwards it runs the one-time welcome flow\n"
             "(profile, graphics, desktop, apps, optional Buzz and coding agents)\n"
             "and then\n"
-            "exits silently on later logins. Every download remains opt-in.\n"
+            "exits silently on later logins. Optional application installs are\n"
+            "selected during setup; vendor onboarding may download other assets.\n"
             "\n"
             "Options:\n"
             "  --force            Run the welcome flow again even though setup has\n"
@@ -93,7 +93,7 @@ from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QStackedWidget, QCheckBox, QProgressBar,
-    QFrame, QScrollArea, QRadioButton, QButtonGroup, QDialog, QMessageBox,
+    QFrame, QScrollArea, QRadioButton, QButtonGroup, QDialog, QMessageBox, QLayout,
 )
 
 try:
@@ -1945,7 +1945,7 @@ class WelcomePage(QWidget):
             row.addWidget(_label(detail, 11, MUTED, wrap=True))
             points.addWidget(card, 0, i)
         lay.addLayout(points)
-        lay.addWidget(_label("Local-first · No Shadowfetch account required · No telemetry", 11, MUTED, wrap=True))
+        lay.addWidget(_label("Local-first · No Shadowfetch account required", 11, MUTED, wrap=True))
         links = QGridLayout()
         callbacks = [("Open Mission Control", lambda: open_control_page("missions"))]
         if on_guide:
@@ -2076,8 +2076,14 @@ class ProfilePage(QWidget):
             12, MUTED, wrap=True,
         ))
 
-        grid = QVBoxLayout()
+        self.profile_scroll = QScrollArea()
+        self.profile_scroll.setWidgetResizable(True)
+        self.profile_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        container = QWidget()
+        grid = QVBoxLayout(container)
+        grid.setContentsMargins(0, 0, 6, 0)
         grid.setSpacing(10)
+        grid.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         for preset in PROFILE_PRESETS:
             card = Card()
             row = QHBoxLayout(card)
@@ -2091,8 +2097,9 @@ class ProfilePage(QWidget):
             row.addLayout(txt, 1)
             self.checks.append((cb, preset["key"]))
             grid.addWidget(card)
-        lay.addLayout(grid)
-        lay.addStretch(1)
+        grid.addStretch(1)
+        self.profile_scroll.setWidget(container)
+        lay.addWidget(self.profile_scroll, 1)
 
         buttons = QHBoxLayout()
         manual = QPushButton("Choose manually")
@@ -2368,8 +2375,22 @@ class AccentPage(QWidget):
         lay.addSpacing(18)
         lay.addWidget(_label("Choose your wallpaper", 16, TEXT, bold=True))
         self._wp_btns = []
-        wrow = QHBoxLayout()
+        self.wallpaper_scroll = QScrollArea()
+        self.wallpaper_scroll.setWidgetResizable(True)
+        self.wallpaper_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.wallpaper_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.wallpaper_scroll.setFixedHeight(129)
+        self.wallpaper_scroll.setStyleSheet(f"""
+            QScrollBar:horizontal {{ background: #11161e; height: 10px; margin: 2px; }}
+            QScrollBar::handle:horizontal {{ background: {BORDER}; border-radius: 5px; min-width: 24px; }}
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: transparent; }}
+        """)
+        wallpaper_row = QWidget()
+        wrow = QHBoxLayout(wallpaper_row)
+        wrow.setContentsMargins(0, 0, 0, 4)
         wrow.setSpacing(10)
+        wrow.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
         wrow.addStretch(1)
         for wp in sorted(_glob.glob("/usr/share/wallpapers/Umbra*/contents/images/3840x2160.jpg")):
             vid = wp.split("/")[4]
@@ -2396,7 +2417,8 @@ class AccentPage(QWidget):
             self._wp_btns.append(btn)
             wrow.addWidget(btn)
         wrow.addStretch(1)
-        lay.addLayout(wrow)
+        self.wallpaper_scroll.setWidget(wallpaper_row)
+        lay.addWidget(self.wallpaper_scroll)
 
         lay.addSpacing(10)
         lay.addWidget(_label("Applies after your next login.", 11, MUTED))
