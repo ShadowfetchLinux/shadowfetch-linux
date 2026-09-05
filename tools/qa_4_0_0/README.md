@@ -104,3 +104,45 @@ and Undo. `engine_acceptance.py` covers bounded deterministic engine behavior.
 `sfqa-final-upgrade` QEMU guest with Btrfs. It does not reboot automatically;
 retain its evidence and perform the explicit recovery boot/readback before
 claiming that a restored system actually starts.
+
+## Prepublication evidence bundle
+
+After genuine required gates pass, keep `EVIDENCE-01` pending while generating
+the release documents with `tools/build_release_evidence_4_0_0.py`. Then run:
+
+```sh
+python3 tools/package_release_evidence_4_0_0.py \
+  --approved-inputs work/release-4.0.0/approved-inputs.json
+```
+
+The approval file is an explicit review record. Its exact schema is
+`{"schema_version":1,"screenshots":[],"documents":[]}`. Each selected entry must
+contain `path`, the actual `sha256`, and `approved: true`. Screenshot paths are
+relative to the acceptance evidence root; document paths are relative to the
+repository root. Put only inspected final captures in `screenshots`. Optional
+reviewer letters should first be copied into the release workspace and named
+explicitly in `documents`. Empty arrays are valid only when there are no
+selected inputs of that kind; every screenshot referenced by acceptance still
+requires approval at its exact digest.
+
+The helper verifies the ISO identity, every referenced evidence hash, the five
+generated document checksums, the prepublication release facts, and all selected
+capture/document hashes. It includes a fixed list of relevant QA source files.
+It rejects symbolic links, path escapes, unapproved raster images, circular
+bundle references, and oversized input sets (512 files, 256 MiB per file, 1 GiB
+total). It never scans an entire work tree or changes acceptance statuses.
+
+Outputs match the publisher's expected names:
+`evidence-bundle-4.0.0.tar.gz` and `evidence-bundle-4.0.0.contents`. Members are
+sorted with zero timestamps, normalized owners/modes, and deterministic gzip
+headers. The external `.contents` is a SHA256 check file for every archive
+member, including its internal `SHA256SUMS`; neither hashes the bundle itself.
+After extracting into a new directory, `sha256sum -c` on the external contents
+file verifies the extracted members. Preserve the original prepublication
+snapshot: existing output files cause a refusal instead of an overwrite.
+
+Inspect the generated bundle, then record its path/hash in the external
+acceptance manifest and record the actual `EVIDENCE-01` result separately. The
+bundled snapshot intentionally retains the pending packaging case. Do not
+regenerate its enclosed facts/dossier after inserting a self-referential bundle
+hash. Publication gates remain pending until public verification occurs.

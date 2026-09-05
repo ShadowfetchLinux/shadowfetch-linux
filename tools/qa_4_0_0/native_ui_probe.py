@@ -143,6 +143,12 @@ def execute(command):
         active = visible_window()
         width, height = (1080, 700) if command == "size-laptop" else (1440, 900)
         active.resize(width, height)
+        available = app.primaryScreen().availableGeometry()
+        frame = active.frameGeometry()
+        frame.moveCenter(available.center())
+        active.move(frame.topLeft())
+        active.raise_()
+        active.activateWindow()
         record(command, active.width() == width and active.height() == height, [active.width(), active.height()])
     elif command == "quit":
         status()
