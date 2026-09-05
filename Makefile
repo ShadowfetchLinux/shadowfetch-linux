@@ -74,11 +74,11 @@ PACKAGES_STAMP := $(BUILD_DIR)/.packages-$(VERSION)
 
 R2_BUCKET ?= shadowfetch-linux
 # Cloudflare R2 S3-compatible endpoint for this account.
-# (wrangler can't PUT > 300 MiB; aws-cli with R2's S3 API handles multipart.)
+# The release publisher uses the S3 API with multipart uploads.
 R2_ENDPOINT ?= https://<CLOUDFLARE_ACCOUNT_ID>.r2.cloudflarestorage.com
 R2_REGION   ?= auto
 
-# Used by sync-from-linux (Mac-side flow): host + path to the build box.
+# Used by sync-from-linux for read-only artifact inspection.
 LINUX_HOST ?= shadowfetch-linux
 LINUX_PATH ?= ~/projects/shadowfetch-4.0.0
 
@@ -321,31 +321,11 @@ pre-release-check: iso-gate
 	@ROOT=$(ROOT) CODENAME=$(CODENAME) REPO_DIR=$(REPO_DIR) REPO_MIN_VALID_FOR_SECONDS=$(REPO_MIN_VALID_FOR_SECONDS) \
 		$(ROOT)/tools/pre_release_check.sh
 
-# Upload ISO + APT repo to R2 via aws-cli (R2's S3-compatible API).
-# Requires: brew install awscli, and an R2 API token from the Cloudflare
-# dashboard (R2 → Manage R2 API Tokens → Create) exported as:
-#   AWS_ACCESS_KEY_ID=<R2 Access Key ID>
-#   AWS_SECRET_ACCESS_KEY=<R2 Secret Access Key>
-# aws-cli handles multipart automatically, so the 2.9 GB ISO uploads fine.
+# Publish only the accepted artifact from the authorized Linux source tree.
+# The publisher preserves historical ISO/package objects, verifies signatures,
+# and writes signed APT InRelease last. Credentials are process environment only.
 publish: pre-release-check
-	@command -v aws >/dev/null || { echo "aws not installed. Run: brew install awscli" >&2; exit 1; }
-	@test -n "$$AWS_ACCESS_KEY_ID" || { echo "AWS_ACCESS_KEY_ID not set (use your R2 API token Access Key ID)" >&2; exit 1; }
-	@test -n "$$AWS_SECRET_ACCESS_KEY" || { echo "AWS_SECRET_ACCESS_KEY not set (use your R2 API token Secret Access Key)" >&2; exit 1; }
-	@if [ ! -f $(ROOT)/$(ISO_NAME) ]; then echo "No ISO to publish ($(ROOT)/$(ISO_NAME))" >&2; exit 1; fi
-	@if [ ! -f $(ROOT)/$(ISO_NAME).asc ]; then echo "No signature ($(ROOT)/$(ISO_NAME).asc) — run 'make sign'" >&2; exit 1; fi
-	@echo ">>> Uploading small files first (sha256, signature, GPG key)"
-	@aws --endpoint-url=$(R2_ENDPOINT) --region=$(R2_REGION) s3 cp $(ROOT)/$(ISO_NAME).sha256 s3://$(R2_BUCKET)/releases/$(ISO_NAME).sha256 --content-type "text/plain"
-	@aws --endpoint-url=$(R2_ENDPOINT) --region=$(R2_REGION) s3 cp $(ROOT)/$(ISO_NAME).asc    s3://$(R2_BUCKET)/releases/$(ISO_NAME).asc    --content-type "application/pgp-signature"
-	@aws --endpoint-url=$(R2_ENDPOINT) --region=$(R2_REGION) s3 cp $(REPO_DIR)/shadowfetch.gpg.asc s3://$(R2_BUCKET)/shadowfetch.gpg.asc --content-type "application/pgp-keys"
-	@echo ">>> Mirroring APT repo (dists/ + pool/) to R2 apt/"
-	@aws --endpoint-url=$(R2_ENDPOINT) --region=$(R2_REGION) s3 sync $(REPO_DIR)/dists s3://$(R2_BUCKET)/apt/dists --delete
-	@aws --endpoint-url=$(R2_ENDPOINT) --region=$(R2_REGION) s3 sync $(REPO_DIR)/pool  s3://$(R2_BUCKET)/apt/pool  --delete
-	@echo ">>> Uploading ISO ($(ISO_NAME), $$(du -h $(ROOT)/$(ISO_NAME) | cut -f1), multipart). Progress below."
-	@aws --endpoint-url=$(R2_ENDPOINT) --region=$(R2_REGION) s3 cp $(ROOT)/$(ISO_NAME) s3://$(R2_BUCKET)/releases/$(ISO_NAME) --content-type "application/x-iso9660-image"
-	@echo ">>> Done. Verify:"
-	@echo "    open $(PUBLIC_SITE)/"
-	@echo "    curl -I  $(ARTIFACT_BASE)/download/$(ISO_NAME)"
-	@echo "    curl -sI $(ARTIFACT_BASE)/apt/dists/$(CODENAME)/InRelease"
+	@python3 $(ROOT)/tools/publish_release_4_0_0.py --apply
 
 qemu:
 	qemu-system-x86_64 \
@@ -357,32 +337,20 @@ qemu:
 		-drive file=$(ROOT)/$(ISO_NAME),media=cdrom,readonly=on \
 		-boot d
 
-# ---- Mac-side deploy flow ----
-# Run these from your Mac (where wrangler is logged in) to ship a release
-# that was built on $(LINUX_HOST).
-
-# Pull the latest ISO + checksum + signature + reprepro repo back from the
-# Linux build box. Idempotent.
+# Pull a read-only local copy of already built release artifacts for inspection.
 sync-from-linux:
-	@echo ">>> Pulling ISO + repo from $(LINUX_HOST):$(LINUX_PATH)"
-	@rsync -avzhP $(LINUX_HOST):$(LINUX_PATH)/shadowfetch-*.iso $(ROOT)/ 2>/dev/null || echo "(no ISO yet on Linux box)"
-	@rsync -avzhP $(LINUX_HOST):$(LINUX_PATH)/shadowfetch-*.iso.sha256 $(ROOT)/ 2>/dev/null || true
-	@rsync -avzhP $(LINUX_HOST):$(LINUX_PATH)/shadowfetch-*.iso.asc $(ROOT)/ 2>/dev/null || true
-	@rsync -avzh --delete $(LINUX_HOST):$(LINUX_PATH)/repo/ $(REPO_DIR)/
-	@ls -lh $(ROOT)/shadowfetch-*.iso 2>/dev/null || echo "(no ISO present)"
+	@rsync -avzhP $(LINUX_HOST):$(LINUX_PATH)/$(ISO_NAME) $(ROOT)/
+	@rsync -avzhP $(LINUX_HOST):$(LINUX_PATH)/$(ISO_NAME).sha256 $(ROOT)/
+	@rsync -avzhP $(LINUX_HOST):$(LINUX_PATH)/$(ISO_NAME).asc $(ROOT)/
 
-# Deploy the shadowfetch-linux Worker. Requires `wrangler login` (one time) or CLOUDFLARE_API_TOKEN.
+# Artifact routing is stable across distro releases. Deploying a Worker is a
+# separate reviewed change, never an implicit side effect of publishing an ISO.
 deploy-worker:
-	@command -v wrangler >/dev/null || { echo "wrangler not installed. Run: brew install cloudflare-wrangler2" >&2; exit 1; }
-	@cd $(ROOT)/web/shadowfetch-linux-worker && wrangler deploy
+	@echo "Artifact routing is unchanged. Review any Worker change separately." >&2
+	@exit 1
 
-# Full Mac-side ship: pull artifacts, publish to R2, deploy Worker.
-ship: sync-from-linux publish deploy-worker
-	@echo ""
-	@echo ">>> SHIPPED. Verify:"
-	@echo "    open $(PUBLIC_SITE)/"
-	@echo "    curl -I $(ARTIFACT_BASE)/download/$(ISO_NAME)"
-	@echo "    curl -sI $(ARTIFACT_BASE)/apt/dists/$(CODENAME)/InRelease"
+ship: publish
+	@echo ">>> Accepted artifacts published. Complete public byte verification, GitHub release, and canonical Linux website deployment per RELEASE-4.0.0.md."
 
 clean:
 	-cd $(LB_DIR) && sudo lb clean

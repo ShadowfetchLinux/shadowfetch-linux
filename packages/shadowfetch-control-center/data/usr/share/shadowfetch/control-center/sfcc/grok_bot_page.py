@@ -65,7 +65,7 @@ class GrokBotPage(QWidget):
             ("Native app, native sign-in", "Sign in inside Grok Bot. A model API key does not replace the app's account or subscription."),
             ("A deliberate cloud connection", "Grok Bot uses its vendor's cloud services. Review its permissions and data handling before connecting projects."),
             ("Verified installation", "Shadowfetch checks the pinned download, package identity and installed version. Setup requires administrator approval and enables the vendor's package update source."),
-            ("Your local missions stay visible", "Mission Control runs scoped code, private reports and media workflows. Grok Bot tasks and permissions are managed in the official native app."),
+            ("Your local missions stay visible", "Mission Control runs scoped code, source reports and media workflows. Grok Bot tasks and permissions are managed in the official native app."),
         )):
             card = Card()
             row = QVBoxLayout(card)

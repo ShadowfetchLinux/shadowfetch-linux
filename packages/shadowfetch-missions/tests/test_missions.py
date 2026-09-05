@@ -170,6 +170,33 @@ class MissionTests(unittest.TestCase):
             result = m.run_mission(self.store, mission["id"])
         self.assertEqual(result["state"], "waiting-review", result["error"])
         self.assertTrue(any(e["event"] == "step-resumed" for e in self.store.events(mission["id"])))
+    def test_changed_report_inputs_refuse_resume_and_preserve_manual_edits(self):
+        mission = self.create()
+        with patch.object(m.Executor, "infer", return_value="Friday. [S1:L1]"):
+            first = m.run_mission(self.store, mission["id"])
+        report_path = next(Path(path) for path in first["artifacts"] if path.endswith("report.md"))
+        report_before = report_path.read_text()
+        self.store.update(mission["id"], state="failed")
+        (self.ws / "facts.md").write_text("Updated launch is Saturday.\n")
+        self.store.retry(mission["id"])
+        with patch.object(m.Executor, "infer", side_effect=AssertionError("must not replay inference")):
+            result = m.run_mission(self.store, mission["id"])
+        self.assertEqual(result["state"], "failed")
+        self.assertIn("Source inputs changed", result["error"])
+        self.assertEqual(report_path.read_text(), report_before)
+        self.assertEqual((self.ws / "facts.md").read_text(), "Updated launch is Saturday.\n")
+        with self.assertRaisesRegex(m.MissionError, "changed after"):
+            m.review(self.store, mission["id"], "undo")
+        self.assertTrue(json.loads(Path(result["receipt"]).read_text())["recovery_index_preserved"])
+    def test_missing_execution_baseline_does_not_claim_added_files(self):
+        mission = self.create()
+        executor = m.Executor(self.store, mission)
+        executor.receipt("cancelled", "Cancelled before execution")
+        diff = (self.store.directory(mission["id"]) / "changes.diff").read_text()
+        self.assertIn("No recorded execution baseline", diff)
+        self.assertNotIn("+ facts.md", diff)
+        self.assertNotIn("after/facts.md", diff)
+
     def test_undo_refuses_newer_manual_file_changes(self):
         mission = self.create()
         with patch.object(m.Executor, "infer", return_value="Friday. [S1:L1]"):

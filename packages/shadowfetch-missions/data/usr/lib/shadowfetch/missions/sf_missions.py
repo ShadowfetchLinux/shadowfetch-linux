@@ -387,6 +387,7 @@ class Executor:
         self.artifacts = []
         self.tests = []
         self.inferences = []
+        self.preserve_recovery_index = False
 
     def check(self):
         if self.store.get(self.mid)["cancel_requested"]:
@@ -524,9 +525,26 @@ class Executor:
 
     def report(self):
         previous = self.store.step(self.mid, "report-published")
-        if previous and all(Path(p).is_file() and digest(p) == h for p, h in previous.items()):
+        if previous:
+            # Do not overwrite a person's updated sources or output on retry.
+            # Keep the old recovery index so Undo also refuses those newer edits.
+            self.preserve_recovery_index = True
+            if not all(Path(p).is_file() and not Path(p).is_symlink() and digest(p) == h for p, h in previous.items()):
+                raise MissionError("Published report files changed after this attempt. Preserve those edits and create a new mission with a fresh recovery checkpoint")
             self.artifacts.extend(previous)
-            self.event("step-resumed", "Verified existing report hashes; skipped repeated inference")
+            register = next((Path(p) for p in previous if Path(p).name == "sources.json"), None)
+            if register is None:
+                raise MissionError("The prior report has no source register. Create a new mission to establish a verified baseline")
+            sources = self.input_text()
+            try:
+                original = {row["path"]: row["sha256"] for row in json.loads(register.read_text())}
+            except (ValueError, KeyError, TypeError):
+                raise MissionError("The prior report source register is invalid; create a new mission")
+            current = {row["path"]: row["sha256"] for row in sources}
+            if current != original:
+                raise MissionError("Source inputs changed after this report. Create a new mission to preserve the updated files as a fresh recovery baseline; no inference was replayed")
+            self.preserve_recovery_index = False
+            self.event("step-resumed", "Verified report and source hashes; skipped repeated inference")
             return
         sources = self.input_text()
         context = "\n\n".join(f"[{source['id']}] {source['path']}\n" + "\n".join(f"{number}: {line}" for number, line in enumerate(source["text"].splitlines(), 1)) for source in sources)
@@ -701,13 +719,15 @@ class Executor:
         before = json.loads(before_path.read_text()) if before_path.exists() else {}
         try:
             after = tree_index(self.ws)
-            atomic(self.directory / "changes.diff", difference(before, after))
-            atomic(self.directory / "after-index.json", json.dumps(recovery_index(self.ws)))
+            diff = difference(before, after) if before_path.exists() else "No recorded execution baseline; workspace changes cannot be attributed to this attempt.\n"
+            atomic(self.directory / "changes.diff", diff)
+            if not self.preserve_recovery_index:
+                atomic(self.directory / "after-index.json", json.dumps(recovery_index(self.ws)))
         except OSError as exc:
             after = {}
             error = (error or "") + "; diff unavailable: " + clean(exc)
         records = [{"path": p, "sha256": digest(p), "bytes": Path(p).stat().st_size} for p in self.artifacts if Path(p).is_file()]
-        receipt = {"schema": 1, "mission": self.mid, "title": self.mission["title"], "kind": self.mission["kind"], "state": state, "workspace": str(self.ws), "checkpoint": self.store.get(self.mid)["checkpoint"], "started_at": self.mission["updated_at"], "finished_at": now(), "runtime": self.mission["config"]["runtime"], "network": self.mission["config"]["network"], "error": error, "artifacts": records, "tests": self.tests, "inferences": self.inferences, "diff": str(self.directory / "changes.diff"), "review_required": state == "waiting-review", "limits": {"timeout_seconds": self.mission["config"]["timeout"], "sandbox_address_space_mb": 3072, "sandbox_processes": 96, "queue_concurrency": 1}, "recovery_scope": "Workspace files only; external network effects cannot be undone"}
+        receipt = {"schema": 1, "mission": self.mid, "title": self.mission["title"], "kind": self.mission["kind"], "state": state, "workspace": str(self.ws), "checkpoint": self.store.get(self.mid)["checkpoint"], "started_at": self.mission["updated_at"], "finished_at": now(), "runtime": self.mission["config"]["runtime"], "network": self.mission["config"]["network"], "error": error, "artifacts": records, "tests": self.tests, "inferences": self.inferences, "diff": str(self.directory / "changes.diff"), "review_required": state == "waiting-review", "recovery_index_preserved": self.preserve_recovery_index, "limits": {"timeout_seconds": self.mission["config"]["timeout"], "sandbox_address_space_mb": 3072, "sandbox_processes": 96, "queue_concurrency": 1}, "recovery_scope": "Workspace files only; external network effects cannot be undone"}
         path = self.directory / "receipt.json"
         atomic(path, json.dumps(receipt, indent=2) + "\n")
         self.store.update(self.mid, receipt=str(path), artifacts=json.dumps([r["path"] for r in records]))

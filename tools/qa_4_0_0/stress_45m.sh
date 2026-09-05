@@ -60,7 +60,7 @@ as_user podman pull "$image" > "$out/podman-pull.log" 2>&1
 pull_rc=$?
 as_user podman image inspect "$image" > "$out/container-image-before.json" || record_failure "container image inspection failed"
 image_id="$(as_user podman image inspect --format '{{.Id}}' "$image")"
-[[ $image_id == sha256:* ]] || { record_failure "No immutable container image ID"; exit 2; }
+[[ $image_id =~ ^(sha256:)?[a-f0-9]{64}$ ]] || { record_failure "No immutable container image ID"; exit 2; }
 scratch="$qa_home/Workspaces/qa-load-$run_id"
 as_user mkdir -p "$scratch" || exit 2
 available_bytes="$(df -B1 --output=avail "$scratch" | tail -n1 | tr -d ' ')"

@@ -60,7 +60,9 @@ State progression is `queued → running → waiting-review → completed`. Erro
 A restarted worker marks interrupted executions failed and asks for inspection.
 It never automatically replays an interrupted code edit or external network action.
 An explicit Retry retains the original checkpoint. Previously published reports
-and individual media exports are resumed only when their recorded hashes match.
+and individual media exports are resumed only when their recorded input and output
+hashes match. Changed report sources or edited output refuse retry before inference;
+start a new mission to preserve those edits as a fresh recovery baseline.
 
 Accept marks successful work reviewed. Undo restores the original workspace using
 its checkpoint, after proving no newer mission or manual file change intervened.

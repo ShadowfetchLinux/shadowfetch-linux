@@ -1598,6 +1598,7 @@ class FireEdition215Tests(unittest.TestCase):
             "DISPLAY": ":1",
             "HOME": str(home),
             "XDG_RUNTIME_DIR": str(root / "run"),
+            "DBUS_SESSION_BUS_ADDRESS": f"unix:path={root}/run/bus",
             "PATH": f"{fake}:/usr/bin:/bin",
             "SHADOWFETCH_BUZZ_COMPOSE_SOURCE": str(compose),
         })

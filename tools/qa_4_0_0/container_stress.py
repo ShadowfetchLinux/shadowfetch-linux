@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -16,7 +17,7 @@ def main():
     parser.add_argument("--image", required=True)
     parser.add_argument("--run-id", required=True)
     args = parser.parse_args()
-    if os.geteuid() == 0 or args.duration < 10 or not args.run_id.replace("-", "").isalnum() or not args.image.startswith("sha256:"):
+    if os.geteuid() == 0 or args.duration < 10 or not args.run_id.replace("-", "").isalnum() or not re.fullmatch(r"(?:sha256:)?[a-f0-9]{64}", args.image):
         parser.error("A desktop user, duration >=10, fixed SHA256 image and safe run ID are required")
     stopped = False
     def stop(sig, frame):
