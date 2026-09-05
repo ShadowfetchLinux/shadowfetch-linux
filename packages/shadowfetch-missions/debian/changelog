@@ -1,6 +1,8 @@
 shadowfetch-missions (4.0.0-1) umbra; urgency=medium
 
   * Shadowfetch Linux 4.0 Mission Control release.
+  * Publish terminal state and activity together after the receipt is durable.
+  * Wait briefly for review ownership, preserving a clear unapplied busy result.
   * Integrate persistent missions, scoped execution and featured Grok Bot setup.
 
  -- Shadowfetch Project <signing@shadowfetch.com>  Sat, 05 Sep 2026 03:00:00 +0000

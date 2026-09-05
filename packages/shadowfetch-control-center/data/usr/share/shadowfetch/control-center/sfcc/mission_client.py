@@ -42,13 +42,16 @@ class JsonCommand(QObject):
     """Keeps stdout bounded and reports completion exactly once, including ENOENT."""
     MAX_BYTES = 4 * 1024 * 1024
 
-    def __init__(self, parent, command, arguments, callback, timeout_ms=30_000):
+    def __init__(self, parent, command, arguments, callback, timeout_ms=30_000,
+                 preserve_operation=False, on_waiting=None):
         super().__init__(parent)
         self._callback = callback
         self._stdout = bytearray()
         self._stderr = bytearray()
         self._done = False
         self._failure = None
+        self._preserve_operation = preserve_operation
+        self._on_waiting = on_waiting
         self.process = QProcess(self)
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
@@ -69,7 +72,10 @@ class JsonCommand(QObject):
         chunk = bytes(self.process.readAllStandardOutput())
         if len(self._stdout) + len(chunk) > self.MAX_BYTES:
             self._failure = "The local tool returned too much data. Open its receipt from the terminal."
-            self.process.kill()
+            # A restore may already be changing files. Drain excess output,
+            # but never kill a mutating review because its response is large.
+            if not self._preserve_operation:
+                self.process.kill()
             return
         self._stdout.extend(chunk)
 
@@ -78,6 +84,10 @@ class JsonCommand(QObject):
         del self._stderr[:-16_384]
 
     def _timeout(self):
+        if self._preserve_operation:
+            if self._on_waiting:
+                self._on_waiting("Review is still running. Mission Control will keep waiting for its result. Keep this window open; you can minimize it.")
+            return
         self._failure = "The local tool did not answer in time. Refresh to check its current state."
         self.process.kill()
 
@@ -113,6 +123,12 @@ class JsonCommand(QObject):
 class MissionClient(QObject):
     def call(self, arguments, callback):
         return JsonCommand(self, MISSION_COMMAND, ["--json", *arguments], callback).start()
+
+    def review(self, arguments, callback, on_waiting):
+        # The observation deadline is a status update, not permission to
+        # interrupt checkpoint restoration. Keep the QProcess until it exits.
+        return JsonCommand(self, MISSION_COMMAND, ["--json", *arguments], callback,
+                           preserve_operation=True, on_waiting=on_waiting).start()
 
     def grok_status(self, callback):
         return JsonCommand(self, GROK_COMMAND, ["status", "--json"], callback).start()

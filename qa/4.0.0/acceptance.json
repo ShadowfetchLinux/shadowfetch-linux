@@ -61,7 +61,7 @@
       "area": "ice",
       "required": true,
       "status": "pending",
-      "title": "Ice live desktop, external network isolation and actual local inference",
+      "title": "Ice desktop, task network isolation and actual local inference",
       "evidence": []
     },
     {
@@ -115,7 +115,7 @@
       "area": "grok",
       "required": true,
       "status": "pending",
-      "title": "Official Grok Bot package integrity, install, native launch and browser sign-in entry",
+      "title": "Official Grok Bot package integrity, installation, native launch, callback registration and observed account boundary",
       "evidence": []
     },
     {
@@ -182,5 +182,5 @@
       "evidence": []
     }
   ],
-  "candidate_note": "Candidate4 is preserved under work/qa-4.0.0/candidates/candidate-4 on the Linux builder. An upstream DrKonqi pickup correction and reviewed Welcome layout fixes require a new signed ISO and fresh installed-image acceptance. Previous evidence is retained with its original artifact identity."
+  "candidate_note": "Candidate5 is preserved with both failed stress runs under work/qa-4.0.0/candidates/candidate-5 on the Linux builder. Reviewed mission and desktop corrections require new signed packages, an independently identified ISO and fresh acceptance. Development resource experiments retain their own scope; no earlier candidate pass is inherited by this manifest."
 }

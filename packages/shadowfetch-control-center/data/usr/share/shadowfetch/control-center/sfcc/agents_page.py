@@ -271,7 +271,8 @@ class AgentsPage(QWidget):
 
         names = []
         if WORKSPACES_DIR.is_dir():
-            names = sorted(p.name for p in WORKSPACES_DIR.iterdir() if p.is_dir())
+            names = sorted(p.name for p in WORKSPACES_DIR.iterdir()
+                           if not p.name.startswith(".") and not p.is_symlink() and p.is_dir())
         if not names:
             note = label("No workspaces yet.", "detail")
             note.setWordWrap(True)

@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "packages/shadowfetch-control-center/data/usr/share/shadowfetch/control-center"))
 from PyQt6.QtCore import QEventLoop, QTimer, Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QLabel, QPushButton
+from PyQt6.QtWidgets import QApplication, QLabel, QPushButton, QWidget
 from sfcc import theme
 from sfcc.mission_client import JsonCommand, workspace_path
 from sfcc.missions_page import NewMissionDialog, MissionsPage
@@ -138,6 +138,52 @@ class MissionDialogTests(unittest.TestCase):
 
 
 class JsonTransportTests(unittest.TestCase):
+    def test_review_deadline_observes_without_interrupting_child(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "restore-finished"
+            events = []
+            loop = QEventLoop()
+            ticks = []
+            heartbeat = QTimer()
+            heartbeat.setInterval(10)
+            heartbeat.timeout.connect(lambda: ticks.append(True))
+            heartbeat.start()
+            def done(data, error):
+                events.append(("done", data, error))
+                loop.quit()
+            script = "import pathlib,time,json;time.sleep(.2);pathlib.Path(" + repr(str(marker)) + ").write_text('restored');print(json.dumps({'state':'undone'}))"
+            job = JsonCommand(APP, sys.executable, ["-c", script], done,
+                              timeout_ms=30, preserve_operation=True,
+                              on_waiting=lambda message: events.append(("waiting", message)))
+            job.start()
+            QTimer.singleShot(5000, loop.quit)
+            loop.exec()
+            heartbeat.stop()
+            self.assertEqual(["waiting", "done"], [e[0] for e in events])
+            self.assertEqual(("done", {"state": "undone"}, None), events[-1])
+            self.assertEqual("restored", marker.read_text())
+            self.assertGreater(len(ticks), 3)
+
+    def test_review_output_limit_does_not_interrupt_restoration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            marker = Path(directory) / "restore-finished"
+            result = []
+            loop = QEventLoop()
+            def done(data, error):
+                result.append((data, error))
+                loop.quit()
+            script = "import pathlib,time;print('x'*500,flush=True);time.sleep(.15);pathlib.Path(" + repr(str(marker)) + ").write_text('restored')"
+            job = JsonCommand(APP, sys.executable, ["-c", script], done,
+                              preserve_operation=True)
+            job.MAX_BYTES = 64
+            job.start()
+            QTimer.singleShot(5000, loop.quit)
+            loop.exec()
+            self.assertEqual("restored", marker.read_text())
+            self.assertEqual(1, len(result))
+            self.assertIn("too much data", result[0][1])
+            self.assertLessEqual(len(job._stdout), 64)
+
     def run_command(self, command, args, timeout=2000):
         result = []
         loop = QEventLoop()
@@ -176,6 +222,74 @@ class JsonTransportTests(unittest.TestCase):
 
 
 class PageStateTests(unittest.TestCase):
+    def test_review_stays_pending_through_polling_and_busy_refusal_is_retained(self):
+        mission = {"id": "m1", "state": "waiting-review", "checkpoint": "abc"}
+        class ReviewClient(FakeClient):
+            def call(self, args, callback):
+                if args[0] == "show":
+                    callback(mission.copy(), None)
+                else:
+                    super().call(args, callback)
+            def review(self, args, callback, on_waiting):
+                self.calls.append(args)
+                self.complete_review, self.waiting = callback, on_waiting
+        with patch("sfcc.missions_page.MissionClient", ReviewClient):
+            page = MissionsPage(lambda _: None)
+            APP.processEvents()
+            page.timer.stop()
+            page.selected_id = "m1"
+            page.selected = mission.copy()
+            page._action("accept")
+            self.assertTrue(page.review_pending)
+            page.client.waiting("Review is still running.")
+            page._listed([mission], None)
+            self.assertEqual("Review is still running.", page.notice.text())
+            self.assertFalse(any(b.isEnabled() for b in page.actions.values()))
+            page._action("accept")
+            self.assertEqual(1, len([a for a in page.client.calls if a[0] == "review"]))
+            error = "Mission controller is busy; this review was not applied. Try again shortly."
+            with patch("sfcc.missions_page.QMessageBox.warning") as warning:
+                page.client.complete_review(None, error)
+                warning.assert_called_once()
+            self.assertFalse(page.review_pending)
+            page._listed([mission], None)
+            self.assertEqual(error, page.notice.text())
+            self.assertEqual("waiting-review", page.selected["state"])
+            self.assertTrue(page.actions["accept"].isEnabled())
+            self.assertEqual(1, len([a for a in page.client.calls if a[0] == "review"]))
+            # A deliberate second action can finish; only its actual result
+            # clears the pending flag and changes the displayed action state.
+            page._action("accept")
+            self.assertTrue(page.review_pending)
+            with patch.object(page, "refresh") as refresh:
+                page.client.complete_review({**mission, "state": "completed"}, None)
+                refresh.assert_called_once()
+            self.assertFalse(page.review_pending)
+            self.assertEqual("completed", page.selected["state"])
+            self.assertFalse(page.actions["accept"].isEnabled())
+            self.assertEqual("", page.notice.text())
+            page.deleteLater()
+            APP.processEvents()
+
+    def test_window_close_cannot_destroy_a_pending_review(self):
+        from sfcc.app import ControlCenterWindow
+        # Exercise the real native close event without starting system pages.
+        window = ControlCenterWindow.__new__(ControlCenterWindow)
+        QWidget.__init__(window)
+        page = QWidget(window)
+        page.review_pending = True
+        window.pages = [page]
+        window.show()
+        APP.processEvents()
+        with patch("sfcc.app.QMessageBox.warning") as warning:
+            self.assertFalse(window.close())
+            warning.assert_called_once()
+        self.assertTrue(window.isVisible())
+        page.review_pending = False
+        self.assertTrue(window.close())
+        window.deleteLater()
+        APP.processEvents()
+
     def test_results_show_filenames_and_open_the_full_recorded_path(self):
         with patch("sfcc.missions_page.MissionClient", FakeClient):
             page = MissionsPage(lambda _: None)

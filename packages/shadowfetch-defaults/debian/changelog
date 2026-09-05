@@ -2,6 +2,8 @@ shadowfetch-defaults (4.0.0-1) umbra; urgency=medium
 
   * Shadowfetch Linux 4.0 Mission Control release.
   * Integrate persistent missions, scoped execution and featured Grok Bot setup.
+  * Bound desktop dirty writeback to 64 MiB background / 256 MiB writer limits.
+  * Use mq-deadline for virtio disks when the kernel supports it.
 
  -- Shadowfetch Project <signing@shadowfetch.com>  Sat, 05 Sep 2026 03:00:00 +0000
 

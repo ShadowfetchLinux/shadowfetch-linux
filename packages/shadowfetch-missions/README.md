@@ -83,6 +83,11 @@ If original provenance is unavailable, retry fails with a new-mission instructio
 
 Accept marks successful work reviewed. Undo restores the original workspace using
 its checkpoint, after proving no newer mission or manual file change intervened.
+Review waits up to 10 seconds to acquire the execution lock, then rechecks the
+mission state. If the lock remains busy, it reports that no review was applied;
+the user can submit a new request. This limit covers lock acquisition only, not
+an in-progress restoration. Execution publishes its final state and event in one
+SQLite transaction after persisting the receipt, so readiness includes that event.
 The checkpoint engine takes a safety snapshot before restoring. If an interrupted
 run has no final file index, use the separately documented checkpoint CLI after
 inspecting the workspace. Recovery affects workspace files; network effects are
@@ -134,6 +139,8 @@ Codex adapter commands. Shared compute receives the selected file context only.
 checkpoint/diff/undo, retry bounds, interrupted execution, scoped edits, and real
 Python validation/repair with explicitly mocked model responses.
 `tests/test_local_compute.py` covers local process/socket proof, native preference,
-mesh refusal, redirect refusal and proxy isolation. These unit fixtures do not
+mesh refusal, redirect refusal and proxy isolation. `tests/test_review_lock.py`
+uses real process locks and SQLite transactions to cover review contention,
+bounded refusal, state revalidation, final publication and rollback. These unit fixtures do not
 constitute a live model verification. Release QA additionally runs real Linux
 Firebreak probes, real native model work, actual media missions and sustained load.

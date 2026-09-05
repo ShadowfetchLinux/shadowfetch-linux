@@ -7,10 +7,14 @@ import argparse
 import hashlib
 import json
 import re
+import subprocess
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
+
+from iso_gate_4_0_0 import mounted_iso
 
 
 VERSION = "4.0.0"
@@ -122,7 +126,9 @@ def build_package_manifest(
     return "\n".join(lines) + "\n"
 
 
-def build_sbom(status_file: Path, iso_sha256: str, timestamp: str) -> dict[str, object]:
+def build_sbom(
+    status_file: Path, iso_sha256: str, timestamp: str, inventory: dict[str, object]
+) -> dict[str, object]:
     installed = [
         package
         for package in parse_deb822(status_file)
@@ -180,7 +186,7 @@ def build_sbom(status_file: Path, iso_sha256: str, timestamp: str) -> dict[str, 
             },
             "component": {
                 "type": "operating-system",
-                "name": "Shadowfetch Linux Fire Edition",
+                "name": "Shadowfetch Linux Fire and Ice",
                 "version": VERSION,
                 "description": f"Shadowfetch Linux {VERSION} {CODENAME} exact ISO package inventory",
                 "externalReferences": [
@@ -190,6 +196,9 @@ def build_sbom(status_file: Path, iso_sha256: str, timestamp: str) -> dict[str, 
                 "properties": [
                     {"name": "shadowfetch:codename", "value": CODENAME},
                     {"name": "shadowfetch:iso-sha256", "value": iso_sha256},
+                    {"name": "shadowfetch:inventory-source", "value": inventory["source"]},
+                    {"name": "shadowfetch:squashfs-sha256", "value": inventory["squashfsSha256"]},
+                    {"name": "shadowfetch:dpkg-status-sha256", "value": inventory["statusSha256"]},
                 ],
             },
         },
@@ -197,28 +206,84 @@ def build_sbom(status_file: Path, iso_sha256: str, timestamp: str) -> dict[str, 
     }
 
 
-def build_sources_report(chroot: Path, component_count: int, iso_sha256: str) -> str:
-    apt_root = chroot / "etc/apt"
+def apt_source_files(extracted_root: Path) -> list[Path]:
+    apt_root = extracted_root / "etc/apt"
     source_files = [apt_root / "sources.list"]
-    source_files.extend(sorted((apt_root / "sources.list.d").glob("*")))
+    source_files.extend(sorted((apt_root / "sources.list.d").glob("*.list")))
+    source_files.extend(sorted((apt_root / "sources.list.d").glob("*.sources")))
+    result = []
+    for path in source_files:
+        if path.is_symlink() or not path.resolve().is_relative_to(extracted_root.resolve()):
+            raise RuntimeError(f"ISO APT source is a symlink or escapes extracted inputs: {path}")
+        if path.is_file():
+            result.append(path)
+    if not result:
+        raise RuntimeError("ISO has no APT source files")
+    return sorted(result)
+
+
+def build_sources_report(
+    extracted_root: Path, component_count: int, iso_sha256: str, inventory: dict[str, object]
+) -> str:
     lines = [
         f"Shadowfetch Linux {VERSION} SBOM source inputs",
         f"ISO SHA-256: {iso_sha256}",
         f"Installed dpkg components: {component_count}",
-        "Inventory source: live-build/chroot/var/lib/dpkg/status",
+        f"Inventory source: {inventory['source']}",
+        f"Squashfs SHA-256: {inventory['squashfsSha256']}",
+        f"dpkg status SHA-256: {inventory['statusSha256']}",
         "",
         "APT SOURCES",
     ]
-    for path in source_files:
-        if not path.is_file():
-            continue
-        lines.append(f"[{path.relative_to(chroot)}]")
+    for path in apt_source_files(extracted_root):
+        lines.append(f"[{path.relative_to(extracted_root)}]")
+        lines.append(f"SHA-256: {sha256_file(path)}")
         for raw_line in path.read_text(encoding="utf-8", errors="replace").splitlines():
             line = raw_line.strip()
             if line and not line.startswith("#"):
                 lines.append(line)
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def build_iso_inventory(
+    iso_path: Path, iso_sha256: str, timestamp: str
+) -> tuple[dict[str, object], str, dict[str, object]]:
+    """Read only published filesystem inputs; live-build may clean its chroot later."""
+    with mounted_iso(iso_path) as mountpoint:
+        squashfs = mountpoint / "live/filesystem.squashfs"
+        if not squashfs.is_file() or squashfs.is_symlink():
+            raise RuntimeError("ISO has no regular live/filesystem.squashfs")
+        with tempfile.TemporaryDirectory(prefix="shadowfetch-evidence-inventory-") as temporary:
+            extracted_root = Path(temporary) / "root"
+            subprocess.run(
+                ["unsquashfs", "-processors", "2", "-no-progress", "-no-xattrs",
+                 "-no-wildcards", "-dest", str(extracted_root), str(squashfs),
+                 "var/lib/dpkg/status", "etc/apt"],
+                check=True, timeout=120, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            )
+            status_file = extracted_root / "var/lib/dpkg/status"
+            if (not status_file.is_file() or status_file.is_symlink()
+                    or not status_file.resolve().is_relative_to(extracted_root.resolve())):
+                raise RuntimeError("ISO has no regular dpkg inventory at var/lib/dpkg/status")
+            inventory = {
+                "source": "ISO live/filesystem.squashfs!/var/lib/dpkg/status",
+                "isoSha256": iso_sha256,
+                "squashfsSha256": sha256_file(squashfs),
+                "statusSha256": sha256_file(status_file),
+                "aptSources": [
+                    {"path": str(path.relative_to(extracted_root)), "sha256": sha256_file(path)}
+                    for path in apt_source_files(extracted_root)
+                ],
+            }
+            sbom = build_sbom(status_file, iso_sha256, timestamp, inventory)
+            inventory["componentCount"] = len(sbom["components"])
+            if not inventory["componentCount"]:
+                raise RuntimeError("ISO dpkg inventory has no installed packages")
+            sources_report = build_sources_report(
+                extracted_root, len(sbom["components"]), iso_sha256, inventory
+            )
+            return sbom, sources_report, inventory
 
 
 def build_dossier(manifest: dict[str, object], timestamp: str) -> str:
@@ -305,15 +370,12 @@ def main() -> int:
     manifest_path = root / "qa" / VERSION / "acceptance.json"
     packages_index = root / "repo/dists/umbra/main/binary-amd64/Packages"
     sources_index = root / "repo/dists/umbra/main/source/Sources"
-    chroot = root / "live-build/chroot"
-    status_file = chroot / "var/lib/dpkg/status"
     iso_path = root / f"shadowfetch-{VERSION}-amd64.iso"
 
     for required_path in (
         manifest_path,
         packages_index,
         sources_index,
-        status_file,
         iso_path,
     ):
         if not required_path.is_file():
@@ -331,8 +393,7 @@ def main() -> int:
 
     timestamp = datetime.fromtimestamp(iso_path.stat().st_mtime, timezone.utc).isoformat()
     package_manifest = build_package_manifest(packages_index, sources_index, iso_sha256)
-    sbom = build_sbom(status_file, iso_sha256, timestamp)
-    sources_report = build_sources_report(chroot, len(sbom["components"]), iso_sha256)
+    sbom, sources_report, inventory = build_iso_inventory(iso_path, iso_sha256, timestamp)
     dossier = build_dossier(manifest, timestamp)
     facts = {
         "version": VERSION,
@@ -342,6 +403,7 @@ def main() -> int:
         "website": WEBSITE,
         "source": GITHUB,
         "publicationStatus": "prepublication",
+        "inventory": inventory,
     }
 
     outputs = {

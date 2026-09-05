@@ -263,6 +263,9 @@ class MissionsPage(QWidget):
         self.capabilities = None
         self._refreshing = False
         self._detail_pending = False
+        self.review_pending = False
+        self._mutation_pending = False
+        self._operation_notice = ""
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 10, 24, 18)
         root.setSpacing(10)
@@ -373,13 +376,13 @@ class MissionsPage(QWidget):
     def _listed(self, data, error):
         self._refreshing = False
         if error:
-            self.notice.setText(error)
+            self.notice.setText(self._operation_notice or error)
             self.stats.setText("Queue unavailable")
             return
         if not isinstance(data, list):
             self.notice.setText("The mission queue returned an unexpected response.")
             return
-        self.notice.setText("")
+        self.notice.setText(self._operation_notice)
         self.records = [m for m in data if isinstance(m, dict) and m.get("id")]
         counts = {state: sum(1 for mission in self.records if mission.get("state") == state) for state in STATES}
         self.stats.setText(f"{counts['running']} working    {counts['queued']} queued    {counts['waiting-review']} to review    {counts['completed']} accepted")
@@ -439,7 +442,7 @@ class MissionsPage(QWidget):
             self._refresh_detail()
             return
         if error:
-            self.notice.setText(error)
+            self.notice.setText(self._operation_notice or error)
             return
         if not isinstance(data, dict):
             return
@@ -494,7 +497,7 @@ class MissionsPage(QWidget):
         mission = self.selected or {}
         state = mission.get("state")
         for key, button in self.actions.items():
-            button.setEnabled(bool(mission) and {
+            button.setEnabled(not self._mutation_pending and bool(mission) and {
                 "accept": state == "waiting-review",
                 "undo": state in ("waiting-review", "completed", "failed", "cancelled") and bool(mission.get("checkpoint")),
                 "cancel": state in ("queued", "running"),
@@ -505,7 +508,7 @@ class MissionsPage(QWidget):
 
     def _action(self, action):
         mission = self.selected
-        if not mission:
+        if not mission or self._mutation_pending:
             return
         if action in ("folder", "receipt"):
             self._open_path(mission.get("workspace" if action == "folder" else "receipt", ""))
@@ -515,16 +518,32 @@ class MissionsPage(QWidget):
             if answer != QMessageBox.StandardButton.Yes:
                 return
         args = ["review", mission["id"], "--decision", action] if action in ("accept", "undo") else [action, mission["id"]]
-        for button in self.actions.values():
-            button.setEnabled(False)
-        self.client.call(args, self._mutated)
+        self._mutation_pending = True
+        self.review_pending = action in ("accept", "undo")
+        self._operation_notice = "Review is in progress. Keep this window open; you can minimize it." if self.review_pending else "Updating mission…"
+        self.notice.setText(self._operation_notice)
+        self._buttons()
+        if self.review_pending:
+            self.client.review(args, self._mutated, self._review_waiting)
+        else:
+            self.client.call(args, self._mutated)
+
+    def _review_waiting(self, message):
+        self._operation_notice = message
+        self.notice.setText(message)
 
     def _mutated(self, data, error):
+        self.review_pending = False
+        self._mutation_pending = False
+        self._operation_notice = error or ""
+        self.notice.setText(self._operation_notice)
         if error:
-            self.notice.setText(error)
             self._buttons()
             QMessageBox.warning(self, "Mission needs attention", error)
         else:
+            if isinstance(data, dict) and data.get("id") == self.selected_id:
+                self.selected = data
+            self._buttons()
             self.refresh()
 
     def _open_path(self, value):

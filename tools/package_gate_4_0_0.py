@@ -498,6 +498,9 @@ def container_install_gate() -> None:
     script = f"""
 set -eux
 export DEBIAN_FRONTEND=noninteractive
+# The disposable slim container excludes translations/docs by default. Install
+# complete packages here so the upstream DrKonqi integrity check is meaningful.
+rm -f /etc/dpkg/dpkg.cfg.d/docker
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates gnupg
 gpg --batch --dearmor --output /usr/share/keyrings/shadowfetch.gpg /repo/shadowfetch.gpg.asc

@@ -33,8 +33,9 @@ never treated as UI proof.
 
 ## Sustained workload
 
-Copy `stress_45m.sh`, `mission_stress.py`, `container_stress.py` and
-`latency_probe.py` together into a root-owned directory in the guest. Run the
+Copy `stress_45m.sh`, `mission_stress.py`, `container_stress.py`,
+`latency_probe.py` and `classify_service_journal.py` together into a root-owned
+directory in the guest. Run the
 shell as root with a non-root logged-in QA user (default `sfqa`). It refuses
 non-VM environments, non-4.0 installed version markers, durations below 45
 minutes, and output directories containing a previous result. Development
@@ -43,12 +44,14 @@ smokes require `QA_DEVELOPMENT_SMOKE=1`; their successful result is explicitly
 
 Required installed tools include `stress-ng`, rootless `podman`, `ffmpeg`,
 `ffprobe`, the production Workbench/Missions helpers, and a verified native Grok
-Bot installation. The guest requires at least 8 GiB free disk. The one image
-pull happens before timed load; subsequent rootless containers use the exact
-resolved image ID with networking disabled.
+Bot installation. The guest requires at least 8 GiB free disk. Before starting,
+cache the approved official Alpine image. The helper verifies its pinned
+immutable image ID and refuses a missing or different image; it never pulls or
+replaces the tag. Rootless containers use that ID with networking disabled.
 
 The default load is three CPU workers, one 3 GiB memory worker, two disk workers
-with 1 GiB each, and two I/O workers. `QA_STRESS_CPUS` and `QA_STRESS_VM_BYTES`
+sharing 1 GiB total (512 MiB per worker), and two I/O workers.
+`QA_STRESS_CPUS` and `QA_STRESS_VM_BYTES`
 allow explicit sizing. With a resident model in an 8 GiB desktop VM, start with
 `QA_STRESS_VM_BYTES=1G`; record the selected resources. Do not make intentional
 overcommit indistinguishable from a product memory regression.
@@ -71,6 +74,39 @@ checks. Kernel OOM, panic, filesystem faults, service failures, incomplete dpkg
 state, failed unit lists and applicable Btrfs device errors fail the run.
 Minimum cycle counts and time coverage prevent a few early successful commands
 from being presented as 45 minutes of sustained agent activity.
+
+The canonical workload incorporates the reviewed `production-default900s-v2`
+helpers. Media tasks retain the production 900-second budget, run without an
+extra idle gap, and require at least three independently verified and undone
+cycles within 45 minutes plus 75% non-overlapping cycle coverage. Bounded
+observation after the load window is reported separately. Each Podman lifecycle
+operation has a 120-second limit; primary and cleanup failures remain separate,
+and final container absence is checked independently. No failed review or
+container operation is automatically replayed.
+
+The service audit freezes a precise UTC endpoint before querying, then retains
+both the human-readable journal and unmodified `journalctl --all --output=json`
+records with identical time bounds. Both captures use `--all` to retain complete
+fields; otherwise journalctl may replace long JSON field values with `null`.
+Empty captured telemetry or an unavailable message body is an error even
+if the journal command returned zero, including records from the QA guest agent.
+The classifier
+records actual Buzz admission/Redis timeouts, JSON or textual HTTP 5xx responses,
+health failures and generic service failures as hard faults. Redis's
+"Asynchronous AOF fsync is taking too long" record is disk-latency telemetry:
+it is preserved verbatim and counted in a separate `latency_events` array, not
+treated by itself as a failed request or corrupted data. A delayed fsync record
+does not excuse a simultaneous admission timeout, HTTP 5xx, failed health check
+or failed mission/readiness budget; those still fail. The classifier retains
+guest-agent command echoes separately using journal provenance and the exact
+command-log prefix; an actual failure from the guest agent still fails. Legacy
+regex matches remain in `service-faults-legacy-matches.txt` as raw evidence.
+Structured faults or malformed/unavailable input make the final stress result
+fail, including development smokes. A helper cannot report `SMOKE_PASS` merely
+because its workloads completed while an actual HTTP 503 went unrecognized.
+Kernel, failed system/user unit lists, package and filesystem checks remain
+independent. Existing frozen helper directories and earlier results are not
+rewritten by this canonical update.
 
 `INT`/`TERM` initiates cancellation. `active-handles.txt` records the runner and
 workload PIDs. The media helper cancels its current queued/running mission and

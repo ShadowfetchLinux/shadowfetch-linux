@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -225,6 +226,14 @@ class ControlCenterWindow(QWidget):
         badge_timer.start()
 
     # ---- shell behaviour --------------------------------------------------
+    def closeEvent(self, event):
+        if any(getattr(page, "review_pending", False) for page in self.pages):
+            event.ignore()
+            QMessageBox.warning(self, "Review is still running",
+                                "Mission Control is waiting for a review operation to finish. Closing it could interrupt restoration. You can minimize the window and close it after the result arrives.")
+            return
+        super().closeEvent(event)
+
     def _section_changed(self, row: int) -> None:
         if 0 <= row < len(self.pages):
             self.stack.setCurrentIndex(row)

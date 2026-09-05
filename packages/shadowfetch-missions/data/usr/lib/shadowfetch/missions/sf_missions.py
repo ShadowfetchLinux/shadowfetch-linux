@@ -38,6 +38,7 @@ FINAL = ("completed", "undone")
 MAX_TEXT = 200_000
 MAX_OUTPUT = 2_000_000
 MAX_FILES = 40
+REVIEW_LOCK_WAIT_SECONDS = 10
 TEXT_TYPES = {".txt", ".md", ".rst", ".csv", ".json", ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".go", ".rs", ".c", ".h", ".sh", ".toml", ".yaml", ".yml"}
 PRIVATE_NAMES = {".git", ".env", ".ssh", ".aws", ".config", ".local", "node_modules", ".venv", "venv", "__pycache__", "mission-output"}
 
@@ -219,6 +220,17 @@ class Store:
         with self.db() as db:
             db.execute("UPDATE missions SET " + ",".join(k + "=?" for k in fields) + " WHERE id=?", [*fields.values(), mid])
 
+    def finish_execution(self, mid, state, error):
+        # Publish readiness with its final event only after the receipt exists.
+        # Readers see either the previous state or this complete transaction.
+        at = now()
+        detail = error or "Execution finished. Inspect artifacts and diff, then Accept or Undo"
+        with self.db() as db:
+            db.execute("INSERT INTO events(mission,at,event,detail) VALUES(?,?,?,?)", (mid, at, state, clean(detail)[:10000]))
+            db.execute("UPDATE missions SET state=?,error=?,updated_at=? WHERE id=?", (state, error, at, mid))
+            row = db.execute("SELECT * FROM missions WHERE id=?", (mid,)).fetchone()
+        return self.unpack(row)
+
     def unpack(self, row):
         result = dict(row)
         result["config"] = json.loads(result["config"])
@@ -248,12 +260,22 @@ class Store:
         return directory
 
     @contextlib.contextmanager
-    def lock(self):
+    def lock(self, *, wait_seconds=0):
+        deadline = time.monotonic() + wait_seconds
         with (self.root / "execution.lock").open("a") as stream:
-            try:
-                fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                raise MissionError("Another mission is executing; this task remains queued")
+            while True:
+                if wait_seconds > 0 and time.monotonic() >= deadline:
+                    raise MissionError("Mission controller is busy; this review was not applied. Try again shortly.")
+                try:
+                    fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if wait_seconds <= 0:
+                        raise MissionError("Another mission is executing; this task remains queued")
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise MissionError("Mission controller is busy; this review was not applied. Try again shortly.")
+                    time.sleep(min(.05, remaining))
             try:
                 yield
             finally:
@@ -763,13 +785,15 @@ def run_mission(store, mid):
                 executor.receipt(state, error)
             except Exception as exc:
                 state, error = "failed", "Could not persist execution receipt: " + clean(exc)
-            store.update(mid, state=state, error=error)
-            store.event(mid, state, error or "Execution finished. Inspect artifacts and diff, then Accept or Undo")
-        return store.get(mid)
+            result = store.finish_execution(mid, state, error)
+        return result
 
 
 def review(store, mid, decision):
-    with store.lock():
+    # A published result can still be releasing its lock, and an idle worker
+    # owns this lock during recovery. Wait before reading state;
+    # only acquisition is retried, never a partially applied review operation.
+    with store.lock(wait_seconds=REVIEW_LOCK_WAIT_SECONDS):
         mission = store.get(mid)
         if mission["state"] not in ("waiting-review", "failed", "cancelled", "completed"):
             raise MissionError("Mission is not ready for review or recovery")
