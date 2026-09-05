@@ -459,9 +459,9 @@ class MissionsPage(QWidget):
         self.artifacts.clear()
         for artifact in data.get("artifacts", []):
             path = artifact.get("path", "") if isinstance(artifact, dict) else str(artifact)
-            item = QListWidgetItem(path)
+            item = QListWidgetItem(Path(path).name or path)
             item.setData(Qt.ItemDataRole.UserRole, path)
-            item.setToolTip("Double-click to open this output file")
+            item.setToolTip(f"{path}\nDouble-click to open this output file")
             self.artifacts.addItem(item)
         if not self.artifacts.count():
             item = QListWidgetItem("No output files recorded yet.")

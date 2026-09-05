@@ -11,6 +11,7 @@ import dbus
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--app", default="buzz-desktop")
 parser.add_argument("--click")
+parser.add_argument("--focus-control", help="Focus one observed button, menu item or link")
 parser.add_argument("--fields", action="store_true", help="List editable field labels, never their values")
 parser.add_argument("--field", help="Exact observed field label to fill")
 parser.add_argument("--focus-field", help="Focus one observed input for native keyboard entry")
@@ -42,7 +43,7 @@ def walk(name, path, depth=0):
         obj = bus.get_object(name, path)
         role = int(obj.GetRole(dbus_interface=interface))
         # WebKitGTK sometimes returns an empty GetRoleName despite a valid role.
-        if role in (11, 35, 43, 62):  # combo box, menu item, push button, or link
+        if role in (11, 32, 35, 43, 62):  # combo box, option, menu item, button, link
             label = str(obj.Get(interface, "Name", dbus_interface=properties))
             buttons.append({"label": label, "bus": name, "path": path})
         if args.fields or args.field is not None or args.focus_field is not None:
@@ -57,7 +58,14 @@ def walk(name, path, depth=0):
 
 
 walk(*apps[0])
-if args.focus_field is not None:
+if args.focus_control is not None:
+    matches = [button for button in buttons if button["label"] == args.focus_control]
+    if len(matches) != 1:
+        raise SystemExit("Require exactly one observed control")
+    match = matches[0]
+    obj = bus.get_object(match["bus"], match["path"])
+    print(json.dumps({"control": args.focus_control, "focused": bool(obj.GrabFocus(dbus_interface="org.a11y.atspi.Component", timeout=3))}))
+elif args.focus_field is not None:
     matches = [field for field in fields if field["label"] == args.focus_field]
     if len(matches) != 1:
         raise SystemExit("Require exactly one observed input")

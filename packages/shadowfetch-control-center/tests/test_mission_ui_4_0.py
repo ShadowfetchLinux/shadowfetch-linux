@@ -176,6 +176,22 @@ class JsonTransportTests(unittest.TestCase):
 
 
 class PageStateTests(unittest.TestCase):
+    def test_results_show_filenames_and_open_the_full_recorded_path(self):
+        with patch("sfcc.missions_page.MissionClient", FakeClient):
+            page = MissionsPage(lambda _: None)
+            page.selected_id = "m1"
+            output = "/home/sfqa/Workspaces/long-project/mission-output/m1/01-studio-tone.wav"
+            page._shown("m1", {"id": "m1", "state": "waiting-review", "artifacts": [output]}, None)
+            item = page.artifacts.item(0)
+            self.assertEqual("01-studio-tone.wav", item.text())
+            self.assertIn(output, item.toolTip())
+            with patch.object(page, "_open_path") as open_path:
+                page._open_artifact(item)
+                open_path.assert_called_once_with(output)
+            page.timer.stop()
+            page.deleteLater()
+            APP.processEvents()
+
     def test_review_controls_follow_state(self):
         with patch("sfcc.missions_page.MissionClient", FakeClient):
             page = MissionsPage(lambda _: None)

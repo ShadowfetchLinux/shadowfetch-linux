@@ -44,7 +44,7 @@ SECTIONS = [
     ("recover", "Recover", None),
     ("local-ai", "Local AI", "Buzz & models"),
     ("drivers", "Drivers", None),
-    ("software", "Software & Updates", "Updates & bundles"),
+    ("software", "Software", "Updates & bundles"),
 ]
 
 ALIASES = {

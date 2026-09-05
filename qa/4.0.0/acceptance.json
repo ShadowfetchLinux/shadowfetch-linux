@@ -70,7 +70,14 @@
       "required": true,
       "status": "pending",
       "title": "Existing 3.5 installed system upgrades with preserved user data and working recovery",
-      "evidence": []
+      "evidence": [
+        {
+          "kind": "json",
+          "path": "package/final-upgrade-recovery.json",
+          "sha256": "77edf24a83b84c0f57ed189f37e5879f197006df8747961e3e1f4a0d332d75da"
+        }
+      ],
+      "notes": "Candidate 2 rehearsal passed: separate immutable 3.5 BIOS disk overlay, upgrade/reboot to 4.0, real Phoenix root rollback/reboot to 3.5, second upgrade/reboot to 4.0, preserved personal data and clean audits. Exact final package refresh and recovery verification remain required before final acceptance."
     },
     {
       "id": "MISSION-01",

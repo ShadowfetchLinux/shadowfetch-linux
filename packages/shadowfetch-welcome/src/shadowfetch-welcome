@@ -1935,7 +1935,7 @@ class WelcomePage(QWidget):
         points = QGridLayout()
         for i, (title, detail) in enumerate((
             ("01  Choose your scope", "One project, an explicit connection and the provider you choose."),
-            ("02  Watch work progress", "Persistent code, private report and media missions with activity receipts."),
+            ("02  Watch work progress", "Persistent code, source report and media missions with activity receipts."),
             ("03  Review the evidence", "Inspect files and changes. Accept results or restore local mission changes."),
         )):
             card = Card()

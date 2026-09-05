@@ -32,6 +32,19 @@ It validates the native executable identity, same-user PID, process start time,
 and ownership of the advertised loopback listening socket through Linux `/proc`.
 It sends prompts directly to that native server's port and revalidates the process
 before reporting success. No model process is started or downloaded by this code.
+Buzz 0.5.17 embeds native Skippy inside its desktop executable. This route requires
+the exact root-owned `/usr/bin/buzz-desktop`, pinned installed package version,
+and executable contents matching its protected dpkg manifest; the receipt records
+the binary SHA-256. Copied executables with the same name do not qualify. Any
+distributed stage/topology deployment, or unavailable stage inventory, refuses
+offline selection; stage inventory is checked again after inference.
+Every direct native request also sets the vendor's `mesh_hooks: false` switch,
+disabling Skippy's automatic peer-consultation hooks even when the desktop has
+community peers connected.
+Pinned Skippy requests use `reasoning_effort: "none"` and
+`chat_template_kwargs: {"enable_thinking": false}` so bounded missions receive
+final output instead of exhausting their budget on hidden intermediate reasoning.
+The receipt records this generation mode.
 
 With `--network none`, absence of a verified native model fails closed before any
 prompt is sent. With `--network allow`, native compute is still preferred, but a

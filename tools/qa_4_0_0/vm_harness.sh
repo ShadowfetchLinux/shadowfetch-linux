@@ -182,19 +182,50 @@ wait_qga() {
 }
 
 capture_vm() {
-    local name=$1 output=$2 dir ppm
+    local name=$1 output=$2 dir ppm staged
     read_meta "$name"
     dir=$(vm_dir "$name")
     mkdir -p "$(dirname "$output")"
     output=$(realpath -m "$output")
-    ppm="$output.ppm.tmp"
-    rm -f "$ppm"
-    printf 'screendump %s\n' "$ppm" | socat - "UNIX-CONNECT:$dir/hmp.sock" >/dev/null
-    [[ -s $ppm ]] || {
-        echo "QEMU did not produce a framebuffer dump: $ppm" >&2
-        exit 1
-    }
-    ffmpeg -nostdin -y -loglevel error -i "$ppm" "$output"
+    ppm="$output.$$.ppm.tmp"
+    staged="$output.$$.stage.png"
+    # HMP may acknowledge screendump before its asynchronous file write ends.
+    # A fresh path prevents accepting an earlier frame, and exact P6 length
+    # plus a stable file signature prevents decoding a partially written image.
+    printf 'screendump "%s"\n' "$ppm" | socat - "UNIX-CONNECT:$dir/hmp.sock" >/dev/null
+    python3 - "$ppm" <<'PY'
+from pathlib import Path
+import re
+import sys
+import time
+
+path = Path(sys.argv[1])
+deadline = time.monotonic() + 5
+previous = None
+while time.monotonic() < deadline:
+    try:
+        with path.open('rb') as stream:
+            header = stream.read(512)
+        stat = path.stat()
+        match = re.match(rb'P6\s+(\d+)\s+(\d+)\s+(\d+)\s', header)
+        if match:
+            width, height, maximum = map(int, match.groups())
+            expected = match.end() + width * height * 3
+            signature = (stat.st_size, stat.st_mtime_ns)
+            if width > 0 and height > 0 and maximum == 255 and stat.st_size == expected:
+                if signature == previous:
+                    break
+                previous = signature
+            else:
+                previous = None
+    except OSError:
+        previous = None
+    time.sleep(.05)
+else:
+    sys.exit(f'QEMU did not finish a complete framebuffer within 5 seconds: {path}')
+PY
+    ffmpeg -nostdin -y -loglevel error -i "$ppm" -frames:v 1 "$staged"
+    mv -f "$staged" "$output"
     rm -f "$ppm"
     file "$output"
 }

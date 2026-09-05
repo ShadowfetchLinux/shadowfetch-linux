@@ -134,12 +134,13 @@ def main():
                 hashes[filename] = sha(target)
             save('package-hashes-' + args.phase + '.json', hashes)
             files = [str(path) for path in sorted(dest.glob('*.deb'))]
+            reinstall = ['--reinstall'] if args.action == 'refresh' else []
             os.environ['DEBIAN_FRONTEND'] = 'noninteractive'
-            simulated = run('apt-get', '-o', 'DPkg::Lock::Timeout=120', '--no-remove', '-s', 'install', *files)
+            simulated = run('apt-get', '-o', 'DPkg::Lock::Timeout=120', '--no-remove', *reinstall, '-s', 'install', *files)
             (STATE / ('apt-simulation-' + args.phase + '.log')).write_text(simulated.stdout + simulated.stderr)
             if any(line.startswith('Remv ') for line in simulated.stdout.splitlines()):
                 raise RuntimeError('Upgrade proposes package removal')
-            installed = run('apt-get', '-o', 'DPkg::Lock::Timeout=120', '--no-remove', '-y', 'install', *files)
+            installed = run('apt-get', '-o', 'DPkg::Lock::Timeout=120', '--no-remove', *reinstall, '-y', 'install', *files)
             (STATE / ('apt-upgrade-' + args.phase + '.log')).write_text(installed.stdout + installed.stderr)
             verify_data(state)
             result = {'status': 'UPGRADED_REBOOT_REQUIRED', 'phase': args.phase, 'package_hashes': hashes, 'personal_data_sha256': sha(USER_FILE), 'boot_id': Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
