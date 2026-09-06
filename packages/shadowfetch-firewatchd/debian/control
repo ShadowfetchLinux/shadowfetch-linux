@@ -25,10 +25,9 @@ Description: Shadowfetch Firewatch telemetry daemon
  Mode consumes. Publishes org.shadowfetch.Firewatch1 on the system bus:
  CPU/RAM/PSI, hwmon temperatures and fans, RAPL package watts, whole-GPU
  stats, a per-application heat map with human display names and icons,
- Buzz shared-compute model availability, storage health via smartctl and
+ storage health via smartctl and
  nvme smart-log, and thermal-throttle events.
  .
- The daemon is read-only against the system. It performs a bounded poll of
- Buzz's fixed loopback model endpoint and does not inspect prompts, jobs, or
- message content. NVIDIA telemetry uses a bounded local nvidia-smi query after
+ The daemon reads local system measurements and does not poll model services.
+ NVIDIA telemetry uses a bounded local nvidia-smi query after
  the user installs a driver and reports whole-GPU statistics only.

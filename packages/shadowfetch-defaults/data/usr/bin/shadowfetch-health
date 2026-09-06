@@ -6,7 +6,6 @@ import json
 import os
 import shutil
 import socket
-import stat
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -33,73 +32,6 @@ def command_check(name, binary, optional=True):
     if path:
         return Check(name, "pass", f"Available at {path}")
     return Check(name, "info" if optional else "warn", "Not installed", f"Run the matching Shadowfetch setup tool for {binary}.")
-
-
-def port_exposure():
-    code, output, _ = run(["ss", "-ltnH"], 5)
-    if code != 0:
-        return Check("Local AI network exposure", "info", "Socket status unavailable")
-    watched = {"3000": "Buzz relay", "9337": "Buzz shared compute"}
-    exposed = []
-    for line in output.splitlines():
-        local = line.split()[3] if len(line.split()) > 3 else ""
-        for port, label in watched.items():
-            if local.endswith(f":{port}") and not (local.startswith("127.0.0.1:") or local.startswith("[::1]:")):
-                exposed.append(f"{label} on {local}")
-    if exposed:
-        return Check("Local AI network exposure", "warn", "; ".join(exposed), "Bind Buzz services to localhost unless remote access is intentional, authenticated and protected by TLS.")
-    return Check("Local AI network exposure", "pass", "Buzz service ports are closed or loopback-only")
-
-
-def buzz_compute_health():
-    code, output, error = run(
-        ["curl", "-fsS", "--max-time", "3", "http://127.0.0.1:9337/v1/models"],
-        5,
-    )
-    if code != 0:
-        return Check(
-            "Buzz shared compute",
-            "info",
-            "Not enabled",
-            "Open Buzz and enable Share this machine in Settings > Compute to download and serve an open model.",
-        )
-    try:
-        payload = json.loads(output)
-        rows = payload.get("data") if isinstance(payload, dict) else None
-        if not isinstance(rows, list):
-            raise ValueError("missing data list")
-        models = [row.get("id") for row in rows
-                  if isinstance(row, dict) and isinstance(row.get("id"), str)]
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return Check(
-            "Buzz shared compute",
-            "warn",
-            "The local model endpoint returned malformed data",
-            "Restart Buzz, then run shadowfetch-agent-doctor.",
-        )
-    summary = f"Ready with {len(models)} model(s)" if models else "Ready; no model is currently advertised"
-    return Check("Buzz shared compute", "pass", summary)
-
-
-def secret_permissions():
-    roots = [Path.home() / ".config" / "shadowfetch" / "buzz",
-             Path.home() / ".local" / "share" / "shadowfetch" / "buzz"]
-    risky = []
-    for root in roots:
-        if not root.exists():
-            continue
-        for path in root.rglob("*"):
-            if not path.is_file() or path.name not in {".env", "client.env"}:
-                continue
-            try:
-                mode = stat.S_IMODE(path.stat().st_mode)
-                if mode & 0o077:
-                    risky.append(str(path.relative_to(Path.home())))
-            except OSError:
-                pass
-    if risky:
-        return Check("Buzz credential permissions", "warn", f"{len(risky)} sensitive configuration file(s) are readable by other users", "Run shadowfetch-agent-doctor --fix-permissions.")
-    return Check("Buzz credential permissions", "pass", "Sensitive Buzz configuration is private")
 
 
 def collect(quick=False):
@@ -132,20 +64,12 @@ def collect(quick=False):
         code, output, error = run(["curl", "-fsSIL", "--max-time", "8", "https://www.shadowfetch.com/linux/apt/dists/umbra/InRelease"], 12)
         checks.append(Check("Update channel", "pass" if code == 0 else "warn", "Reachable and signed metadata is available" if code == 0 else (error or "Unreachable"), "Check the network and system clock." if code else ""))
 
-    checks.extend([
-        command_check("Buzz Desktop", "buzz-desktop"),
-        command_check("Buzz CLI", "buzz"),
-        command_check("Buzz agent runtime", "buzz-agent"),
-        command_check("Container sandbox", "podman"),
-        buzz_compute_health(),
-        port_exposure(),
-        secret_permissions(),
-    ])
+    checks.append(command_check("Container sandbox", "podman"))
     return checks
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Check Shadowfetch system and local AI health")
+    parser = argparse.ArgumentParser(description="Check Shadowfetch system health")
     parser.add_argument("--json", action="store_true", help="emit structured JSON")
     # Same file every other tool reports from, so a bug report cannot cite a
     # version the system itself disagrees with.

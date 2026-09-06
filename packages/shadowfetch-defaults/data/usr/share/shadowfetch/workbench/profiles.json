@@ -26,7 +26,7 @@
       "accounts": "Base tools need no account. Gated Hugging Face models may require the user's own token.",
       "accelerator": "CPU works; Vulkan, NVIDIA CUDA or AMD ROCm can accelerate supported workloads.",
       "commands": ["python3", "hf", "jupyter-lab", "podman", "vulkaninfo", "nvtop"],
-      "capabilities": ["Buzz local model workspace", "Hugging Face CLI", "JupyterLab", "Model revision and license manifest", "Vulkan and GPU diagnostics", "Isolated Python environments"]
+      "capabilities": ["Hugging Face CLI", "JupyterLab", "Model revision and license manifest", "Vulkan and GPU diagnostics", "Isolated Python environments"]
     },
     {
       "id": "production-ops",

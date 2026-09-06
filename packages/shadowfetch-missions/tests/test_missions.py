@@ -1,7 +1,7 @@
 """State, real process cancellation, scope, receipts and workflow regressions.
 
 Model outputs are controlled fixtures in unit tests, clearly separate from the
-release's required live Buzz/Codex inference smoke tests. No mocked result is
+release's required live Codex inference smoke tests. No mocked result is
 reported as a successful model integration.
 """
 import concurrent.futures
@@ -36,7 +36,7 @@ class MissionTests(unittest.TestCase):
         self.env.stop()
         self.temp.cleanup()
     def create(self, **kwargs):
-        values = dict(kind="report", workspace_value="example", title="Launch report", prompt="Summarize the launch", inputs=["facts.md"], model="fixture-model")
+        values = dict(kind="report", workspace_value="example", title="Launch report", prompt="Summarize the launch", inputs=["facts.md"], network="allow")
         values.update(kwargs)
         return self.store.create(**values)
     def test_durable_queue_across_connections(self):
@@ -67,10 +67,10 @@ class MissionTests(unittest.TestCase):
         with self.assertRaises(m.MissionError):
             self.create(kind="code", test=None)
         with self.assertRaises(m.MissionError):
-            self.create(kind="code", runtime="codex", test=["python3", "tests.py"])
+            self.create(kind="code", runtime="codex", network="none", test=["python3", "tests.py"])
     def test_report_real_checkpoint_diff_receipt_and_undo(self):
         mission = self.create()
-        with patch.object(m.Executor, "infer", return_value="The launch is Friday. [S1:L1]\nThe release contains three workflows. [S1:L2]"):
+        with patch.object(m.Executor, "codex", return_value="The launch is Friday. [S1:L1]\nThe release contains three workflows. [S1:L2]"):
             result = m.run_mission(self.store, mission["id"])
         self.assertEqual(result["state"], "waiting-review", result["error"])
         self.assertTrue(result["checkpoint"])
@@ -83,7 +83,7 @@ class MissionTests(unittest.TestCase):
         self.assertEqual((self.ws / "facts.md").read_text().splitlines()[0], "The launch is Friday.")
     def test_invalid_citation_does_not_publish_or_claim_success(self):
         mission = self.create()
-        with patch.object(m.Executor, "infer", return_value="Invented fact. [S1:L99]"):
+        with patch.object(m.Executor, "codex", return_value="Invented fact. [S1:L99]"):
             result = m.run_mission(self.store, mission["id"])
         self.assertEqual(result["state"], "failed")
         self.assertFalse(result["artifacts"])
@@ -91,14 +91,14 @@ class MissionTests(unittest.TestCase):
         self.assertTrue(Path(result["receipt"]).is_file())
     def test_pending_review_prevents_other_workspace_mutation(self):
         first = self.create()
-        with patch.object(m.Executor, "infer", return_value="Friday. [S1:L1]"):
+        with patch.object(m.Executor, "codex", return_value="Friday. [S1:L1]"):
             m.run_mission(self.store, first["id"])
         second = self.create()
         with self.assertRaisesRegex(m.MissionError, "Review the previous"):
             m.run_mission(self.store, second["id"])
         self.assertEqual(self.store.get(second["id"])["state"], "queued")
         m.review(self.store, first["id"], "accept")
-        with patch.object(m.Executor, "infer", return_value="Friday. [S1:L1]"):
+        with patch.object(m.Executor, "codex", return_value="Friday. [S1:L1]"):
             m.run_mission(self.store, second["id"])
         with self.assertRaisesRegex(m.MissionError, "newer mission"):
             m.review(self.store, first["id"], "undo")
@@ -139,47 +139,46 @@ class MissionTests(unittest.TestCase):
             timer.join()
         self.assertLess(time.monotonic() - start, 2)
         self.assertFalse(marker.exists())
-    def test_structured_edits_validate_all_paths_before_writing(self):
-        mission = self.create()
-        executor = m.Executor(self.store, mission)
-        for path in ("../escape.txt", "/tmp/escape", ".env", ".git/config"):
-            payload = json.dumps({"files": [{"path": "ok.py", "content": "ok"}, {"path": path, "content": "bad"}]})
-            with self.subTest(path=path), self.assertRaises(m.MissionError):
-                executor.apply_edits(payload)
-            self.assertFalse((self.ws / "ok.py").exists())
-    def test_local_code_real_test_and_repair_receipt(self):
+    def test_removed_provider_and_model_selection_are_refused(self):
+        for options in ({"runtime": "local"}, {"runtime": "shared"}, {"model": "old-model"}, {"runtime": "offline"}):
+            with self.subTest(options=options), self.assertRaises(m.MissionError):
+                self.create(**options)
+
+    def test_codex_code_runs_actual_required_test(self):
         (self.ws / "app.py").write_text("def add(a, b): return a - b\n")
         mission = self.create(kind="code", inputs=["app.py"], test=[sys.executable, "-c", "from app import add; assert add(2,3)==5"])
-        outputs = [json.dumps({"files":[{"path":"app.py","content":"def add(a,b): return a-b\n"}]}), json.dumps({"files":[{"path":"app.py","content":"def add(a,b): return a+b\n"}]})]
         original = m.Executor.run_process
-        def host_test(self, command, label, **kwargs):
-            return original(self, command, label, sandbox=False)
-        with patch.object(m.Executor, "infer", side_effect=outputs), patch.object(m.Executor, "run_process", host_test):
+        def fixture_codex(executor, prompt):
+            (executor.ws / "app.py").write_text("def add(a,b): return a+b\n")
+        def host_test(executor, command, label, **kwargs):
+            return original(executor, command, label, sandbox=False)
+        with patch.object(m.Executor, "codex", fixture_codex), patch.object(m.Executor, "run_process", host_test):
             result = m.run_mission(self.store, mission["id"])
         self.assertEqual(result["state"], "waiting-review", result["error"])
         receipt = json.loads(Path(result["receipt"]).read_text())
-        self.assertEqual([t["exit"] for t in receipt["tests"]], [1, 0])
+        self.assertEqual([t["exit"] for t in receipt["tests"]], [0])
+        self.assertEqual(receipt["runtime"], "codex")
         self.assertIn("return a+b", (self.ws / "app.py").read_text())
     def test_resume_only_after_published_hash_verification(self):
         mission = self.create()
-        with patch.object(m.Executor, "infer", return_value="Friday. [S1:L1]"):
+        with patch.object(m.Executor, "codex", return_value="Friday. [S1:L1]"):
             result = m.run_mission(self.store, mission["id"])
         self.store.update(mission["id"], state="failed")
         self.store.retry(mission["id"])
-        with patch.object(m.Executor, "infer", side_effect=AssertionError("must resume verified report")):
+        with patch.object(m.Executor, "codex", side_effect=AssertionError("must resume verified report")):
             result = m.run_mission(self.store, mission["id"])
         self.assertEqual(result["state"], "waiting-review", result["error"])
         self.assertTrue(any(e["event"] == "step-resumed" for e in self.store.events(mission["id"])))
     def test_changed_report_inputs_refuse_resume_and_preserve_manual_edits(self):
         mission = self.create()
-        with patch.object(m.Executor, "infer", return_value="Friday. [S1:L1]"):
+        with patch.object(m.Executor, "codex", return_value="Friday. [S1:L1]"):
             first = m.run_mission(self.store, mission["id"])
         report_path = next(Path(path) for path in first["artifacts"] if path.endswith("report.md"))
         report_before = report_path.read_text()
         self.store.update(mission["id"], state="failed")
         (self.ws / "facts.md").write_text("Updated launch is Saturday.\n")
         self.store.retry(mission["id"])
-        with patch.object(m.Executor, "infer", side_effect=AssertionError("must not replay inference")):
+        with patch.object(m.Executor, "codex", side_effect=AssertionError("must not replay inference")):
             result = m.run_mission(self.store, mission["id"])
         self.assertEqual(result["state"], "failed")
         self.assertIn("Source inputs changed", result["error"])
@@ -188,14 +187,14 @@ class MissionTests(unittest.TestCase):
         with self.assertRaisesRegex(m.MissionError, "changed after"):
             m.review(self.store, mission["id"], "undo")
         self.assertTrue(json.loads(Path(result["receipt"]).read_text())["recovery_index_preserved"])
-    def test_report_resume_retains_historical_native_inference_provenance(self):
+    def test_report_resume_retains_historical_codex_inference_provenance(self):
         mission = self.create()
         # Controlled unit fixture; release integration uses a real native server.
-        original = {"model": "fixture-model", "usage": {"completion_tokens": 11}, "compute": {"local_only_verified": True, "pid": 1234, "process_start": "123", "proof": "unit fixture"}, "observed_at": "2026-09-05T00:00:00Z", "attempt": 1, "response_sha256": "a" * 64, "reused": False}
+        original = {"provider": "codex", "model": None, "usage": {"output_tokens": 11}, "observed_at": "2026-09-05T00:00:00Z", "attempt": 1, "response_sha256": "a" * 64, "reused": False}
         def inference(executor, *args, **kwargs):
             executor.inferences.append(original.copy())
             return "Friday. [S1:L1]"
-        with patch.object(m.Executor, "infer", inference):
+        with patch.object(m.Executor, "codex", inference):
             first = m.run_mission(self.store, mission["id"])
         self.assertEqual(first["state"], "waiting-review")
         provenance = self.store.step(mission["id"], "report-provenance")
@@ -204,12 +203,12 @@ class MissionTests(unittest.TestCase):
             self.store.retry(mission["id"])
             if change_source:
                 (self.ws / "facts.md").write_text("A newer personal source edit.\n")
-            with patch.object(m.Executor, "infer", side_effect=AssertionError("must not replay inference")):
+            with patch.object(m.Executor, "codex", side_effect=AssertionError("must not replay inference")):
                 result = m.run_mission(self.store, mission["id"])
             self.assertEqual(result["state"], "failed" if change_source else "waiting-review")
             receipt = json.loads(Path(result["receipt"]).read_text())
             reused = receipt["inferences"][0]
-            for key in ("model", "usage", "compute", "observed_at", "attempt", "response_sha256"):
+            for key in ("provider", "model", "usage", "observed_at", "attempt", "response_sha256"):
                 self.assertEqual(reused[key], original[key])
             self.assertTrue(reused["reused"])
             self.assertEqual(reused["original_report_attempt"], 1)
@@ -218,12 +217,12 @@ class MissionTests(unittest.TestCase):
             self.assertEqual(self.store.step(mission["id"], "report-provenance"), provenance)
     def test_report_resume_refuses_missing_inference_provenance(self):
         mission = self.create()
-        with patch.object(m.Executor, "infer", return_value="Friday. [S1:L1]"):
+        with patch.object(m.Executor, "codex", return_value="Friday. [S1:L1]"):
             m.run_mission(self.store, mission["id"])
         self.store.step(mission["id"], "report-provenance", {})
         self.store.update(mission["id"], state="failed")
         self.store.retry(mission["id"])
-        with patch.object(m.Executor, "infer", side_effect=AssertionError("no repeat inference")):
+        with patch.object(m.Executor, "codex", side_effect=AssertionError("no repeat inference")):
             result = m.run_mission(self.store, mission["id"])
         self.assertEqual(result["state"], "failed")
         self.assertIn("no retained inference provenance", result["error"])
@@ -238,7 +237,7 @@ class MissionTests(unittest.TestCase):
 
     def test_undo_refuses_newer_manual_file_changes(self):
         mission = self.create()
-        with patch.object(m.Executor, "infer", return_value="Friday. [S1:L1]"):
+        with patch.object(m.Executor, "codex", return_value="Friday. [S1:L1]"):
             m.run_mission(self.store, mission["id"])
         (self.ws / "newer-manual.txt").write_text("keep me")
         with self.assertRaisesRegex(m.MissionError, "changed after"):
@@ -247,17 +246,64 @@ class MissionTests(unittest.TestCase):
     def test_code_cannot_rewrite_validation_to_pass(self):
         (self.ws / "test_app.py").write_text("raise AssertionError('required behavior')\n")
         mission = self.create(kind="code", inputs=["test_app.py"], test=["python3", "test_app.py"])
-        response = json.dumps({"files":[{"path":"test_app.py", "content":"pass\n"}]})
-        with patch.object(m.Executor, "infer", return_value=response):
+        def tamper(executor, prompt):
+            (executor.ws / "test_app.py").write_text("pass\n")
+        with patch.object(m.Executor, "codex", tamper):
             result = m.run_mission(self.store, mission["id"])
         self.assertEqual(result["state"], "failed")
         self.assertIn("changed or removed a pre-existing test", result["error"])
-    def test_report_offline_refuses_unverified_router_before_request(self):
+    def test_report_requires_explicit_cloud_permission(self):
+        with self.assertRaisesRegex(m.MissionError, "explicit network"):
+            self.create(network="none")
+
+    def test_codex_cli_report_uses_stdin_and_retains_completed_turn(self):
         mission = self.create()
         executor = m.Executor(self.store, mission)
-        with patch.object(m.local_compute, "local_models", return_value=[]), patch.object(m.local_compute, "request", side_effect=AssertionError("no prompt to router")):
-            with self.assertRaisesRegex(ValueError, "Offline missions never"):
-                executor.infer("system", "private prompt")
+        observed = {}
+        def cli(command, label, **kwargs):
+            observed.update(command=command, env=kwargs["env"], prompt=Path(kwargs["input_path"]).read_text(), request=Path(kwargs["input_path"]))
+            log = executor.directory / "fixture-events.jsonl"
+            log.write_text(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Friday. [S1:L1]"}}) + "\n" + json.dumps({"type": "turn.completed", "usage": {"output_tokens": 9}}) + "\n")
+            return 0, "", log
+        with patch.dict(os.environ, {"CODEX_API_KEY": "unit-only-placeholder"}), patch.object(m, "executable", return_value="codex"), patch.object(executor, "run_process", cli):
+            self.assertEqual(executor.codex("Selected source context", read_only=True), "Friday. [S1:L1]")
+        self.assertEqual(observed["command"][-1], "-")
+        self.assertEqual(observed["command"][observed["command"].index("--sandbox")+1], "read-only")
+        self.assertNotIn("Selected source context", observed["command"])
+        self.assertEqual(set(observed["env"]), {"CODEX_API_KEY"})
+        self.assertFalse(observed["request"].exists())
+        self.assertEqual(executor.inferences[0]["provider"], "codex")
+        self.assertEqual(executor.inferences[0]["usage"], {"output_tokens": 9})
+
+    def test_codex_incomplete_turn_and_missing_key_refuse_success(self):
+        executor = m.Executor(self.store, self.create())
+        with patch.dict(os.environ, {"CODEX_API_KEY": "", "OPENAI_API_KEY": ""}), patch.object(executor, "run_process", side_effect=AssertionError("No call without API key")):
+            with self.assertRaisesRegex(m.MissionError, "not configured"):
+                executor.codex("task")
+        log = executor.directory / "failed.jsonl"
+        log.write_text(json.dumps({"type": "turn.failed", "error": {"message": "fixture"}}))
+        with patch.dict(os.environ, {"CODEX_API_KEY": "unit-only-placeholder"}), patch.object(m, "executable", return_value="codex"), patch.object(executor, "run_process", return_value=(0,"",log)):
+            with self.assertRaisesRegex(m.MissionError, "complete successful turn"):
+                executor.codex("task")
+
+    def test_legacy_provider_is_not_silently_sent_to_cloud(self):
+        item = self.create()
+        config = dict(item["config"], runtime="local", network="none")
+        with self.store.db() as db:
+            db.execute("UPDATE missions SET config=? WHERE id=?", (json.dumps(config), item["id"]))
+        with patch.object(m.Executor, "codex", side_effect=AssertionError("No provider migration")), patch.object(m, "checkpoint_call", side_effect=AssertionError("No workspace mutation")):
+            result = m.run_mission(self.store, item["id"])
+        self.assertEqual(result["state"], "failed")
+        self.assertIn("retired provider", result["error"])
+        self.assertIsNone(result["checkpoint"])
+
+    def test_capabilities_defer_local_ai_and_do_not_claim_authentication(self):
+        caps = m.capabilities()
+        self.assertEqual(set(caps["runtimes"]), {"offline", "codex"})
+        self.assertEqual(caps["runtimes"]["codex"]["kinds"], ["code", "report"])
+        self.assertEqual(caps["runtimes"]["offline"]["kinds"], ["media"])
+        self.assertNotIn("authenticated", caps["runtimes"]["codex"])
+        self.assertEqual(caps["local_ai"], "deferred")
 
     def test_secrets_are_redacted(self):
         with patch.dict(os.environ, {"CODEX_API_KEY": "private-test-credential"}):

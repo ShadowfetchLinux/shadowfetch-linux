@@ -128,14 +128,14 @@ def execute(command):
     elif command == "grok-setup":
         show_control()
         window.open_route("grok-bot")
-    elif command == "local-ai":
+    elif command in ("workspaces", "local-ai"):
         show_control()
-        window.open_route("local-ai")
+        window.open_route("workspaces")
     elif command in ("welcome", "welcome-agents", "welcome-agent-select"):
         load_welcome()
-        welcome.stack.setCurrentWidget(welcome.welcome if command == "welcome" else welcome.buzz)
+        welcome.stack.setCurrentWidget(welcome.welcome if command == "welcome" else welcome.agent_setup)
         if command == "welcome-agent-select":
-            checkbox = welcome.buzz.coding_agents["grok-bot"]
+            checkbox = welcome.agent_setup.coding_agents["grok-bot"]
             record("native_grok_opt_in_default", not checkbox.isChecked(), "Before user checkbox click")
             QTest.mouseClick(checkbox, Qt.MouseButton.LeftButton)
             record("native_grok_selectable", checkbox.isChecked(), "Real Qt click, no installation step submitted")

@@ -8,7 +8,7 @@ gamemode
 #  libnotify-bin, python3-pyqt6 already in the image)
 nvtop
 btop
-# Buzz is installed only after explicit first-run confirmation.
+# Grok Bot and coding agents are optional first-run installations.
 # No second model runtime or model weights are carried in the ISO.
 # Fireproof analysis stack
 needrestart

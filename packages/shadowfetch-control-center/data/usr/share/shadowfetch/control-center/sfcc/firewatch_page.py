@@ -1,9 +1,8 @@
 """Watch — the Firewatch page.
 
-Three tabs: Overview (sensor tiles), Heat map (the standout view — rows
+Two tabs: Overview (sensor tiles), Heat map (the standout view — rows
 arrive from firewatchd with display names and icons already resolved; the
-UI never sees raw cgroup paths), and Models (Buzz shared-compute availability
-from its loopback OpenAI-compatible endpoint).
+UI never sees raw cgroup paths).
 
 Every tile binds to exactly one source — org.shadowfetch.Firewatch1 — and
 renders "— sensor not available" when a sensor is absent.  When the daemon
@@ -70,8 +69,7 @@ class SensorTile(Card):
 class FirewatchPage(QWidget):
     """The Watch section."""
 
-    _TAB_ROUTES = {"overview": 0, "heatmap": 1, "heat-map": 1, "heat": 1,
-                   "models": 2, "agents": 2}
+    _TAB_ROUTES = {"overview": 0, "heatmap": 1, "heat-map": 1, "heat": 1}
 
     def __init__(self, firewatch: busutil.FirewatchClient):
         super().__init__()
@@ -160,38 +158,6 @@ class FirewatchPage(QWidget):
             "detail", wrap=True))
         self.tabs.addTab(heat, "Heat map")
 
-        # ---- Models tab ---------------------------------------------------
-        models = QWidget()
-        models_outer = QVBoxLayout(models)
-        models_outer.setContentsMargins(0, 0, 0, 0)
-        models_scroll = QScrollArea()
-        models_scroll.setWidgetResizable(True)
-        models_outer.addWidget(models_scroll)
-        models_body = QWidget()
-        models_scroll.setWidget(models_body)
-        self.models_lay = QVBoxLayout(models_body)
-        self.models_lay.setContentsMargins(12, 12, 12, 12)
-        self.models_lay.setSpacing(10)
-
-        self.models_empty = Card()
-        empty_lay = QVBoxLayout(self.models_empty)
-        empty_lay.setContentsMargins(18, 16, 18, 16)
-        empty_lay.setSpacing(8)
-        empty_lay.addWidget(label("Buzz shared compute is off", "cardTitle"))
-        empty_lay.addWidget(label(
-            "Buzz can recommend and download an open-source model matched "
-            "to this machine. Firewatch will show it here once Buzz begins "
-            "sharing on the local loopback endpoint.",
-            "detail", wrap=True))
-        launch = QPushButton("Open Buzz")
-        launch.clicked.connect(
-            lambda: busutil.start_detached(["shadowfetch-buzz", "open"]))
-        empty_lay.addWidget(launch, alignment=Qt.AlignmentFlag.AlignLeft)
-        self.models_lay.addWidget(self.models_empty)
-        self._model_cards: list[QWidget] = []
-        self.models_lay.addStretch(1)
-        self.tabs.addTab(models, "Models")
-
     # ---- lifecycle --------------------------------------------------------
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -220,11 +186,9 @@ class FirewatchPage(QWidget):
             self.heat_table.setRowCount(0)
             self.heat_empty.setText("Firewatch is not running — no rows to show.")
             self.heat_empty.show()
-            self._render_models(None)
             return
         self._render_overview(data)
         self._render_heatmap(data.get("heatmap"))
-        self._render_models(data.get("models"))
 
     def _render_overview(self, data: dict) -> None:
         snapshot = data.get("snapshot") or {}
@@ -417,47 +381,3 @@ class FirewatchPage(QWidget):
             tier_item = QTableWidgetItem(tier.capitalize() if tier else "—")
             tier_item.setForeground(QColor(theme.tier_color(tier)))
             self.heat_table.setItem(r, 4, tier_item)
-
-    def _render_models(self, models) -> None:
-        for card in self._model_cards:
-            card.setParent(None)
-            card.deleteLater()
-        self._model_cards = []
-        rows = models if isinstance(models, list) else []
-        if isinstance(models, dict):
-            rows = models.get("servers") or models.get("models") or []
-        if not rows:
-            self.models_empty.show()
-            return
-        self.models_empty.hide()
-        insert_at = self.models_lay.count() - 1  # before the stretch
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            card = Card()
-            lay = QVBoxLayout(card)
-            lay.setContentsMargins(16, 12, 16, 12)
-            lay.setSpacing(4)
-            name = str(_pick(row, "name", "workspace", "model", default="model"))
-            lay.addWidget(label(name, "cardTitle"))
-            prompt = _pick(row, "prompt_tps", "prompt_tokens_seconds")
-            predict = _pick(row, "predict_tps", "predicted_tokens_seconds")
-            parts = []
-            if prompt is not None:
-                parts.append(f"prompt {float(prompt):.1f} tok/s")
-            if predict is not None:
-                parts.append(f"generate {float(predict):.1f} tok/s")
-            lay.addWidget(label(" · ".join(parts) if parts else
-                                "Available to Buzz agents", "detail"))
-            ctx = _pick(row, "ctx", "context", "n_ctx")
-            slots = _pick(row, "slots", "slots_busy")
-            info = []
-            if ctx is not None:
-                info.append(f"context {ctx}")
-            if slots is not None:
-                info.append(f"slots {slots}")
-            info.append("serves on 127.0.0.1 only")
-            lay.addWidget(label(" · ".join(str(p) for p in info), "detail"))
-            self.models_lay.insertWidget(insert_at, card)
-            insert_at += 1
-            self._model_cards.append(card)

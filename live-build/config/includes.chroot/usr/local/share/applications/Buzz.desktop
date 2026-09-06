@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Buzz
-# Shadowfetch launcher cleanup: Buzz Desktop's upstream entry ships with an
-# empty Categories= and would land in Lost & Found after the user's consented
-# install, duplicating the curated Local AI entry (shadowfetch-buzz.desktop).
-# This override hides the upstream entry; window/icon association still works.
-NoDisplay=true

@@ -1,7 +1,7 @@
 [Desktop Entry]
 Type=Application
 Name=Firewatch
-Comment=Live system visibility — sensors, the heat map, local model telemetry
+Comment=Live system visibility — sensors, the heat map, storage health
 Exec=shadowfetch-control --page watch
 Icon=shadowfetch
 Terminal=false

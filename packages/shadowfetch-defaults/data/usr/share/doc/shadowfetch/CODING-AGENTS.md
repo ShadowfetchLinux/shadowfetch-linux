@@ -7,8 +7,7 @@ First-run setup offers four independent, unchecked coding-agent choices:
 - xAI Grok Build CLI 1.0.5
 - Cursor Agent 2026.08.11-e8db854
 
-Buzz remains a separate local-AI workspace. None of these cloud coding agents
-is required for Buzz, and a failed optional download cannot block the base
+A failed optional download cannot block the base
 desktop or another selected tool.
 
 Shadowfetch downloads each selected release from its vendor's official HTTPS

@@ -1,5 +1,6 @@
 shadowfetch-fireline (4.0.0-1) umbra; urgency=medium
 
+  * Defer the local-model recommender; preserve sandbox, checkpoint and MCP tools.
   * Shadowfetch Linux 4.0 Mission Control release.
   * Integrate persistent missions, scoped execution and featured Grok Bot setup.
 

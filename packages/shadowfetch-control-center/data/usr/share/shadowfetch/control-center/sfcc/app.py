@@ -43,7 +43,7 @@ SECTIONS = [
     ("ignite", "Ignite", None),
     ("watch", "Watch", None),
     ("recover", "Recover", None),
-    ("local-ai", "Local AI", "Buzz & models"),
+    ("workspaces", "Workspaces", "Project folders"),
     ("drivers", "Drivers", None),
     ("software", "Software", "Updates & bundles"),
 ]
@@ -56,7 +56,7 @@ ALIASES = {
     "ignite": "ignite", "ember": "ignite",
     "watch": "watch", "firewatch": "watch",
     "recover": "recover", "phoenix": "recover", "recovery": "recover",
-    "local-ai": "local-ai", "agents": "local-ai", "ai": "local-ai", "buzz": "local-ai",
+    "workspaces": "workspaces", "local-ai": "workspaces", "agents": "workspaces", "ai": "workspaces", "buzz": "workspaces",
     "drivers": "drivers",
     "software": "software", "software-updates": "software",
     "updates": "software", "bundles": "software",

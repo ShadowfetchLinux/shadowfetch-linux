@@ -67,23 +67,22 @@ class TestRuleTable(unittest.TestCase):
         v = self.verdict(8.0)
         self.assertEqual(v["sentence"], hwscan.S_CPU_8)
 
-    def test_16gb_cpu_only_gets_relaxed_pace_wording(self):
-        # Judge fold: 16 GB CPU-only must NOT get the founder GPU
-        # sentence - it gets its own honest "relaxed pace" line.
+    def test_16gb_cpu_only_reports_measured_ram(self):
+        # A CPU-only system must not claim measured graphics memory.
         v = self.verdict(16.0)
         self.assertEqual(v["sentence"], hwscan.S_CPU_16)
         self.assertNotEqual(v["sentence"], hwscan.S_GPU_8)
         self.assertNotIn("comfortably run 7B", v["sentence"])
 
-    def test_low_core_16gb_never_comfortable_for_7b(self):
-        # A low-core CPU keeps its warning even though Buzz owns model ranking.
+    def test_low_core_16gb_keeps_core_count_note(self):
+        # Core-count limitations remain visible with local inference deferred.
         v = self.verdict(16.0, cores=2)
         self.assertIn(hwscan.SFX_LOW_CORE, v["suffixes"])
 
     def test_32gb_tier(self):
         v = self.verdict(32.0)
         self.assertEqual(v["sentence"], hwscan.S_CPU_32)
-        self.assertIn("13B", v["sentence"])
+        self.assertIn("24 GB system RAM", v["sentence"])
 
     def test_no_avx2_suffix_and_cap(self):
         v = self.verdict(16.0, avx2=False)
@@ -99,16 +98,15 @@ class TestRuleTable(unittest.TestCase):
         v = self.verdict(16.0, gpus=[gpu])
         self.assertEqual(v["sentence"], hwscan.S_GPU_12)
 
-    def test_gpu_8gb_founder_sentence_with_gloss(self):
-        # The founder's verbatim sentence is reserved for >= 8 GB VRAM,
-        # and "reduced context or quantization" always carries the gloss.
+    def test_gpu_8gb_reports_measured_graphics_memory(self):
+        # Report the sourced memory tier without model performance promises.
         gpu = mk_gpu(vram=8.0, source="nvml-smi")
         v = self.verdict(16.0, gpus=[gpu])
         self.assertEqual(v["sentence"], hwscan.S_GPU_8)
-        self.assertIn("comfortably run 7B models", v["sentence"])
-        self.assertIn(hwscan.GLOSS.strip(), v["sentence"])
+        self.assertIn("8 GB graphics memory", v["sentence"])
+        self.assertNotIn("models", v["sentence"])
 
-    def test_founder_sentence_reserved_below_8gb_vram(self):
+    def test_gpu_memory_tiers_distinct_below_8gb(self):
         gpu = mk_gpu(vram=6.0, source="sysfs", vendor="amd", driver="amdgpu")
         v = self.verdict(16.0, gpus=[gpu])
         self.assertEqual(v["sentence"], hwscan.S_GPU_6)

@@ -79,7 +79,7 @@ Presentation
             anchors.margins: 24; height: 82
             color: "#FFFFFF"; wrapMode: Text.WordWrap; textFormat: Text.RichText
             font.pixelSize: 17; horizontalAlignment: Text.AlignLeft
-            text: qsTr("<b>Meet Grok Bot after installation</b><br/>Welcome features the official Grok Bot desktop alongside Buzz and coding agents. Choose its verified native installation, then sign in with an eligible account and plan. Ice keeps this cloud setup paused.")
+            text: qsTr("<b>Meet Grok Bot after installation</b><br/>Welcome features the official Grok Bot desktop alongside coding agents. Choose its verified native installation, then sign in with an eligible account and plan. Ice keeps this cloud setup paused.")
         }
     }
 

@@ -11,11 +11,6 @@ The Shadowfetch packages are published
 under the MIT License, except theme assets derived from KDE Breeze (the Umbra
 SDDM/Plasma theme), which remain under their original LGPL-2.1+/GPL-2.0+ terms.
 
-The local Buzz compose definition in shadowfetch-defaults is adapted from
-Block's Buzz project under Apache-2.0. Upstream source:
-https://github.com/block/buzz . Buzz Desktop itself is not embedded in the ISO;
-it is downloaded from the official release only after the user opts in.
-
 The optional Codex CLI is not embedded in the ISO. After explicit user consent,
 Shadowfetch downloads the official OpenAI installer, verifies the release-pinned
 installer SHA-256, and installs the selected digest-verified release for that

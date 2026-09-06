@@ -1,5 +1,6 @@
 shadowfetch-welcome (4.0.0-1) umbra; urgency=medium
 
+  * Defer local inference and remove Buzz setup while retaining featured Grok and coding-agent setup.
   * Shadowfetch Linux 4.0 Mission Control release.
   * Scope privacy wording to local records and selected setup actions,
     with vendor onboarding and network behavior described separately.

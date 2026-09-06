@@ -1,5 +1,5 @@
 #!/bin/bash
-# Create and operate isolated, documented workspaces for local agents.
+# Create and operate isolated, documented workspaces for project work.
 set -euo pipefail
 
 # ---- --help / --version, BEFORE any side effect -----------------------------
@@ -10,14 +10,13 @@ set -euo pipefail
 case "${1:-}" in
   -h|--help)
     cat <<'SFHELP'
-shadowfetch-agent-workspace - Create and operate isolated local AI workspaces.
+shadowfetch-agent-workspace - Create and operate project workspaces.
 
 USAGE
   shadowfetch-agent-workspace              open the workspace menu
   shadowfetch-agent-workspace create NAME  create one
   shadowfetch-agent-workspace list         list workspaces
   shadowfetch-agent-workspace open NAME    open a workspace folder
-  shadowfetch-agent-workspace run NAME     open Buzz from a workspace
 
 WHAT IT DOES
   Workspaces live under ~/Workspaces (override with
@@ -56,7 +55,7 @@ create_workspace() {
     [[ -n "$name" && "$name" != . && "$name" != .. ]] \
         || die "Use letters, numbers, dots, dashes or underscores."
     local workspace="$ROOT/$name"
-    [[ ! -e "$workspace" ]] || die "Workspace already exists: $workspace"
+    [[ ! -e "$workspace" && ! -L "$workspace" ]] || die "Workspace already exists: $workspace"
     mkdir -p "$workspace"/{artifacts,logs,scratch,skills}
     chmod 700 "$workspace"
 
@@ -115,10 +114,6 @@ scratch/
 EOF
     info "Created $workspace"
     info "Open it with: shadowfetch-agent-workspace open $name"
-
-    if command -v buzz-desktop >/dev/null 2>&1; then
-        info "Buzz is installed. Share files from this workspace when a room needs them."
-    fi
 }
 
 open_workspace() {
@@ -129,7 +124,7 @@ open_workspace() {
     [[ -n "$safe" && "$safe" != . && "$safe" != .. ]] \
         || die "Use letters, numbers, dots, dashes or underscores."
     workspace="$ROOT/$safe"
-    [[ -d "$workspace" ]] || die "Workspace not found: $workspace"
+    [[ -d "$workspace" && ! -L "$workspace" ]] || die "Workspace not found: $workspace"
     if command -v dolphin >/dev/null 2>&1; then
         dolphin "$workspace" >/dev/null 2>&1 &
     else
@@ -137,33 +132,15 @@ open_workspace() {
     fi
 }
 
-run_workspace() {
-    local name="${1:-}"
-    [[ -n "$name" ]] || die "Usage: shadowfetch-agent-workspace run <name>"
-    local safe workspace
-    safe=$(sanitize "$name")
-    [[ -n "$safe" && "$safe" != . && "$safe" != .. ]] \
-        || die "Use letters, numbers, dots, dashes or underscores."
-    workspace="$ROOT/$safe"
-    [[ -d "$workspace" ]] || die "Workspace not found: $workspace"
-    cd "$workspace"
-    if command -v shadowfetch-buzz >/dev/null 2>&1; then
-        exec shadowfetch-buzz open
-    fi
-    die "Set up Buzz first with: shadowfetch-buzz setup"
-}
-
 menu() {
-    say "Shadowfetch AI Workspaces"
+    say "Shadowfetch Workspaces"
     info "Workspaces keep instructions, task state, artifacts and memory together."
-    printf '\n  1) Create workspace\n  2) List workspaces\n  3) Open workspace folder\n  4) Open workspace with Buzz\n  5) Local AI health and security check\n  q) Quit\n\n'
+    printf '\n  1) Create workspace\n  2) List workspaces\n  3) Open workspace folder\n  q) Quit\n\n'
     read -r -p "Choose: " choice
     case "$choice" in
         1) create_workspace ;;
-        2) find "$ROOT" -mindepth 1 -maxdepth 1 -type d -printf '  %f\n' | sort ;;
+        2) find "$ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '  %f\n' | sort ;;
         3) read -r -p "Workspace name: " name; open_workspace "$name" ;;
-        4) read -r -p "Workspace name: " name; run_workspace "$name" ;;
-        5) shadowfetch-agent-doctor ;;
         q|Q|"") exit 0 ;;
         *) die "Unknown choice." ;;
     esac
@@ -171,9 +148,8 @@ menu() {
 
 case "${1:-}" in
     create) create_workspace "${2:-}" ;;
-    list) find "$ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort ;;
+    list) find "$ROOT" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '%f\n' | sort ;;
     open) open_workspace "${2:-}" ;;
-    run) run_workspace "${2:-}" ;;
     "") menu ;;
-    *) die "Usage: shadowfetch-agent-workspace [create|list|open|run] [name]" ;;
+    *) die "Usage: shadowfetch-agent-workspace [create|list|open] [name]" ;;
 esac

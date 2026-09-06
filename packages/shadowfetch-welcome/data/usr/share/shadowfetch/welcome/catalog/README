@@ -5,7 +5,7 @@ Static, root-owned JSON records - one file per catalog entry, named
 <id>.json with the file name matching the record's "id" field.  These
 records are the single source both the Welcome assistant (Ignition page,
 media and preset cards) and Control Center > Software & Updates > Bundles
-render from. Local models are owned by Buzz's native Compute workflow, not
+render from. Local model setup is deferred in 4.0; it is not owned by
 by catalog records or a second Shadowfetch model installer.
 
 Schema (all keys always present):
@@ -36,7 +36,6 @@ Rules inherited from the 2.1.2 spec:
     Bundles contain ONLY pinned-snapshot Debian packages, never umbra
     packages, so an offline-saved choice resolves identically forever.
   * Model selection and download are intentionally outside this catalog.
-    Buzz ranks compatible open models for the detected hardware and downloads
-    the user's selection when shared compute is enabled.
+    Local model setup is deferred; catalog presets install workspace tools only.
   * Nothing in the catalog phones home. apt installs happen only after the
     user confirms and go to the configured mirrors.

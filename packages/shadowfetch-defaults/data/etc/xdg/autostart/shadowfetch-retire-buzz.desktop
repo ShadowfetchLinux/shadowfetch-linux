@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Retire previous Shadowfetch relay
+Exec=/usr/libexec/shadowfetch-retire-buzz
+NoDisplay=true
+X-KDE-autostart-after=panel

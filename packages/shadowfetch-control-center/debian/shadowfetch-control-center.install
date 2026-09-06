@@ -14,7 +14,7 @@ data/usr/share/shadowfetch/control-center/sfcc/drivers_page.py usr/share/shadowf
 data/usr/share/shadowfetch/control-center/sfcc/software_page.py usr/share/shadowfetch/control-center/sfcc/
 data/usr/share/shadowfetch/control-center/sfcc/workbench_page.py usr/share/shadowfetch/control-center/sfcc/
 data/usr/share/shadowfetch/ember/profiles/gaming.conf usr/share/shadowfetch/ember/profiles/
-data/usr/share/shadowfetch/ember/profiles/local-ai.conf usr/share/shadowfetch/ember/profiles/
+data/usr/share/shadowfetch/ember/profiles/production.conf usr/share/shadowfetch/ember/profiles/
 data/usr/share/applications/shadowfetch-control.desktop usr/share/applications/
 data/usr/share/applications/shadowfetch-guide.desktop usr/share/applications/
 data/usr/share/applications/shadowfetch-local-ai.desktop usr/share/applications/
@@ -24,5 +24,4 @@ data/usr/share/shadowfetch/control-center/sfcc/missions_page.py usr/share/shadow
 data/usr/share/shadowfetch/control-center/sfcc/grok_bot_page.py usr/share/shadowfetch/control-center/sfcc/
 data/usr/share/applications/shadowfetch-mission-control.desktop usr/share/applications/
 data/usr/share/kio/servicemenus/shadowfetch-mission.desktop usr/share/kio/servicemenus/
-data/usr/share/shadowfetch/control-center/sfcc/local_model_card.py usr/share/shadowfetch/control-center/sfcc/
 data/usr/share/applications/shadowfetch-grok-bot-setup.desktop usr/share/applications/

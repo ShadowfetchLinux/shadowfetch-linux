@@ -134,7 +134,7 @@ def main():
         (failed_root / '.sf-checkpoints').write_text('QA obstruction: a file where a directory is required.\n')
         old_root = env['SHADOWFETCH_AGENT_WORKSPACES']
         env['SHADOWFETCH_AGENT_WORKSPACES'] = str(failed_root)
-        failed = cli('create', '--kind', 'report', '--workspace', 'blocked', '--title', 'Required checkpoint failure',
+        failed = cli('create', '--kind', 'media', '--workspace', 'blocked', '--title', 'Required checkpoint failure',
                      '--prompt', 'Summarize the selected source', '--input', 'notes.md')
         failed = cli('run', failed['id'], expected=1)
         failure_events = cli('events', failed['id'])

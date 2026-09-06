@@ -16,14 +16,15 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / "packages/shadowfetch-control-center/data/usr/share/shadowfetch/control-center"))
-from PyQt6.QtCore import QEventLoop, QTimer, Qt
+from PyQt6.QtCore import QEventLoop, QObject, QTimer, Qt, pyqtSignal
 from PyQt6.QtTest import QTest
 from PyQt6.QtWidgets import QApplication, QLabel, QPushButton, QWidget
 from sfcc import theme
 from sfcc.mission_client import JsonCommand, workspace_path
 from sfcc.missions_page import NewMissionDialog, MissionsPage
 from sfcc.grok_bot_page import GrokBotPage
-from sfcc.local_model_card import LocalModelCard, ModelChooser
+from sfcc.agents_page import AgentsPage
+from sfcc.firewatch_page import FirewatchPage
 
 APP = QApplication.instance() or QApplication([])
 
@@ -54,7 +55,6 @@ class MissionDialogTests(unittest.TestCase):
         self.client = FakeClient()
         self.dialog = NewMissionDialog(None, self.client, lambda _: None)
         self.dialog.workspace.setText("demo")
-        self.dialog.model.setText("installed-test-model")
         self.dialog.tests.setText('python3 -m unittest discover -s "tests with spaces"')
 
     def tearDown(self):
@@ -83,7 +83,6 @@ class MissionDialogTests(unittest.TestCase):
                 workspace_path("escape")
 
     def test_cloud_requires_explicit_connection(self):
-        self.dialog.runtime.setCurrentIndex(self.dialog.runtime.findData("codex"))
         self.dialog.network.setCurrentIndex(self.dialog.network.findData("none"))
         with self.assertRaisesRegex(ValueError, "cloud connection"):
             self.dialog.arguments()
@@ -92,16 +91,16 @@ class MissionDialogTests(unittest.TestCase):
         self.assertEqual("codex", args[args.index("--runtime") + 1])
         self.assertNotIn("--model", args)
 
-    def test_shared_model_requires_fire_and_native_model_can_use_ice(self):
-        self.dialog.model.set_models([{"name": "shared-model", "local_only_verified": False}])
-        self.dialog.model.setText("shared-model")
-        self.dialog.network.setCurrentIndex(self.dialog.network.findData("none"))
-        with self.assertRaisesRegex(ValueError, "shared compute"):
-            self.dialog.arguments()
-        self.dialog.model.set_models([{"name": "native-model", "local_only_verified": True}])
-        self.dialog.model.setText("native-model")
-        self.assertIn("Verified native", self.dialog.model_scope.text())
-        self.assertIn("--model", self.dialog.arguments())
+    def test_code_and_report_use_codex_and_have_no_model_controls(self):
+        self.assertFalse(hasattr(self.dialog, "model"))
+        self.assertFalse(hasattr(self.dialog, "refresh_models"))
+        for kind in ("code", "report"):
+            self.dialog.kind.setCurrentIndex(self.dialog.kind.findData(kind))
+            self.dialog.inputs.setPlainText("brief.md")
+            args = self.dialog.arguments()
+            self.assertEqual("codex", args[args.index("--runtime") + 1])
+            self.assertEqual("allow", args[args.index("--network") + 1])
+            self.assertNotIn("--model", args)
 
     def test_report_requires_relative_inputs(self):
         self.dialog.kind.setCurrentIndex(self.dialog.kind.findData("report"))
@@ -117,9 +116,12 @@ class MissionDialogTests(unittest.TestCase):
 
     def test_media_does_not_require_a_model(self):
         self.dialog.kind.setCurrentIndex(self.dialog.kind.findData("media"))
-        self.dialog.model.clear()
         self.dialog.inputs.setPlainText("input.mp4")
-        self.assertNotIn("--model", self.dialog.arguments())
+        args = self.dialog.arguments()
+        self.assertNotIn("--model", args)
+        self.assertEqual("offline", args[args.index("--runtime") + 1])
+        self.assertEqual("none", args[args.index("--network") + 1])
+        self.assertFalse(self.dialog.network.isEnabled())
 
     def test_validation_does_not_queue_invalid_work(self):
         self.dialog.workspace.setText("../../private")
@@ -354,36 +356,42 @@ class PageStateTests(unittest.TestCase):
             APP.processEvents()
 
 
-class LocalModelTests(unittest.TestCase):
-    def test_listed_model_does_not_claim_inference_verified(self):
-        card = LocalModelCard()
-        card._status({"ready": True, "models": [{"id": "local-test"}], "hardware": {}}, None)
-        self.assertEqual("local-test", card.model.text())
-        self.assertIn("Run verification", card.state.text())
-        self.assertTrue(card.verify_button.isEnabled())
-        card.deleteLater()
+class DeferredTelemetryTests(unittest.TestCase):
+    def test_watch_retains_system_tabs_without_model_actions(self):
+        class Sensors(QObject):
+            updated = pyqtSignal(dict)
+            def acquire(self):
+                pass
+            def release(self):
+                pass
+        sensors = Sensors()
+        sensors.last = {}
+        page = FirewatchPage(sensors)
+        self.assertEqual(["Overview", "Heat map"], [page.tabs.tabText(i) for i in range(page.tabs.count())])
+        sensors.updated.emit({"available": False})
+        sensors.updated.emit({"available": True, "models": [{"name": "legacy"}]})
+        self.assertNotIn("Open Buzz", [button.text() for button in page.findChildren(QPushButton)])
+        page.deleteLater()
 
-    def test_real_pass_contract_shows_receipt(self):
-        card = LocalModelCard()
-        card._verified({"status": "pass", "elapsed_seconds": 1.25, "receipt": "/local/receipt.json"}, None)
-        self.assertIn("inference passed", card.state.text())
-        self.assertIn("1.25", card.state.text())
-        self.assertIn("receipt.json", card.receipt.text())
-        card.deleteLater()
 
-    def test_model_failure_stays_actionable(self):
-        card = LocalModelCard()
-        card._verified(None, "The model ran out of memory")
-        self.assertEqual("The model ran out of memory", card.state.text())
-        self.assertNotIn("passed", card.state.text())
-        card.deleteLater()
-
-    def test_refresh_preserves_user_selected_model(self):
-        chooser = ModelChooser()
-        chooser.setText("selected")
-        chooser.set_models([{"id": "other"}])
-        self.assertEqual("selected", chooser.text())
-        chooser.deleteLater()
+class WorkspaceTests(unittest.TestCase):
+    def test_workspaces_show_normal_folders_without_internal_or_symlink_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "project").mkdir()
+            (root / ".sf-checkpoints").mkdir()
+            (root / "linked").symlink_to(root / "project")
+            with patch.dict(os.environ, {"SHADOWFETCH_AGENT_WORKSPACES": directory}), patch("sfcc.agents_page.busutil.load_hwscan", return_value={}):
+                page = AgentsPage(None, lambda _: None)
+                labels = [item.text() for item in page.findChildren(QLabel)]
+                self.assertIn("project", labels)
+                self.assertNotIn(".sf-checkpoints", labels)
+                self.assertNotIn("linked", labels)
+                buttons = [item.text() for item in page.findChildren(QPushButton)]
+                self.assertIn("Open", buttons)
+                self.assertNotIn("Buzz", buttons)
+                self.assertNotIn("Verify with a real task", buttons)
+                page.deleteLater()
 
 
 class RealMissionContractTests(unittest.TestCase):
@@ -399,12 +407,11 @@ class RealMissionContractTests(unittest.TestCase):
             with patch.dict(os.environ, {"SHADOWFETCH_AGENT_WORKSPACES": str(workspaces), "SHADOWFETCH_MISSIONS_STATE": str(root / "state")}):
                 dialog = NewMissionDialog(None, FakeClient(), lambda _: None)
                 dialog.workspace.setText("demo")
-                dialog.model.setText("test-contract-only")
                 dialog.tests.setText("python3 -m unittest")
                 created, error = self.run_command(sys.executable, [str(backend), "--json", *dialog.arguments()])
                 self.assertIsNone(error)
                 self.assertEqual("queued", created["state"])
-                self.assertEqual("local", created["config"]["runtime"])
+                self.assertEqual("codex", created["config"]["runtime"])
                 mid = created["id"]
                 cancelled, error = self.run_command(sys.executable, [str(backend), "--json", "cancel", mid])
                 self.assertIsNone(error)
@@ -436,15 +443,15 @@ class WelcomeTests(unittest.TestCase):
         agents = self.welcome.CODING_AGENT_BY_KEY
         self.assertEqual("shadowfetch-grok-bot", agents["grok-bot"]["helper"])
         self.assertEqual("Grok Build", agents["grok"]["name"])
-        page = self.welcome.BuzzPage(lambda _: None)
+        page = self.welcome.AgentSetupPage(lambda _: None)
         self.assertIn("grok-bot", page.coding_agents)
         page.deleteLater()
 
     def test_ice_select_all_does_not_enable_grok_download(self):
         values = []
         with patch.object(self.welcome, "ELEMENT", "ice"):
-            page = self.welcome.BuzzPage(values.append)
-            self.assertEqual("none", page.choice)
+            page = self.welcome.AgentSetupPage(values.append)
+            self.assertFalse(hasattr(page, "choice"))
             page._toggle_all_agents(True)
             page._submit()
             self.assertFalse(values[0]["coding_agents"]["grok-bot"])
@@ -498,7 +505,7 @@ class WelcomeTests(unittest.TestCase):
         page.deleteLater()
 
     def test_welcome_and_agents_fit_laptop(self):
-        for page in (self.welcome.WelcomePage(lambda: None), self.welcome.BuzzPage(lambda _: None)):
+        for page in (self.welcome.WelcomePage(lambda: None), self.welcome.AgentSetupPage(lambda _: None)):
             page.resize(1080, 690)
             page.show()
             APP.processEvents()

@@ -10,6 +10,6 @@ Package: shadowfetch-missions
 Architecture: all
 Depends: ${misc:Depends}, python3 (>= 3.11), shadowfetch-fireline (>= 4.0.0), ffmpeg
 Description: Durable, scoped agent missions with review and recovery
- Persistent SQLite task queue, bounded local model and Codex execution,
- cited local document reports, verified media exports, receipts and workspace
- recovery. Runs as the logged-in user; no server account or telemetry required.
+ Persistent SQLite task queue, bounded Codex cloud execution,
+ cited document reports, verified media exports, receipts and workspace
+ recovery. Runs as the logged-in user; offline media needs no account; Codex requires configured API credentials.

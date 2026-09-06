@@ -26,7 +26,7 @@ else
 fi
 [[ -s /etc/machine-id ]] || fail 'empty machine identity'
 [[ $(readlink -f /var/lib/dbus/machine-id) == /etc/machine-id ]] || fail 'D-Bus identity differs'
-for command in hwclock lvm ffmpeg ffprobe bwrap shadowfetch-missions shadowfetch-model-check shadowfetch-grok-bot; do
+for command in hwclock lvm ffmpeg ffprobe bwrap shadowfetch-missions shadowfetch-grok-bot; do
     command -v "$command" >/dev/null || fail "missing $command"
 done
 mapfile -t packages < <(dpkg-query -W -f='${Package}\t${Version}\t${db:Status-Abbrev}\n' 'shadowfetch-*' | awk -F '\t' '$3 == "ii " { print $1 "\t" $2 }' | sort)
@@ -55,7 +55,8 @@ pickup_exec=$("${user_env[@]}" systemctl --user show drkonqi-coredump-pickup.ser
 [[ $pickup_exec == *'/usr/libexec/shadowfetch-drkonqi-pickup --settle-first --pickup --uid '* ]] || fail 'pickup service is not using the narrow correction'
 "${user_env[@]}" systemctl --user show drkonqi-coredump-pickup.service -p FragmentPath -p DropInPaths -p ActiveState -p SubState -p Result -p ExecStart
 "${user_env[@]}" shadowfetch-missions --json list
-"${user_env[@]}" shadowfetch-model-check status --json
+"${user_env[@]}" shadowfetch-missions --json capabilities
+[[ ! -e /usr/bin/shadowfetch-model-check && ! -e /usr/bin/shadowfetch-buzz && ! -e /usr/lib/systemd/user/shadowfetch-buzz.service ]] || fail 'deferred local-AI integration remains'
 "${user_env[@]}" shadowfetch-grok-bot status --json
 printf 'HOSTNAME=%s\nELEMENT=%s\nFIRMWARE=%s\nKERNEL=%s\nBOOT_ID=%s\n' "$(hostname)" "$element" "$firmware" "$(uname -r)" "$(< /proc/sys/kernel/random/boot_id)"
 printf 'ROOT=%s\nHOME=%s\nBOOT=%s\n' "$(findmnt -no SOURCE,FSTYPE,OPTIONS /)" "$(findmnt -no SOURCE,FSTYPE /home)" "$(findmnt -no SOURCE,FSTYPE /boot)"

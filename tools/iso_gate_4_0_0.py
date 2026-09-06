@@ -18,6 +18,8 @@ from typing import Iterator
 
 import yaml
 
+from mission_provider_contract import validate_provider_payload
+
 from drkonqi_pickup_contract import (
     DROPIN, HELPER, UPSTREAM_UNITS, UPSTREAM_VERSION,
     validate_dropin, validate_upstream_unit,
@@ -77,10 +79,8 @@ REQUIRED_ROOT_FILES = {
     "etc/systemd/system/sshd-keygen.service.d/10-shadowfetch-hostkeys.conf",
     "etc/ufw/ufw.conf",
     "usr/bin/add-calamares-desktop-icon",
-    "usr/bin/shadowfetch-buzz",
     "usr/bin/shadowfetch-missions",
     "usr/bin/shadowfetch-grok-bot",
-    "usr/bin/shadowfetch-model-check",
     "usr/bin/shadowfetch-control",
     "usr/bin/shadowfetch-element",
     "usr/bin/shadowfetch-firebreak",
@@ -88,22 +88,16 @@ REQUIRED_ROOT_FILES = {
     "usr/bin/shadowfetch-workbench",
     "usr/bin/shadowfetch-welcome",
     "usr/lib/shadowfetch/firstboot.sh",
-    "usr/lib/systemd/user/shadowfetch-buzz.service",
     "usr/lib/systemd/system/shadowfetch-migrate-2.1.3-ai.service",
-    "usr/libexec/shadowfetch-buzz-provision",
-    "usr/libexec/shadowfetch-buzz-stack",
     "usr/libexec/shadowfetch-migrate-2.1.3-ai",
     "usr/libexec/phoenix-apt-repair",
     "usr/local/sbin/sf-remove-live-user",
-    "usr/share/applications/shadowfetch-buzz.desktop",
     "usr/share/applications/shadowfetch-guide.desktop",
-    "usr/share/applications/shadowfetch-local-ai.desktop",
     "usr/share/applications/shadowfetch-workbench.desktop",
     "usr/share/shadowfetch/control-center/sfcc/guide_page.py",
     "usr/share/shadowfetch/control-center/sfcc/workbench_page.py",
     "usr/share/shadowfetch/control-center/sfcc/missions_page.py",
     "usr/share/shadowfetch/control-center/sfcc/grok_bot_page.py",
-    "usr/share/shadowfetch/buzz/compose.yml",
     "usr/share/shadowfetch/installer-packages/grub-pc.deb",
     "usr/share/shadowfetch/installer-packages/grub-pc.deb.sha256",
     "usr/share/shadowfetch/migrations/2.1.3-ai-packages",
@@ -124,18 +118,14 @@ REQUIRED_ROOT_FILES = {
 REQUIRED_EXECUTABLES = {
     HELPER,
     "usr/bin/add-calamares-desktop-icon",
-    "usr/bin/shadowfetch-buzz",
     "usr/bin/shadowfetch-missions",
     "usr/bin/shadowfetch-grok-bot",
-    "usr/bin/shadowfetch-model-check",
     "usr/bin/shadowfetch-control",
     "usr/bin/shadowfetch-element",
     "usr/bin/shadowfetch-firebreak",
     "usr/bin/shadowfetch-passport",
     "usr/bin/shadowfetch-workbench",
     "usr/bin/shadowfetch-welcome",
-    "usr/libexec/shadowfetch-buzz-provision",
-    "usr/libexec/shadowfetch-buzz-stack",
     "usr/libexec/shadowfetch-migrate-2.1.3-ai",
     "usr/libexec/phoenix-apt-repair",
     "usr/local/sbin/sf-remove-live-user",
@@ -168,25 +158,20 @@ CRITICAL_PACKAGE_PAYLOADS = {
     "shadowfetch-missions": (
         "usr/bin/shadowfetch-missions",
         "usr/lib/shadowfetch/missions/sf_missions.py",
-        "usr/lib/shadowfetch/missions/sf_local_compute.py",
         "usr/lib/systemd/user/shadowfetch-missions.service",
     ),
     "shadowfetch-control-center": (
         "usr/share/shadowfetch/control-center/sfcc/missions_page.py",
         "usr/share/shadowfetch/control-center/sfcc/grok_bot_page.py",
         "usr/share/shadowfetch/control-center/sfcc/mission_client.py",
-        "usr/share/shadowfetch/control-center/sfcc/local_model_card.py",
     ),
     "shadowfetch-defaults": (
-        "usr/bin/shadowfetch-buzz",
         "usr/bin/shadowfetch-grok-bot",
-        "usr/bin/shadowfetch-model-check",
         "usr/bin/shadowfetch-element",
         "usr/bin/shadowfetch-passport",
         "usr/bin/shadowfetch-workbench",
     ),
     "shadowfetch-fireline": (
-        "usr/bin/shadowfetch-ai-ignition",
         "usr/bin/shadowfetch-checkpoint",
         "usr/bin/shadowfetch-firebreak",
         "usr/bin/shadowfetch-mcp",
@@ -785,9 +770,9 @@ def payload_gate(squashfs: Path, inventory: dict[str, str]) -> None:
     if secrets:
         raise RuntimeError("private credentials or keys were embedded: " + ", ".join(secrets))
 
-    compose = squash_cat(squashfs, "usr/share/shadowfetch/buzz/compose.yml")
-    helper = squash_cat(squashfs, "usr/bin/shadowfetch-buzz")
-    service = squash_cat(squashfs, "usr/lib/systemd/user/shadowfetch-buzz.service")
+    mission_source = squash_cat(squashfs, "usr/lib/shadowfetch/missions/sf_missions.py")
+    validate_provider_payload(inventory, mission_source)
+    print("PASS: local AI stack absent; Codex cloud and offline media capabilities")
     passport = squash_cat(squashfs, "usr/bin/shadowfetch-passport")
     recovery_sources = squash_cat(
         squashfs, "usr/share/shadowfetch/apt-recovery/debian.sources"
@@ -804,27 +789,9 @@ def payload_gate(squashfs: Path, inventory: dict[str, str]) -> None:
         squashfs, "usr/share/shadowfetch/workbench/profiles.json"
     )
     assert all(isinstance(item, str) for item in (
-        compose, helper, service, passport, recovery_sources, guide, launcher,
+        passport, recovery_sources, guide, launcher,
         workbench, workbench_page, workbench_manifest
     ))
-    image_lines = [line.strip() for line in compose.splitlines() if line.strip().startswith("image:")]
-    if len(image_lines) != 5:
-        raise RuntimeError(f"expected five Buzz container images, found {len(image_lines)}")
-    for line in image_lines:
-        if line == "image: ${BUZZ_IMAGE}":
-            continue
-        if not re.fullmatch(r"image: \S+@sha256:[0-9a-f]{64}", line):
-            raise RuntimeError(f"Buzz image is not immutable: {line}")
-    published = [line.strip() for line in compose.splitlines() if re.match(r'^\s*-\s*["\']?[^#]*:\d+["\']?\s*$', line)]
-    if published != ['- "127.0.0.1:${BUZZ_HTTP_PORT:-3000}:3000"']:
-        raise RuntimeError(f"unexpected Buzz published ports: {published}")
-    if "network_mode: host" in compose or ":latest" in compose:
-        raise RuntimeError("Buzz compose bypasses isolation or uses a mutable tag")
-    if not re.search(r'BUZZ_IMAGE="ghcr\.io/block/buzz@sha256:[0-9a-f]{64}"', helper):
-        raise RuntimeError("Buzz relay image is not digest-pinned by the setup helper")
-    if "ConditionPathExists=%h/.local/share/shadowfetch/buzz/.env" not in service:
-        raise RuntimeError("Buzz service can start before the user has completed setup")
-    print("PASS: Buzz is consent-gated, loopback-only and digest-pinned")
     for token in (
         '"local_only": True', '"upload_performed": False',
         "privacy_issues(document)", "shadowfetch-facts", "--output",

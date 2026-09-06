@@ -19,6 +19,8 @@ import sys
 import tarfile
 import tempfile
 
+from mission_provider_contract import validate_provider_payload
+
 from drkonqi_pickup_contract import (
     DROPIN, HELPER, PACKAGE as PICKUP_PACKAGE, validate_dropin, validate_package_paths,
 )
@@ -222,22 +224,20 @@ def payload_gate(package_paths: dict[str, Path], extracted: Path) -> None:
     release_payload = {
         "usr/bin/shadowfetch-missions": "shadowfetch-missions",
         "usr/lib/shadowfetch/missions/sf_missions.py": "shadowfetch-missions",
-        "usr/lib/shadowfetch/missions/sf_local_compute.py": "shadowfetch-missions",
         "usr/lib/systemd/user/shadowfetch-missions.service": "shadowfetch-missions",
         "usr/bin/shadowfetch-grok-bot": "shadowfetch-defaults",
-        "usr/bin/shadowfetch-model-check": "shadowfetch-defaults",
         "usr/share/shadowfetch/grok-bot/release.json": "shadowfetch-defaults",
         "usr/share/applications/shadowfetch-mission-control.desktop": "shadowfetch-control-center",
         "usr/share/applications/shadowfetch-grok-bot-setup.desktop": "shadowfetch-control-center",
         "usr/share/kio/servicemenus/shadowfetch-mission.desktop": "shadowfetch-control-center",
         "usr/share/shadowfetch/control-center/sfcc/missions_page.py": "shadowfetch-control-center",
         "usr/share/shadowfetch/control-center/sfcc/grok_bot_page.py": "shadowfetch-control-center",
-        "usr/share/shadowfetch/control-center/sfcc/local_model_card.py": "shadowfetch-control-center",
     }
     for path, owner in release_payload.items():
         if owners.get(path) != [owner]:
             raise RuntimeError(f"4.0 package payload missing or wrong owner: {path}")
-    print("PASS: Mission Control, local compute and Grok Bot payload ownership")
+    validate_provider_payload(owners, (extracted / "usr/lib/shadowfetch/missions/sf_missions.py").read_text())
+    print("PASS: Mission Control/Grok payload ownership; local AI stack absent")
 
     required_guide_payload = {
         "usr/bin/shadowfetch-passport",
@@ -336,22 +336,10 @@ def payload_gate(package_paths: dict[str, Path], extracted: Path) -> None:
             raise RuntimeError(f"Element Workbench safety contract is absent: {token}")
     print("PASS: Element Workbench payload, profiles and privilege boundary")
 
-    ignition = (extracted / "usr/bin/shadowfetch-ai-ignition").read_text(
-        encoding="utf-8"
-    )
-    mcp = (extracted / "usr/lib/shadowfetch/mcp/sf_mcp.py").read_text(
-        encoding="utf-8"
-    )
-    model_catalog = json.loads(
-        (extracted / "usr/share/shadowfetch/ai-ignition/models.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    if 'VERSION = "4.0.0"' not in ignition or 'SERVER_VERSION = "4.0.0"' not in mcp:
-        raise RuntimeError("Fireline protocol surfaces are not stamped for 4.0.0")
-    if not str(model_catalog.get("engine", "")).startswith("Buzz-managed local inference"):
-        raise RuntimeError("AI Ignition does not delegate model ownership to Buzz")
-    print("PASS: Fireline and AI Ignition 4.0.0 Buzz ownership contract")
+    mcp = (extracted / "usr/lib/shadowfetch/mcp/sf_mcp.py").read_text(encoding="utf-8")
+    if 'SERVER_VERSION = "4.0.0"' not in mcp:
+        raise RuntimeError("Fireline MCP protocol is not stamped for 4.0.0")
+    print("PASS: Fireline MCP version; local model ignition absent")
 
     required_recovery_payload = {
         "usr/libexec/phoenix-apt-repair",
@@ -390,8 +378,6 @@ def payload_gate(package_paths: dict[str, Path], extracted: Path) -> None:
                     "2.1.3 migration manifest differs from the reviewed package set"
                 )
             continue
-        if relative == "usr/lib/shadowfetch/missions/sf_local_compute.py":
-            content = content.replace(b'"llama-server"', b'"buzz-native-process-identity"')
         if RETIRED_RUNTIME.search(content):
             retired.append(relative)
     if retired:
@@ -520,7 +506,9 @@ for item in {installed_checks}; do
     actual=$(dpkg-query -W -f='${{Version}}' "$package")
     [ "$actual" = "$expected" ] || {{ echo "$package: expected installed $expected, got $actual" >&2; exit 1; }}
 done
-/usr/bin/shadowfetch-buzz --help >/dev/null
+/usr/bin/shadowfetch-missions --json capabilities >/dev/null
+[ ! -e /usr/bin/shadowfetch-buzz ]
+[ ! -e /usr/bin/shadowfetch-model-check ]
 /usr/bin/shadowfetch-codex --help >/dev/null
 /usr/bin/shadowfetch-gpu --help >/dev/null
 /usr/bin/shadowfetch-update --help >/dev/null

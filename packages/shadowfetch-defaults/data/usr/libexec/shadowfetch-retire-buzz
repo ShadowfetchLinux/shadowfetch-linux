@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""Retire the former distro relay once, preserving all application and user data."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import subprocess
+
+UNIT = 'shadowfetch-buzz.service'
+UNIT_PATHS = {'/usr/lib/systemd/user/' + UNIT, '/lib/systemd/user/' + UNIT}
+COMPOSE_SHA = '4dbe358c78d2dfa235c83b5237e738279e24a7c39c4a7a2343b0699f91138050'
+PROJECT = 'shadowfetch-buzz'
+ROLES = {'relay', 'postgres', 'redis', 'minio', 'minio-init'}
+SELF = '/usr/libexec/shadowfetch-retire-buzz'
+
+
+def run(argv):
+    return subprocess.run(argv, capture_output=True, text=True, timeout=90)
+
+
+def checked(argv):
+    result = run(argv)
+    if result.returncode:
+        # Tool stderr may include user configuration. Keep the migration log content-free.
+        raise RuntimeError(f'{argv[0]} {argv[1]} exited {result.returncode}')
+    return result.stdout.strip()
+
+
+def owned_container(row):
+    if not isinstance(row, list) or len(row) != 3:
+        return False
+    ident, name, labels = row
+    if not isinstance(ident, str) or not isinstance(name, str):
+        return False
+    if not isinstance(labels, dict) or not re.fullmatch(r'[0-9a-f]{64}', ident):
+        return False
+    role = labels.get('com.docker.compose.service') or labels.get('io.podman.compose.service')
+    project = labels.get('io.podman.compose.project') or labels.get('com.docker.compose.project')
+    return (project == PROJECT and role in ROLES and name.lstrip('/') in
+            {f'{PROJECT}_{role}_1', f'{PROJECT}-{role}-1'})
+
+
+def retire_user(home, uid):
+    home = Path(home)
+    marker = home / '.local/state/shadowfetch/migrations/buzz-retired-4.0'
+    if marker.exists():
+        return {'status': 'already-retired'}
+    unit_root = home / '.config/systemd/user'
+    # A custom unit or drop-in belongs to the user, even if its name matches ours.
+    override = unit_root / UNIT
+    dropins = unit_root / (UNIT + '.d')
+    if override.exists() or override.is_symlink() or dropins.exists() or dropins.is_symlink():
+        return {'status': 'user-override-preserved'}
+    compose = home / '.local/share/shadowfetch/buzz/compose.yml'
+    links = [p for p in unit_root.glob('*.target.wants/' + UNIT)
+             if p.is_symlink() and os.readlink(p) in UNIT_PATHS]
+    if not compose.exists() and not links:
+        return {'status': 'not-configured'}
+    if (not compose.is_file() or compose.is_symlink() or compose.stat().st_uid != uid
+            or hashlib.sha256(compose.read_bytes()).hexdigest() != COMPOSE_SHA):
+        return {'status': 'custom-configuration-preserved'}
+    manager = run(['systemctl', '--user', 'show', '--property=Version', '--value'])
+    if manager.returncode:
+        return {'status': 'deferred', 'reason': 'User manager unavailable; next login retries.'}
+    detail = run(['systemctl', '--user', 'show', UNIT, '--property=FragmentPath,DropInPaths,LoadState'])
+    values = dict(line.split('=', 1) for line in detail.stdout.splitlines() if '=' in line)
+    if detail.returncode and values.get('LoadState') != 'not-found':
+        raise RuntimeError('Could not inspect former relay unit')
+    if values.get('DropInPaths') or (values.get('FragmentPath') and values['FragmentPath'] not in UNIT_PATHS):
+        return {'status': 'user-override-preserved'}
+    # Remove only the old distro enablement links; never mask a vendor/user unit.
+    for link in links:
+        link.unlink()
+    # dpkg removed the old unit and ExecStop helper. Reload prevents executing
+    # that obsolete command; containers are stopped individually below.
+    checked(['systemctl', '--user', 'daemon-reload'])
+    stopped = run(['systemctl', '--user', 'stop', UNIT])
+    if stopped.returncode:
+        active = run(['systemctl', '--user', 'is-active', UNIT])
+        if active.stdout.strip() not in ('inactive', 'unknown', 'failed'):
+            raise RuntimeError('Former relay unit did not stop')
+    ids = set()
+    for label in ('io.podman.compose.project', 'com.docker.compose.project'):
+        ids.update(checked(['podman', 'ps', '-aq', '--no-trunc', '--filter', f'label={label}={PROJECT}']).split())
+    if len(ids) > 16 or any(not re.fullmatch(r'[0-9a-f]{64}', i) for i in ids):
+        raise RuntimeError('Unexpected relay container inventory')
+    retired = []
+    for ident in sorted(ids):
+        row = json.loads(checked(['podman', 'inspect', '--format',
+                                  '[{{json .Id}},{{json .Name}},{{json .Config.Labels}}]', ident]))
+        if not owned_container(row):
+            continue
+        # Do not remove containers, volumes, images, models, profiles or secrets.
+        checked(['podman', 'update', '--restart=no', ident])
+        checked(['podman', 'stop', '--time', '30', ident])
+        if checked(['podman', 'inspect', '--format', '{{.State.Running}}', ident]) != 'false':
+            raise RuntimeError('Former relay container remains running')
+        retired.append(ident)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text('Distro relay retired; user data and vendor applications preserved.\n')
+    marker.chmod(0o600)
+    return {'status': 'retired', 'containers_stopped': len(retired), 'data_preserved': True}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--all-users', action='store_true', help='Package configure: visit active desktop users; others retry at login')
+    args = parser.parse_args()
+    if args.all_users:
+        if os.geteuid() != 0:
+            parser.error('--all-users requires root')
+        errors = 0
+        for user in pwd.getpwall():
+            if not 1000 <= user.pw_uid < 65534:
+                continue
+            runtime = Path('/run/user') / str(user.pw_uid)
+            if not runtime.is_dir() or runtime.stat().st_uid != user.pw_uid:
+                continue
+            # Each child operation already has a 90-second bound. Do not kill
+            # the wrapper mid-retirement while its bounded command still runs.
+            result = subprocess.run(['runuser', '-u', user.pw_name, '--', 'env', '-i',
+                          'PATH=/usr/bin:/bin', f'HOME={user.pw_dir}', f'USER={user.pw_name}',
+                          f'XDG_RUNTIME_DIR={runtime}', f'DBUS_SESSION_BUS_ADDRESS=unix:path={runtime}/bus', SELF],
+                                    check=False)
+            print(f'Buzz retirement uid={user.pw_uid}: exit={result.returncode}')
+            errors += result.returncode != 0
+        return bool(errors)
+    if os.geteuid() == 0:
+        parser.error('Run retirement as the desktop user')
+    user = pwd.getpwuid(os.geteuid())
+    try:
+        result = retire_user(user.pw_dir, user.pw_uid)
+    except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        result = {'status': 'deferred', 'reason': str(exc), 'data_preserved': True}
+    print(json.dumps(result))
+    return 1 if result['status'] == 'deferred' else 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

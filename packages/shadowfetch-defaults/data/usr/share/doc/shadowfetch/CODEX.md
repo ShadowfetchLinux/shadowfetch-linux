@@ -1,8 +1,7 @@
 # Codex CLI on Shadowfetch Linux 3.5.0
 
 Shadowfetch can optionally install the official OpenAI Codex CLI during the
-first-run setup. Codex is not embedded in the ISO and is not required for Buzz
-or for local models.
+first-run setup. Codex is not embedded in the ISO.
 
 The setup downloads OpenAI's official standalone installer from
 `https://chatgpt.com/codex/install.sh`, verifies the release-pinned installer

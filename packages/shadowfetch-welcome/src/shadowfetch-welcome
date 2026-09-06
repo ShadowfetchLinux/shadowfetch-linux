@@ -13,7 +13,7 @@ A small, focused PyQt6 wizard that:
   - Lets them choose a role-based setup profile to preselect useful apps
   - Lets them pick a signature accent colour (applied to KDE Plasma 6)
   - Offers a curated set of optional apps to install from Flathub
-  - Offers Buzz; Buzz ranks and downloads open models in its Compute settings
+  - Offers Grok Bot and optional coding agents; local inference is deferred
   - Offers verified, user-level installs of Codex, Claude Code, Grok Build,
     Cursor Agent, and the official native Grok Bot desktop
   - Offers the one-click software catalog (media apps, presets, local AI)
@@ -63,7 +63,7 @@ if __name__ == "__main__" and {"-h", "--help", "--version"}.intersection(sys.arg
             "A graphical wizard that runs on login. Until a bundle choice is made it\n"
             "opens on the Ignition Setup page (Core / Creator / Developer / AI\n"
             "Workstation / Full Flame); afterwards it runs the one-time welcome flow\n"
-            "(profile, graphics, desktop, apps, optional Buzz and coding agents)\n"
+            "(profile, graphics, desktop, apps, Grok Bot and coding agents)\n"
             "and then\n"
             "exits silently on later logins. Optional application installs are\n"
             "selected during setup; vendor onboarding may download other assets.\n"
@@ -411,7 +411,7 @@ def build_profile_presets(element: str) -> list:
             "com.rawtherapee.RawTherapee", "fr.handbrake.ghb", "net.scribus.Scribus",
             "org.kde.digikam", "com.dec05eba.gpu_screen_recorder", "io.github.seadve.Kooha",
         ],
-        "ai_choice": None, "agents": [],
+        "agents": [],
     }
     gaming = {
         "key": "gaming",
@@ -422,7 +422,7 @@ def build_profile_presets(element: str) -> list:
             "com.valvesoftware.Steam", "com.heroicgameslauncher.hgl",
             "net.lutris.Lutris", "net.davidotek.pupgui2",
         ],
-        "ai_choice": None, "agents": [],
+        "agents": [],
     }
     office = {
         "key": "office",
@@ -434,7 +434,7 @@ def build_profile_presets(element: str) -> list:
             "org.mozilla.Thunderbird", "md.obsidian.Obsidian", "net.cozic.joplin_desktop",
             "com.bitwarden.desktop", "org.signal.Signal", "im.riot.Riot",
         ],
-        "ai_choice": None, "agents": [],
+        "agents": [],
     }
     maker = {
         "key": "maker",
@@ -445,7 +445,7 @@ def build_profile_presets(element: str) -> list:
             "io.github.softfever.OrcaSlicer", "com.prusa3d.PrusaSlicer",
             "org.freecad.FreeCAD", "org.kicad.KiCad", "cc.arduino.IDE2",
         ],
-        "ai_choice": None, "agents": [],
+        "agents": [],
     }
     if element == "ice":
         developer = {
@@ -454,47 +454,45 @@ def build_profile_presets(element: str) -> list:
             "desc": "Editors, database tools, API tooling and a fast terminal. "
                     "AI: preselects the Claude Code and Codex CLI coding agents; in Ice, "
                     "Firebreak agent sandboxes start with NO network — you grant it per "
-                    "session. You confirm everything on the AI workspace screen.",
+                    "session. You confirm everything on the agent setup screen.",
             "apps": [
                 "com.vscodium.codium", "dev.zed.Zed", "io.dbeaver.DBeaverCommunity",
                 "io.beekeeperstudio.Studio", "com.usebruno.Bruno", "com.mitchellh.ghostty",
             ],
-            "ai_choice": None, "agents": ["claude", "codex"],
+            "agents": ["claude", "codex"],
         }
-        local_ai = {
-            "key": "local-ai",
-            "title": "Glacier AI lab",
-            "desc": "Fully local AI on this hardware. "
-                    "AI: installs Buzz and lets it rank and download an open model; "
-                    "preselects NO cloud coding agents — nothing leaves this machine.",
+        agent_selection = {
+            "key": "agent-workspace",
+            "title": "Glacier workspace",
+            "desc": "An offline project workspace with no cloud agents preselected. "
+                    "Local model setup is deferred in 4.0.",
             "apps": [],
-            "ai_choice": "install-buzz", "agents": [],
+            "agents": [],
         }
-        return [developer, office, local_ai, creative, gaming, maker]
+        return [developer, office, agent_selection, creative, gaming, maker]
     developer = {
         "key": "developer",
         "title": "Forge developer",
         "desc": "Editors, database tools, API tooling and a fast terminal. "
                 "AI: preselects the Claude Code and Codex CLI coding agents; in Fire, "
                 "Firebreak agent sandboxes may use the network by default (run hot). "
-                "You confirm everything on the AI workspace screen.",
+                "You confirm everything on the agent setup screen.",
         "apps": [
             "com.vscodium.codium", "dev.zed.Zed", "io.dbeaver.DBeaverCommunity",
             "io.beekeeperstudio.Studio", "com.usebruno.Bruno", "com.mitchellh.ghostty",
         ],
-        "ai_choice": None, "agents": ["claude", "codex"],
+        "agents": ["claude", "codex"],
     }
-    local_ai = {
-        "key": "local-ai",
-        "title": "Local AI lab",
-        "desc": "The full local stack, run hot. "
-                "AI: installs Buzz (open models on this hardware) and preselects all "
+    agent_selection = {
+        "key": "agent-workspace",
+        "title": "Coding-agent workspace",
+        "desc": "A workspace for connected coding tools. Preselects all "
                 "four coding agents — Codex CLI, Claude Code, Grok Build and Cursor. "
-                "You confirm everything on the AI workspace screen.",
+                "You confirm everything on the agent setup screen.",
         "apps": [],
-        "ai_choice": "install-buzz", "agents": ["codex", "claude", "grok", "cursor"],
+        "agents": ["codex", "claude", "grok", "cursor"],
     }
-    return [creative, gaming, developer, local_ai, office, maker]
+    return [creative, gaming, developer, agent_selection, office, maker]
 
 
 PROFILE_PRESETS = build_profile_presets(ELEMENT)
@@ -863,10 +861,6 @@ class NMWatcher(QObject):
     def _poll(self):
         self._set(self._probe())
 
-    def _set(self, online: bool):
-        if online != self._online:
-            self._online = online
-            self.changed.emit(online)
 
     @staticmethod
     def _probe() -> bool:
@@ -896,6 +890,12 @@ class NMWatcher(QObject):
         online = self._probe()
         self._online = online
         return online
+
+    def _set(self, online: bool):
+        if online != self._online:
+            self._online = online
+            self.changed.emit(online)
+
 
 
 class HwscanWorker(QThread):
@@ -1670,7 +1670,7 @@ class IgnitionFlow(QWidget):
 CATALOG_SECTIONS = [
     ("media",   "Media & Creative"),
     ("presets", "Presets"),
-    ("ai",      "Local AI"),
+    ("ai",      "Workspace tools"),
     ("power",   "Power tools"),
 ]
 
@@ -1716,7 +1716,7 @@ class InstallDialog(QDialog):
 
 
 class CatalogPage(QWidget):
-    """The one-click media and preset catalog, plus verified Local AI entry."""
+    """The one-click media and preset catalog, plus workspace tooling."""
 
     def __init__(self, catalog: dict, sizes: dict, watcher: NMWatcher,
                  focus_section=None, on_back=None, parent=None):
@@ -1741,7 +1741,7 @@ class CatalogPage(QWidget):
         lay.addLayout(head)
         lay.addWidget(_label(
             "Apps and presets install from the pinned Shadowfetch mirrors. "
-            "Buzz manages hardware-aware open model selection and download. "
+            "Grok Bot and coding agents are available during setup. "
             "Nothing downloads until you confirm.",
             12, MUTED, wrap=True))
 
@@ -1769,9 +1769,6 @@ class CatalogPage(QWidget):
             vbox.addWidget(header)
             recs = by_section.get(key, [])
             shown = 0
-            if key == "ai":
-                vbox.addWidget(self._local_ai_card())
-                shown += 1
             for rec in recs:
                 requires = rec.get("requires") or []
                 if "nvidia" in requires and not nvidia:
@@ -1794,42 +1791,7 @@ class CatalogPage(QWidget):
         if header is not None:
             self.scroll.ensureWidgetVisible(header, 0, 40)
 
-    def _local_ai_card(self) -> QWidget:
-        card = Card()
-        row = QHBoxLayout(card)
-        row.setContentsMargins(16, 12, 16, 12)
-        text = QVBoxLayout()
-        text.setSpacing(2)
-        text.addWidget(_label("Buzz shared compute", 13, TEXT, bold=True))
-        text.addWidget(_label(
-            "Buzz ranks open-source models for this computer, shows the "
-            "recommended fit, and asks before downloading. Its model endpoint "
-            "stays on this machine.",
-            11, MUTED, wrap=True))
-        text.addWidget(_label(
-            "Official Buzz model catalog - native shared compute - localhost only",
-            10, MUTED, wrap=True))
-        row.addLayout(text, 1)
-        button = QPushButton("Open Local AI")
-        button.setFixedHeight(38)
-        button.clicked.connect(self._open_local_ai)
-        row.addWidget(button, 0, Qt.AlignmentFlag.AlignVCenter)
-        return card
 
-    def _open_local_ai(self):
-        for command in (
-                ["shadowfetch-control", "--page", "local-ai"],
-                ["konsole", "-e", "shadowfetch-buzz", "setup"]):
-            if not shutil.which(command[0]):
-                continue
-            try:
-                subprocess.Popen(command)
-                return
-            except OSError:
-                continue
-        QMessageBox.information(
-            self, "Local AI unavailable",
-            "The Local AI tools are not installed on this system.")
 
     def _entry_card(self, rec: dict, btrfs: bool) -> QWidget:
         card = Card()
@@ -2024,8 +1986,6 @@ class ElementPage(QWidget):
         nxt.clicked.connect(self._submit)
         lay.addWidget(nxt, alignment=Qt.AlignmentFlag.AlignRight)
 
-    def _set(self, key):
-        self.selected = key
 
     def _submit(self):
         chosen = self.selected
@@ -2047,6 +2007,10 @@ class ElementPage(QWidget):
             pass
         os.environ["SHADOWFETCH_ELEMENT"] = chosen
         os.execv(sys.executable, [sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:])
+
+    def _set(self, key):
+        self.selected = key
+
 
 
 class ProfilePage(QWidget):
@@ -2527,19 +2491,18 @@ class AppsPage(QWidget):
         self.profile_hint.setText("Preset selections applied: " + ", ".join(names) + ". Adjust anything before continuing.")
 
 
-class BuzzPage(QWidget):
-    """Explicit native Grok Bot, local models and coding-agent setup choices."""
+class AgentSetupPage(QWidget):
+    """Explicit native Grok Bot and coding-agent setup choices."""
     def __init__(self, on_next):
         super().__init__()
         self._on_next = on_next
-        self.choice = "none" if ELEMENT == "ice" else "install-buzz"
         lay = QVBoxLayout(self)
         lay.setContentsMargins(36, 26, 36, 24)
         lay.setSpacing(10)
         lay.addWidget(_label("Build your agent team", 24, TEXT, bold=True))
         lay.addWidget(_label(
             "Choose the tools to install. Every selected download runs during the next setup step. "
-            "Cloud tools need their own account; local models are selected separately in Buzz. "
+            "Cloud tools need their own account; local model setup is deferred in 4.0. "
             + ("Ice is active: Grok Bot cloud setup is paused and no AI tool is selected automatically." if ELEMENT == "ice" else "Fire is active: cloud connections are available when you choose them."),
             11, MUTED, wrap=True))
         scroll = QScrollArea()
@@ -2569,25 +2532,6 @@ class BuzzPage(QWidget):
             copy.addWidget(_label("Paused in Ice. Switch to Fire deliberately to install and use Grok Bot.", 10, GOLD, wrap=True))
         row.addLayout(copy, 1)
         content.addWidget(featured)
-        self.group = QButtonGroup(self)
-        self.choice_radios = {}
-        buzz_row = QHBoxLayout()
-        for key, name, desc in (("install-buzz", "Install Buzz", "Official desktop, private relay and hardware-aware local model selection."), ("none", "Skip local AI setup", "Continue without a local model download; set it up later in Local AI.")):
-            card = Card()
-            line = QHBoxLayout(card)
-            line.setContentsMargins(14, 12, 14, 12)
-            rb = QRadioButton()
-            rb.setChecked(key == self.choice)
-            rb.toggled.connect(lambda checked, k=key: self._set(k) if checked else None)
-            self.group.addButton(rb)
-            self.choice_radios[key] = rb
-            text = QVBoxLayout()
-            text.addWidget(_label(name, 12, TEXT, bold=True))
-            text.addWidget(_label(desc, 10, MUTED, wrap=True))
-            line.addWidget(rb, 0, Qt.AlignmentFlag.AlignTop)
-            line.addLayout(text, 1)
-            buzz_row.addWidget(card)
-        content.addLayout(buzz_row)
         agent_heading = QHBoxLayout()
         agent_heading.addWidget(_label("Coding agents", 12, MUTED, bold=True))
         agent_heading.addStretch(1)
@@ -2623,24 +2567,18 @@ class BuzzPage(QWidget):
         nxt.clicked.connect(self._submit)
         lay.addWidget(nxt, alignment=Qt.AlignmentFlag.AlignRight)
 
-    def _set(self, key):
-        self.choice = key
 
     def apply_profiles(self, profile_keys):
         if ELEMENT == "ice":
             return
         agents = set()
-        want_buzz = False
         for key in profile_keys:
             preset = PROFILE_BY_KEY.get(key)
             if preset:
                 agents.update(preset.get("agents", []))
-                want_buzz = want_buzz or preset.get("ai_choice") == "install-buzz"
         for key, checkbox in self.coding_agents.items():
             if key in agents and checkbox.isEnabled():
                 checkbox.setChecked(True)
-        if want_buzz:
-            self.choice_radios["install-buzz"].setChecked(True)
 
     def _toggle_all_agents(self, checked):
         for checkbox in self.coding_agents.values():
@@ -2656,16 +2594,15 @@ class BuzzPage(QWidget):
 
     def _submit(self):
         coding_agents = {key: checkbox.isChecked() and checkbox.isEnabled() for key, checkbox in self.coding_agents.items()}
-        self._on_next({"choice": self.choice, "coding_agents": coding_agents, "codex": coding_agents["codex"]})
+        self._on_next({"coding_agents": coding_agents})
 
 
 class InstallPage(QWidget):
     def __init__(self, on_close):
         super().__init__()
         self.on_close = on_close
-        self.local_ai = {"choice": "none", "coding_agents": {}}
+        self.agent_selection = {"coding_agents": {}}
         self.install_rc = 0
-        self.buzz_state = "not-requested"
         self.coding_agent_states = {
             agent["key"]: "not-requested" for agent in CODING_AGENTS
         }
@@ -2696,7 +2633,7 @@ class InstallPage(QWidget):
         self.skip_btn = QPushButton("Finish without optional AI tools")
         self.skip_btn.setFixedHeight(44)
         self.skip_btn.hide()
-        self.skip_btn.clicked.connect(self._skip_buzz)
+        self.skip_btn.clicked.connect(self._skip_agents)
         self.done_btn = QPushButton("Finish")
         self.done_btn.setFixedHeight(44)
         self.done_btn.setEnabled(False)
@@ -2707,15 +2644,12 @@ class InstallPage(QWidget):
         buttons.addWidget(self.done_btn)
         lay.addLayout(buttons)
 
-    def start(self, accent_name, accent_hex, flatpak_ids, local_ai):
-        self.local_ai = local_ai
+    def start(self, accent_name, accent_hex, flatpak_ids, agent_selection):
+        self.agent_selection = agent_selection
         self.busy = True
-        self.buzz_state = (
-            "pending" if local_ai.get("choice") == "install-buzz" else "not-requested"
-        )
-        selected_agents = local_ai.get("coding_agents")
+        selected_agents = agent_selection.get("coding_agents")
         if not isinstance(selected_agents, dict):
-            selected_agents = {"codex": bool(local_ai.get("codex"))}
+            selected_agents = {"codex": bool(agent_selection.get("codex"))}
         self.coding_agent_states = {
             agent["key"]: (
                 "pending" if selected_agents.get(agent["key"], False) else "not-requested"
@@ -2765,47 +2699,16 @@ class InstallPage(QWidget):
         self._start_next_ai()
 
     def _start_next_ai(self):
-        if self.buzz_state == "pending":
-            self._start_buzz_setup()
-            return
         for agent in CODING_AGENTS:
             if self.coding_agent_states[agent["key"]] == "pending":
                 self._start_coding_agent_setup(agent)
                 return
         self._finalize_setup()
 
-    def _start_buzz_setup(self):
-        helper = shutil.which("shadowfetch-buzz")
-        if not helper:
-            self.buzz_state = "failed"
-            self.failure_details.append(
-                "Buzz: the shadowfetch-buzz helper is missing. Repair shadowfetch-defaults."
-            )
-            self._start_next_ai()
-            return
-        self.buzz_state = "installing"
-        self.busy = True
-        self.output_lines = []
-        self.title.setText("Installing Buzz...")
-        self.log.setText("Running verified preflight checks...")
-        self.bar.setRange(0, 0)
-        self.done_btn.setEnabled(False)
-        self.skip_btn.hide()
-        self.cancel_btn.show()
-        self.buzz_worker = StreamingCommandWorker(
-            [helper, "setup", "--yes", "--no-open"])
-        self.buzz_worker.progress.connect(self._buzz_progress)
-        self.buzz_worker.finished.connect(self._buzz_done)
-        self.buzz_worker.start()
 
-    def _buzz_progress(self, line):
-        if line:
-            self.output_lines.append(line)
-            self.output_lines = self.output_lines[-5:]
-            self.log.setText("\n".join(self.output_lines))
 
     def _cancel_setup(self):
-        for name in ("coding_agent_worker", "buzz_worker", "worker"):
+        for name in ("coding_agent_worker", "worker"):
             worker = getattr(self, name, None)
             if worker is not None and worker.isRunning():
                 self.cancel_btn.setEnabled(False)
@@ -2813,22 +2716,6 @@ class InstallPage(QWidget):
                 worker.cancel()
                 return
 
-    def _buzz_done(self, rc):
-        self.busy = False
-        self.cancel_btn.setEnabled(True)
-        self.cancel_btn.hide()
-        self.bar.setRange(0, 1)
-        self.bar.setValue(1 if rc == 0 else 0)
-        if rc == 0:
-            self.buzz_state = "ready"
-        else:
-            self.buzz_state = "failed"
-            detail = "\n".join(self.output_lines[-5:]) or f"Setup exited with code {rc}."
-            self.failure_details.append(f"Buzz: {detail}")
-        if rc == 130:
-            self._show_interrupted("Buzz")
-            return
-        self._start_next_ai()
 
     def _start_coding_agent_setup(self, agent):
         if agent["key"] == "grok-bot" and ELEMENT == "ice":
@@ -2906,10 +2793,6 @@ class InstallPage(QWidget):
 
     def _finalize_setup(self):
         ready = []
-        if self.buzz_state == "ready":
-            ready.append(
-                "Buzz Desktop and its private local relay passed every setup check."
-            )
         for agent in CODING_AGENTS:
             if self.coding_agent_states[agent["key"]] == "ready":
                 ready.append(agent["receipt"])
@@ -2918,7 +2801,7 @@ class InstallPage(QWidget):
                 "One or more optional desktop apps were skipped; retry them later from Discover."
             )
 
-        failed = self.buzz_state == "failed" or any(
+        failed = any(
             state == "failed" for state in self.coding_agent_states.values()
         )
         self.bar.setRange(0, 1)
@@ -2931,8 +2814,6 @@ class InstallPage(QWidget):
             self.skip_btn.show()
         else:
             names = []
-            if self.buzz_state == "ready":
-                names.append("Buzz")
             names.extend(
                 agent["name"] for agent in CODING_AGENTS
                 if self.coding_agent_states[agent["key"]] == "ready"
@@ -2959,14 +2840,11 @@ class InstallPage(QWidget):
         if self.busy:
             return
         retry = False
-        if self.buzz_state == "failed":
-            self.buzz_state = "pending"
-            retry = True
         for key, state in self.coding_agent_states.items():
             if state == "failed":
                 self.coding_agent_states[key] = "pending"
                 retry = True
-        if retry or self.buzz_state == "pending" or any(
+        if retry or any(
             state == "pending" for state in self.coding_agent_states.values()
         ):
             self.failure_details = []
@@ -2977,15 +2855,7 @@ class InstallPage(QWidget):
             agent for agent in CODING_AGENTS
             if self.coding_agent_states[agent["key"]] == "ready"
         ]
-        ready_count = len(ready_agents) + (1 if self.buzz_state == "ready" else 0)
-        if ready_count == 1 and self.buzz_state == "ready":
-            try:
-                subprocess.Popen(["shadowfetch-buzz", "open"])
-            except OSError as error:
-                QMessageBox.warning(
-                    self, "Buzz is installed",
-                    f"Buzz setup succeeded, but it could not be opened automatically:\n\n{error}")
-        if ready_count == 1 and ready_agents:
+        if len(ready_agents) == 1:
             agent = ready_agents[0]
             command = [agent["helper"]]
             if agent["helper_tool"]:
@@ -3000,7 +2870,7 @@ class InstallPage(QWidget):
                     f"automatically:\n\n{error}")
         self.on_close()
 
-    def _skip_buzz(self):
+    def _skip_agents(self):
         if self.busy:
             return
         WELCOME_DONE_FLAG.touch()
@@ -3062,7 +2932,7 @@ class ShadowfetchWelcome(QMainWindow):
         self.accent_hex = ACCENTS[0][1]
         self.profiles = []
         self.flatpaks = []
-        self.local_ai = {"choice": "none", "coding_agents": {}}
+        self.agent_selection = {"coding_agents": {}}
 
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
@@ -3098,11 +2968,11 @@ class ShadowfetchWelcome(QMainWindow):
         self.graphics = GraphicsPage(lambda: self.stack.setCurrentWidget(self.accent))
         self.accent = AccentPage(self._got_accent)
         self.apps = AppsPage(self._got_apps)
-        self.buzz = BuzzPage(self._got_buzz)
+        self.agent_setup = AgentSetupPage(self._got_agents)
         self.install = InstallPage(self.close)
 
         for w in (self.flow, self.welcome, self.element_page, self.profile, self.wifi,
-                  self.graphics, self.accent, self.apps, self.buzz,
+                  self.graphics, self.accent, self.apps, self.agent_setup,
                   self.install, self.catalog_page):
             self.stack.addWidget(w)
 
@@ -3139,7 +3009,7 @@ class ShadowfetchWelcome(QMainWindow):
     def _got_profiles(self, profiles):
         self.profiles = profiles
         self.apps.apply_profiles(profiles)
-        self.buzz.apply_profiles(profiles)
+        self.agent_setup.apply_profiles(profiles)
         self.stack.setCurrentWidget(self.wifi)
 
     def _got_accent(self, name, hexc):
@@ -3148,13 +3018,13 @@ class ShadowfetchWelcome(QMainWindow):
 
     def _got_apps(self, flatpaks):
         self.flatpaks = flatpaks
-        self.stack.setCurrentWidget(self.buzz)
+        self.stack.setCurrentWidget(self.agent_setup)
 
-    def _got_buzz(self, local_ai):
-        self.local_ai = local_ai
+    def _got_agents(self, agent_selection):
+        self.agent_selection = agent_selection
         self.stack.setCurrentWidget(self.install)
         self.install.start(self.accent_name, self.accent_hex, self.flatpaks,
-                           self.local_ai)
+                           self.agent_selection)
 
 
 class SessionController(QObject):

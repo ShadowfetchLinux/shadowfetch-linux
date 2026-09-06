@@ -4,7 +4,7 @@ Status: implementation and validation in progress. This file is a release contra
 
 ## Release objective
 
-Deliver the complete Mission Control desktop: persistent tasks, visible scopes, real code/document/media workflows, reviewed results, cancellation/retry/recovery, hardware-aware local AI and resource management. Integrate the official Grok Bot Linux desktop app as a featured installation choice alongside the existing agents. Publish the signed ISO, corresponding source, GitHub release, updated shadowfetchlinux.org, actual screenshots and a reviewer letter after stress and acceptance testing.
+Deliver the complete Mission Control desktop: persistent tasks, visible scopes, real code/document/media workflows, reviewed results, cancellation/retry/recovery, coding-agent integration and resource management. Integrate the official Grok Bot Linux desktop app as a featured installation choice alongside the existing agents. Publish the signed ISO, corresponding source, GitHub release, updated shadowfetchlinux.org, actual screenshots and a reviewer letter after stress and acceptance testing.
 
 ## Product requirements
 
@@ -13,7 +13,7 @@ Deliver the complete Mission Control desktop: persistent tasks, visible scopes, 
 3. Firebreak gives agents a private home and explicitly scoped filesystem access. A required recovery checkpoint must exist before a mission mutates files. Permission and receipt state stays outside the agent-writable project.
 4. Fire offers explicit connected execution; Ice provides local execution with external networking disabled. Local inference crosses only a narrow local broker boundary.
 5. Software missions run a supported coding runtime, verify the requested tests and present the actual patch. Document missions generate a report from selected sources with citations using actual local inference. Media missions produce validated exports without overwriting originals.
-6. CPU, memory, process and heavy-job admission limits preserve a responsive desktop. Local model setup records the model, actual hardware and a measured successful inference result.
+6. CPU, memory, process and heavy-job admission limits preserve a responsive desktop. Code and report workflows use configured Codex cloud access; deterministic media remains offline. Local AI is deferred for this release.
 7. The desktop launcher and file manager can send selected projects or files into Mission Control. GUI and CLI share the same engine.
 8. Grok Bot is the official native desktop product, separate from Grok Build CLI. Its package comes from the official vendor download source with a pinned digest and reviewed metadata. Setup shows download, disk, network and account requirements; native account sign-in remains with the provider. A cloud service is never labeled as Ice/local inference.
 9. Grok Bot has prominent first-boot presentation, a dedicated Control Center surface and desktop launch entry. Screenshots must include the actual vendor application and its real setup/launch state.

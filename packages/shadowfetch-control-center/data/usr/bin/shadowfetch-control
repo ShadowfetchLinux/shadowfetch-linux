@@ -2,11 +2,11 @@
 """Shadowfetch Control Center - one window runs the machine.
 
 4.0.0 Mission Control: persistent missions, featured Grok Bot, Guide,
-Element Workbench, Ignite, Watch, Recover, Local AI, Drivers, and
+Element Workbench, Ignite, Watch, Recover, Workspaces, Drivers, and
 Software & Updates.
-The system tools (Safe Update, System Health, AI Workspaces, Local AI Tools,
+The system tools (Safe Update, System Health, Workspaces,
 First-run Setup, Graphics & Recovery) all remain reachable inside their
-sections; nothing the old front door offered has been removed.
+sections. Local inference is deferred in 4.0.
 """
 
 # ---- --help / --version, BEFORE any other import ----------------------------
@@ -31,16 +31,16 @@ SECTIONS (for --page; a tab may follow after a colon)
   workbench   Project profiles and scoped workspaces
   guide       Private, read-only System Passport (aliases: passport)
   ignite      Ember Mode - one switch for speed, always returns to Balanced
-  watch       Firewatch - live sensors, the heat map, local model telemetry
+  watch       Firewatch - live sensors, the heat map and storage health
   recover     Phoenix - restore Points, repair tools, recovery report
-  local-ai    Buzz, local model status and workspaces (aliases: ai, agents)
+  workspaces  Private project folders (aliases: local-ai, ai, agents)
   drivers     Graphics, network and printer hardware
   software    Software & Updates - updates and one-click bundles
 
   Examples: --page watch:heatmap    --page recover:point=42
 
 WHAT IT DOES
-  A front end to compatibility, speed, visibility, recovery, updates and local AI.
+  A front end to compatibility, speed, visibility, recovery, updates and workspaces.
   Actions are confirmed; privileged steps go through polkit. If a Control
   Center window is already open, --page routes inside that window.
 
@@ -66,14 +66,14 @@ def cli() -> int:
     print("  1) System Passport")
     print("  2) Safe Update")
     print("  3) System Health")
-    print("  4) AI Workspaces")
-    print("  5) Local AI Tools")
+    print("  4) Workspaces")
+    print("  5) Grok Bot")
     print("  6) Graphics & Recovery")
     try:
         choice = input("Choose [1-6]: ").strip()
     except EOFError:
         return 0
-    commands = {"1": "shadowfetch-passport", "2": "shadowfetch-update", "3": "shadowfetch-health", "4": "shadowfetch-agent-workspace", "5": "shadowfetch-agent-tools", "6": "shadowfetch-recovery"}
+    commands = {"1": "shadowfetch-passport", "2": "shadowfetch-update", "3": "shadowfetch-health", "4": "shadowfetch-agent-workspace", "5": ["shadowfetch-grok-bot", "open"], "6": "shadowfetch-recovery"}
     command = commands.get(choice)
     return subprocess.call(command) if command else 0
 

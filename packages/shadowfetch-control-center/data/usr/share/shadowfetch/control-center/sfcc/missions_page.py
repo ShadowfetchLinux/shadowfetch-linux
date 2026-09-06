@@ -14,7 +14,6 @@ from PyQt6.QtWidgets import (
 )
 from sfcc import theme
 from sfcc.mission_client import MissionClient, JsonCommand, workspace_path, workspaces_root
-from sfcc.local_model_card import MODEL_CHECK, ModelChooser
 from sfcc.theme import Card, label
 
 STATES = {
@@ -78,23 +77,10 @@ class NewMissionDialog(QDialog):
         self.prompt.setMinimumHeight(100)
         self.prompt.setMaximumHeight(150)
         form.addRow("Instructions", self.prompt)
-        self.runtime = QComboBox()
-        self.runtime.addItem("Buzz compute · choose local or shared", "local")
-        self.runtime.addItem("Codex · cloud account", "codex")
-        self.runtime.setAccessibleName("Execution provider")
-        form.addRow("Provider", self.runtime)
-        self.model = ModelChooser()
-        self.model.setPlaceholderText("Select or enter an installed Buzz model")
-        model_row = QHBoxLayout()
-        model_row.addWidget(self.model, 1)
-        self.refresh_models = QPushButton("Refresh models")
-        self.refresh_models.setObjectName("quiet")
-        self.refresh_models.clicked.connect(self._load_models)
-        model_row.addWidget(self.refresh_models)
-        form.addRow("Buzz model", model_row)
-        self.model_scope = label("Refresh models to inspect the execution route.", "detail", wrap=True)
-        self.model.editTextChanged.connect(self._model_scope)
-        form.addRow("", self.model_scope)
+        self.provider = label("", "detail", wrap=True)
+        form.addRow("Provider", self.provider)
+        self.provider_setup = label("", "detail", wrap=True)
+        form.addRow("", self.provider_setup)
         self.network = QComboBox()
         self.network.addItem("Ice · no external network", "none")
         self.network.addItem("Fire · allow network for this mission", "allow")
@@ -132,24 +118,7 @@ class NewMissionDialog(QDialog):
         row.addWidget(self.queue)
         root.addLayout(row)
         self.kind.currentIndexChanged.connect(self._template)
-        self.runtime.currentIndexChanged.connect(self._provider)
         self._template()
-        if isinstance(capabilities, dict):
-            local = (capabilities.get("runtimes") or {}).get("local") or {}
-            self.model.set_models(local.get("models") or [], local.get("default_model") or "")
-
-    def _load_models(self):
-        self.refresh_models.setEnabled(False)
-        JsonCommand(self, MODEL_CHECK, ["status", "--json"], self._models_loaded).start()
-
-    def _models_loaded(self, data, error):
-        self.refresh_models.setEnabled(True)
-        if error or not isinstance(data, dict):
-            self.error.setText(error or "The local model service returned an unexpected response.")
-            return
-        self.model.set_models(data.get("models") or [])
-        self.error.setText("Models listed. Use Local AI's real-task verification before relying on a new model." if data.get("models") else str(data.get("message") or "No model is installed. Open Buzz in Local AI to choose one."))
-
     def _browse(self):
         folder = QFileDialog.getExistingDirectory(self, "Choose an approved project", str(workspaces_root()))
         if folder:
@@ -162,37 +131,19 @@ class NewMissionDialog(QDialog):
         self.prompt.setPlainText(prompt)
         is_code = kind == "code"
         is_media = kind == "media"
-        self.runtime.setEnabled(is_code)
-        if not is_code:
-            self.runtime.setCurrentIndex(0)
-        self.model.setEnabled(not is_media)
+        self.provider.setText("Offline FFmpeg export" if is_media else "Codex · cloud account required")
+        self.provider_setup.setText("" if is_media else "The mission worker needs CODEX_API_KEY in ~/.config/shadowfetch/missions/codex.env (private mode 0600). After changing it, restart the worker when idle: systemctl --user restart shadowfetch-missions.service. A saved file does not prove authentication.")
+        self.network.setEnabled(not is_media and theme.ELEMENT != "ice")
+        self.network.setCurrentIndex(0 if is_media or theme.ELEMENT == "ice" else 1)
         self.tests.setEnabled(is_code)
         self.inputs.setPlaceholderText("One relative media path per line" if is_media else "One relative document path per line")
         self.workflow_note.setText({
             "code": "Provide a test command so the result can be checked. Shell syntax is not evaluated; enter a program and its arguments.",
-            "report": "Uses your selected Buzz model and text documents. The result includes source citations and a receipt.",
+            "report": "Uses Codex with your selected text documents. Cloud connection approval and configured worker credentials are required. Results include source citations and a receipt.",
             "media": "Uses deterministic ffmpeg exports. Select one or more source media files; exported files and verification appear in Results.",
         }[kind])
-        self._provider()
 
-    def _model_scope(self, _value=None):
-        if self.kind.currentData() == "media":
-            self.model_scope.setText("FFmpeg export runs on this computer; no model is used.")
-        elif self.runtime.currentData() == "codex":
-            self.model_scope.setText("Codex uses its cloud service with your explicit connection approval.")
-        elif self.model.current_record().get("local_only_verified") is True:
-            self.model_scope.setText("Verified native model process on this computer. Locality is checked again before execution.")
-        elif self.model.current_record().get("local_only_verified") is False:
-            self.model_scope.setText("Buzz shared compute may run elsewhere. Fire network approval is required for this model.")
-        else:
-            self.model_scope.setText("Model route not yet verified. Refresh models; Ice will refuse execution unless its native process is proven local.")
 
-    def _provider(self):
-        cloud = self.runtime.currentData() == "codex" and self.kind.currentData() == "code"
-        self.model.setEnabled(not cloud and self.kind.currentData() != "media")
-        self.refresh_models.setEnabled(self.model.isEnabled())
-        self.model.setPlaceholderText("Not used by Codex" if cloud else "Select or enter an installed Buzz model")
-        self._model_scope()
 
     def arguments(self):
         title = self.title.text().strip()
@@ -202,15 +153,11 @@ class NewMissionDialog(QDialog):
         if not self.workspace.text().strip():
             raise ValueError("Choose an existing project folder or enter its name.")
         workspace = workspace_path(self.workspace.text().strip())
-        runtime = self.runtime.currentData()
         kind = self.kind.currentData()
-        network = self.network.currentData()
+        runtime = "offline" if kind == "media" else "codex"
+        network = "none" if kind == "media" else self.network.currentData()
         if runtime == "codex" and network == "none":
-            raise ValueError("Codex needs a cloud connection. Choose Fire for this mission or use a local model.")
-        if kind != "media" and runtime == "local" and not self.model.text().strip():
-            raise ValueError("Enter an installed Buzz model. Local AI helps you select and verify one for this computer.")
-        if runtime == "local" and kind != "media" and network == "none" and self.model.current_record().get("local_only_verified") is False:
-            raise ValueError("This model uses shared compute. Choose a verified native model or explicitly allow a Fire connection.")
+            raise ValueError("Codex needs a cloud connection. Switch to Fire and allow a connection for this mission; media exports remain offline.")
         inputs = [line.strip() for line in self.inputs.toPlainText().splitlines() if line.strip()]
         for value in inputs:
             path = Path(value)
@@ -220,8 +167,6 @@ class NewMissionDialog(QDialog):
             raise ValueError("Select at least one source file by its path inside the project.")
         args = ["create", "--kind", kind, "--workspace", str(workspace), "--title", title,
                 "--prompt", prompt, "--runtime", runtime, "--network", network]
-        if self.model.isEnabled() and self.model.text().strip():
-            args += ["--model", self.model.text().strip()]
         for value in inputs:
             args += ["--input", value]
         if kind == "code":

@@ -1,5 +1,6 @@
 shadowfetch-control-center (4.0.0-1) umbra; urgency=medium
 
+  * Replace Local AI with Workspaces; keep Codex code/report and offline media workflows without local-model controls.
   * Keep internal checkpoint folders and symlink targets out of the Local AI
     project list, consistent with Mission Control workspace selection.
 

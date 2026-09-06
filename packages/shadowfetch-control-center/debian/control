@@ -30,7 +30,7 @@ Breaks: shadowfetch-defaults (<< 2.1.2-1~)
 Description: Shadowfetch Mission Control - agent tasks and system care
  The native desktop starts with persistent missions and the featured official
  Grok Bot integration. It also includes the private System Passport, Element
- Workbench, Ignite, Watch, Recover, Local AI, Drivers and Software & Updates.
+ Workbench, Ignite, Watch, Recover, Workspaces, Drivers and Software & Updates.
  Supports deep links
  (--page section[:tab]) with single-instance routing over the session
  bus, so Welcome, Firewatch, Phoenix and Fireproof all land in the same

@@ -1,5 +1,6 @@
 shadowfetch-firewatchd (4.0.0-1) umbra; urgency=medium
 
+  * Stop polling model services; retain local system telemetry and empty model compatibility fields.
   * Shadowfetch Linux 4.0 Mission Control release.
   * Integrate persistent missions, scoped execution and featured Grok Bot setup.
 

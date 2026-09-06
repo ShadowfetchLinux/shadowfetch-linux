@@ -6,7 +6,7 @@ WHY THIS EXISTS
 Three things need the same knowledge and none of them should collect it
 separately: hardware repair needs to know which devices have no driver;
 package-source advice needs to know what is installed and from where; and a
-local AI technician is only worth having if it can read the actual machine
+support tool is only worth having if it can read the actual machine
 rather than guess. Three copies of the detection logic would drift, and the one
 that drifted would be the one giving advice.
 
@@ -360,19 +360,17 @@ def package_sources():
 def shadowfetch_stack():
     ok, ver, _ = run(["dpkg-query", "-W", "-f=${Version}", "shadowfetch-defaults"])
     tools = {}
-    for t in ["shadowfetch-gpu", "shadowfetch-buzz", "shadowfetch-health",
+    for t in ["shadowfetch-gpu", "shadowfetch-grok-bot", "shadowfetch-health",
               "shadowfetch-update", "shadowfetch-control",
               "shadowfetch-passport",
-              "shadowfetch-agent-workspace", "shadowfetch-agent-doctor",
-              "shadowfetch-agent-tools"]:
+              "shadowfetch-agent-workspace", "shadowfetch-code-agent"]:
         tools[t] = shutil.which(t) is not None
     return {
         "defaults_version": ver.strip() if ok else None,
         "installed_on_shadowfetch": bool(ok),
         "tools": tools,
         "runtimes": {r: shutil.which(r) is not None
-                     for r in ("podman", "docker", "buzz-desktop", "buzz",
-                               "buzz-agent", "flatpak")},
+                     for r in ("podman", "docker", "flatpak")},
         "version_file": (read("/usr/share/shadowfetch/version") or "").strip() or None,
     }
 

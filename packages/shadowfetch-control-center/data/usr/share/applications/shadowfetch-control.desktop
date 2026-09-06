@@ -6,6 +6,6 @@ Exec=shadowfetch-control
 Icon=shadowfetch
 Terminal=false
 Categories=System;
-Keywords=ember;firewatch;phoenix;update;health;recovery;AI;Buzz;system;
+Keywords=ember;firewatch;phoenix;update;health;recovery;AI;system;
 StartupNotify=true
 X-DBUS-ServiceName=com.shadowfetch.ControlCenter

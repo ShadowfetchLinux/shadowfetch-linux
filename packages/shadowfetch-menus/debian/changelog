@@ -1,5 +1,6 @@
 shadowfetch-menus (4.0.0-1) umbra; urgency=medium
 
+  * Expose Workspaces and retire the Buzz launcher.
   * Shadowfetch Linux 4.0 Mission Control release.
   * Integrate persistent missions, scoped execution and featured Grok Bot setup.
 

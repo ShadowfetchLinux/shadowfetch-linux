@@ -52,8 +52,8 @@ replaces the tag. Rootless containers use that ID with networking disabled.
 The default load is three CPU workers, one 3 GiB memory worker, two disk workers
 sharing 1 GiB total (512 MiB per worker), and two I/O workers.
 `QA_STRESS_CPUS` and `QA_STRESS_VM_BYTES`
-allow explicit sizing. With a resident model in an 8 GiB desktop VM, start with
-`QA_STRESS_VM_BYTES=1G`; record the selected resources. Do not make intentional
+allow explicit sizing. Record the selected CPU, memory and VM resources before
+the run. Do not make intentional
 overcommit indistinguishable from a product memory regression.
 
 During the full interval, the run also performs:
@@ -91,7 +91,7 @@ fields; otherwise journalctl may replace long JSON field values with `null`.
 Empty captured telemetry or an unavailable message body is an error even
 if the journal command returned zero, including records from the QA guest agent.
 The classifier
-records actual Buzz admission/Redis timeouts, JSON or textual HTTP 5xx responses,
+continues to recognize historical vendor admission/Redis timeouts, JSON or textual HTTP 5xx responses,
 health failures and generic service failures as hard faults. Redis's
 "Asynchronous AOF fsync is taking too long" record is disk-latency telemetry:
 it is preserved verbatim and counted in a separate `latency_events` array, not
@@ -112,29 +112,35 @@ rewritten by this canonical update.
 workload PIDs. The media helper cancels its current queued/running mission and
 stops its private worker; the container helper removes only its own named QA
 container. Evidence is retained and the result is `CANCELLED`. Never signal
-unrelated desktop, model, or normal queue services.
+unrelated desktop or normal queue services.
 
-## Separate inference and UI checks
+## Separate cloud and UI checks
 
-Media stress verifies real local tools, queue behavior, artifacts and recovery;
-it does not claim model inference. After the native Buzz UI downloads and loads
-a model, use `shadowfetch-model-check status --json` and `verify --model ID
---json`. The production adapter must verify the real same-user model process
-and its owned loopback socket; mesh/router model listings alone do not prove
-offline inference.
+Local AI is deferred. No Buzz install, resident model, local model download or
+native model check belongs in the current candidate. Preserve prior failed
+candidate6 runs as historical evidence; do not relabel them after removal.
 
-Use actual framebuffer captures for native Welcome, Mission Control, Grok and
-Buzz. Native application installation, verified executable integrity, account
-sign-in, cloud connectivity and a completed agent task are separate states.
-Exclude dialogs containing private identity material and retain only reviewed
-screenshots as release evidence.
+Media stress uses `runtime=offline`, no network, and verifies real tools, queue
+behavior, artifacts and recovery. It does not claim inference. Code/report use
+the existing sandboxed Codex CLI with explicit `network=allow`. Configure its
+per-user API key as documented in the missions package before a separately
+authorized bounded real task. Key presence is not authenticated integration.
+`native_mission_acceptance.py` retains its filename for QA tooling compatibility,
+but now exercises actual Codex cloud code/report tasks, verifies returned
+artifacts/citations and completed CLI log hashes, and checks Accept and Undo.
+It requires API authentication in the QA process; never print or copy credentials
+into evidence. Missing credentials leave cloud integration unverified.
+
+Use actual captures for Welcome, Mission Control and Grok. Installation,
+executable integrity, account sign-in, cloud connectivity and a completed task
+are separate claims. Exclude dialogs containing private material. Grok has no
+supported mission CLI adapter and is verified as its own native application.
 
 `installed_audit.sh fire|ice bios|uefi` requires a completed disk installation
-and a logged-in `QA_USER` (default `sfqa`). It checks the installed system; it is
-not a live-session substitute. `native_mission_acceptance.py` runs actual code
-repair and source report missions against a loaded native model, independently
-checks the results, and verifies receipt hashes, local process proof, Accept
-and Undo. `engine_acceptance.py` covers bounded deterministic engine behavior.
+and a logged-in `QA_USER` (default `sfqa`); it checks current provider capabilities
+and the absence of retired local-AI integration. `engine_acceptance.py` and
+`durable_worker_acceptance.py` use offline tasks for deterministic controller,
+process limits, cancellation and recovery checks without paid cloud requests.
 
 `upgrade_recovery_acceptance.py` is restricted to the disposable
 `sfqa-final-upgrade` QEMU guest with Btrfs. It does not reboot automatically;

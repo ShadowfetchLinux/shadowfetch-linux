@@ -6,7 +6,7 @@ shadowfetch-ember deb ships), the pre-flip safety line, the flame animation
 (three states driven by Firewatch1), the readout strip (Firewatch1
 SensorSnapshot — emberd has no sampler), the duration picker (RuntimeMaxSec
 via the pkexec Ember helper), the session-side baloo suspend, and the
-two-card app-profile row (Gaming, Local AI — same engine, tuned presets).
+two-card app-profile row (Gaming, Production — same engine, tuned presets).
 
 Owns NO root logic: every privileged step goes through systemd + polkit or
 the pkexec helper the shadowfetch-ember deb provides.
@@ -288,10 +288,10 @@ class EmberPage(QWidget):
         for index, profile in enumerate(profiles):
             card = ProfileCard(profile, self._on_profile_toggle)
             if profile.get("show_hwscan") == "yes":
-                open_agents = QPushButton("Open Local AI")
+                open_agents = QPushButton("Open Workspaces")
                 open_agents.setObjectName("quiet")
                 open_agents.setFixedHeight(26)
-                open_agents.clicked.connect(lambda: self._open_route("local-ai"))
+                open_agents.clicked.connect(lambda: self._open_route("workspaces"))
                 card.layout().addWidget(open_agents,
                                         alignment=Qt.AlignmentFlag.AlignLeft)
             self.profile_cards.append(card)

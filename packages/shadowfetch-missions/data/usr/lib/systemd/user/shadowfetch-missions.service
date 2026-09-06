@@ -3,6 +3,7 @@ Description=Shadowfetch Mission Control task queue
 After=default.target
 
 [Service]
+EnvironmentFile=-%h/.config/shadowfetch/missions/codex.env
 Type=simple
 ExecStart=/usr/bin/shadowfetch-missions worker
 Restart=on-failure

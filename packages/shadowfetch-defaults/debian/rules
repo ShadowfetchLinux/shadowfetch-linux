@@ -1,7 +1,3 @@
 #!/usr/bin/make -f
 %:
 	dh $@
-
-# Keep the menu-linked Buzz guide at its literal path.
-override_dh_compress:
-	dh_compress -XBUZZ.md

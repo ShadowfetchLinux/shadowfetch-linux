@@ -98,7 +98,7 @@ def audit(state, version, *, allow_previous_candidate=False):
                 raise RuntimeError('DrKonqi or correction package payload was changed')
         for executable in ('shadowfetch-missions', 'shadowfetch-grok-bot'):
             run(executable, '--version')
-        run('runuser', '-u', 'sfqa', '--', 'shadowfetch-model-check', 'status', '--json')
+        run('runuser', '-u', 'sfqa', '--', 'shadowfetch-missions', '--json', 'capabilities')
         run('runuser', '-u', 'sfqa', '--', 'env', 'HOME=/home/sfqa', 'XDG_RUNTIME_DIR=/run/user/1000', 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus', 'systemctl', '--user', 'is-active', '--quiet', 'shadowfetch-missions.service')
         user_env = ['runuser', '-u', 'sfqa', '--', 'env', 'HOME=/home/sfqa',
                     'XDG_RUNTIME_DIR=/run/user/1000', 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus']

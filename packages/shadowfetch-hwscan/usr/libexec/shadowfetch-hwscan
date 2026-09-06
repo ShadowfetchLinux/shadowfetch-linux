@@ -5,7 +5,7 @@ Reads the hardware (unprivileged: sysfs, /proc, /usr/share/misc/pci.ids,
 plus exactly two time-boxed subprocesses: `vulkaninfo --json` and
 `nvidia-smi`) and produces the single JSON fact file every Shadowfetch
 surface reads: the Ignition AI Workstation card and the Control Center
-Local AI and Drivers pages.
+Workspaces and Drivers pages.
 
 House rules:
   * Capabilities at rest only. Firewatch owns every runtime number
@@ -17,7 +17,7 @@ House rules:
     ("VRAM: measured after driver install").
   * The verdict is a pure function of (CPU flags, cores, RAM, GPUs),
     pinned by the fixture tests in tests/ - a wording change is a test
-    change. Buzz independently owns exact model ranking and download.
+    change. It does not rank or download models.
   * Nothing here talks to the network. Both subprocesses are local,
     read-only probes; failure or overrun means "unknown", never an
     error.
@@ -50,29 +50,18 @@ NVIDIA_SMI_ARGV = ["nvidia-smi", "--query-gpu=name,memory.total",
                    "--format=csv,noheader"]
 VULKANINFO_ARGV = ["vulkaninfo", "--json"]
 
-# --- verdict copy (judge-folded wording; changing these changes tests) ------
-GLOSS = " (a shorter conversation memory, or a more compressed model file)"
-S_CPU_LT6 = ("This machine is suited to speech-to-text and small assistant "
-             "models; larger chat models need more memory.")
-S_CPU_8 = ("Your system runs 4B models comfortably; 7B models run, but "
-           "slowly and with a small context.")
-S_CPU_16 = ("7B models run at a relaxed pace on your processor "
-            "— a graphics card is what makes them feel fast.")
-S_CPU_32 = ("Your system holds up to 13B models in memory — a GPU is "
-            "what makes 13B feel fast.")
-S_GPU_4 = "Your GPU makes 4B models fast; 7B models run partially offloaded."
-S_GPU_6 = ("Your GPU runs 7B models mostly offloaded — noticeably "
-           "faster than CPU alone.")
-# The founder's sentence, reserved for tiers where 7B is genuinely fast
-# (>= 8 GB VRAM full offload), with the mandatory plain-words gloss.
-S_GPU_8 = ("Your system can comfortably run 7B models. 13B models may "
-           "require reduced context or quantization" + GLOSS + ".")
-S_GPU_12 = ("Your GPU can comfortably run 13B models; 30B-class models can "
-            "run partially offloaded.")
-SFX_NO_AVX2 = "your CPU lacks AVX2; expect roughly half these speeds"
-SFX_LOW_CORE = "slower processor — expect well below typical speeds"
-SFX_NV_NO_DRIVER = ("GPU acceleration available after driver install "
-                    "— using CPU for now")
+# --- measured hardware summaries -------------------------------------------
+S_CPU_LT6 = "Less than 6 GB system RAM detected. Keep concurrent workloads small."
+S_CPU_8 = "6–12 GB system RAM detected. Review memory use when running several tools."
+S_CPU_16 = "12–24 GB system RAM detected."
+S_CPU_32 = "At least 24 GB system RAM detected."
+S_GPU_4 = "A working GPU with at least 4 GB graphics memory was detected."
+S_GPU_6 = "A working GPU with at least 6 GB graphics memory was detected."
+S_GPU_8 = "A working GPU with at least 8 GB graphics memory was detected."
+S_GPU_12 = "A working GPU with at least 12 GB graphics memory was detected."
+SFX_NO_AVX2 = "AVX2 is unavailable on this processor."
+SFX_LOW_CORE = "Fewer than six CPU cores were detected."
+SFX_NV_NO_DRIVER = "The NVIDIA driver is not installed; GPU acceleration was not verified."
 
 
 def _read(path, default=""):
@@ -423,8 +412,7 @@ def build_verdict(cpu, ram_gb, gpus):
     return {
         "sentence": sentence,
         "suffixes": suffixes,
-        # Retained as an empty compatibility field for 2.1.x consumers. Buzz's
-        # native hardware survey is the sole owner of exact model ranking.
+        # Retained as an empty compatibility field for existing consumers.
         "badges": {},
     }
 
@@ -490,7 +478,7 @@ def human_report(report):
     lines.append("Verdict: " + verdict["sentence"])
     for suffix in verdict["suffixes"]:
         lines.append("  note: " + suffix)
-    lines.append("Model selection: managed by Buzz in Settings > Compute")
+    lines.append("Local model setup is deferred in Shadowfetch 4.0.")
     return "\n".join(lines)
 
 

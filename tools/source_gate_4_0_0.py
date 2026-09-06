@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from mission_provider_contract import validate_provider_payload
+
 import ast
 import json
 import os
@@ -211,6 +213,8 @@ def secret_gates(candidates: list[Path]) -> None:
 
 
 def retired_runtime_gate() -> None:
+    payload_paths = [p.relative_to(data).as_posix() for data in (ROOT / "packages").glob("*/data") for p in data.rglob("*") if p.is_file() or p.is_symlink()]
+    validate_provider_payload(payload_paths, (ROOT / "packages/shadowfetch-missions/data/usr/lib/shadowfetch/missions/sf_missions.py").read_text())
     findings: list[str] = []
     for value in ACTIVE_IMAGE_ROOTS:
         root = ROOT / value
@@ -224,10 +228,6 @@ def retired_runtime_gate() -> None:
                 content = path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
-            if path.relative_to(ROOT).as_posix() == "packages/shadowfetch-missions/data/usr/lib/shadowfetch/missions/sf_local_compute.py":
-                # This one executable identity identifies Buzz's existing native
-                # child. It neither ships nor installs a competing runtime.
-                content = content.replace('"llama-server"', '"buzz-native-process-identity"')
             if RETIRED_RUNTIME.search(content):
                 findings.append(path.relative_to(ROOT).as_posix())
     if findings:

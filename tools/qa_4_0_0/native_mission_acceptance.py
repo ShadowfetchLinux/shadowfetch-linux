@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise installed missions against a real, verified native Buzz model."""
+"""Exercise installed cloud code/report missions through the existing Codex CLI."""
 import argparse
 import hashlib
 import json
@@ -14,14 +14,13 @@ import time
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--model', required=True)
     parser.add_argument('--kind', choices=('code', 'report'), required=True)
     args = parser.parse_args()
     if os.geteuid() == 0:
         parser.error('Run as the desktop QA user')
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    scope = Path.home() / 'Workspaces' / ('qa-native-' + args.kind + '-' + str(time.time_ns()))
+    scope = Path.home() / 'Workspaces' / ('qa-codex-' + args.kind + '-' + str(time.time_ns()))
     scope.mkdir(parents=True)
     env = {**os.environ, 'SHADOWFETCH_MISSIONS_STATE': str(output / 'controller'), 'PYTHONDONTWRITEBYTECODE': '1'}
     checks, commands = [], []
@@ -45,7 +44,7 @@ def main():
 
     try:
         capabilities = cli('capabilities')
-        check('chosen model has native process ownership proof', any(m['name'] == args.model and m.get('local_only_verified') is True for m in capabilities['runtimes']['local']['models']))
+        check('Codex CLI installed and API key configured for this QA process', capabilities['runtimes']['codex']['installed'] and capabilities['runtimes']['codex']['api_key_configured'])
         if args.kind == 'code':
             (scope / 'title.py').write_text('def normalize_title(title):\n    return title\n')
             tests = "from title import normalize_title\nassert normalize_title('  Shadowfetch \\n Linux  ') == 'Shadowfetch Linux'\nassert normalize_title('Ice\\tEdition') == 'Ice Edition'\nassert normalize_title('  café   日本語 ') == 'café 日本語'\nassert normalize_title('   ') == ''\nprint('4 independent normalization checks passed')\n"
@@ -53,13 +52,13 @@ def main():
             baseline = subprocess.run(['python3', 'test_title.py'], cwd=scope, capture_output=True, text=True)
             check('baseline reproduces the code defect', baseline.returncode != 0, baseline.stderr[-1000:])
             inputs = ['--input', 'title.py', '--test-json', '["python3","test_title.py"]']
-            prompt = 'Fix normalize_title in title.py so it trims leading and trailing whitespace and collapses every run of whitespace, including tabs and newlines, to one ordinary space. Preserve Unicode letters. An empty or whitespace-only input returns an empty string. Only edit title.py. Return the complete file as the required JSON files object.'
+            prompt = 'Fix normalize_title in title.py so it trims leading and trailing whitespace and collapses every run of whitespace, including tabs and newlines, to one ordinary space. Preserve Unicode letters. An empty or whitespace-only input returns an empty string. Only edit title.py. Do not change test_title.py.'
         else:
-            (scope / 'release-notes.md').write_text('Shadowfetch Linux 4.0 includes three mission types: code, source reports, and media export.\nThe mission queue persists in a SQLite database outside the selected workspace.\nResults require review before they are accepted.\nA checkpoint can restore workspace files after a mission.\nRestoring workspace files cannot reverse external network actions.\nNative inference is verified using the model process and its owned loopback socket.\n')
+            (scope / 'release-notes.md').write_text('Shadowfetch Linux 4.0 includes three mission types: code, source reports, and media export.\nThe mission queue persists in a SQLite database outside the selected workspace.\nResults require review before they are accepted.\nA checkpoint can restore workspace files after a mission.\nRestoring workspace files cannot reverse external network actions.\nCode and report tasks use the Codex cloud CLI with explicit network permission.\n')
             inputs = ['--input', 'release-notes.md']
             prompt = 'Write a short release-readiness briefing with exactly two factual bullet points and one limitation. Cover the mission types and review/recovery behavior. Every bullet must cite exact provided source line ranges, for example [S1:L1-L3]. Do not add facts beyond the source document.'
         before = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in scope.iterdir() if p.is_file()}
-        created = cli('create', '--kind', args.kind, '--workspace', scope.name, '--title', 'Native Buzz ' + args.kind + ' acceptance', '--prompt', prompt, '--runtime', 'local', '--model', args.model, '--network', 'none', '--timeout', '900', *inputs)
+        created = cli('create', '--kind', args.kind, '--workspace', scope.name, '--title', 'Codex cloud ' + args.kind + ' acceptance', '--prompt', prompt, '--runtime', 'codex', '--network', 'allow', '--timeout', '900', *inputs)
         mission = created['id']
         started = time.monotonic()
         done = cli('run', mission)
@@ -67,7 +66,7 @@ def main():
         receipt = json.loads(Path(done['receipt']).read_text())
         (output / 'receipt.json').write_text(json.dumps(receipt, indent=2))
         inferences = receipt.get('inferences', [])
-        check('receipt proves actual native inference', bool(inferences) and all(i.get('compute', {}).get('local_only_verified') is True and i['compute'].get('pid') and i['compute'].get('process_start') for i in inferences), inferences)
+        check('receipt retains completed Codex CLI turn and log hash', bool(inferences) and all(i.get('provider') == 'codex' and i.get('log') and Path(i['log']).is_file() and hashlib.sha256(Path(i['log']).read_bytes()).hexdigest() == i['response_sha256'] for i in inferences), inferences)
         check('artifact receipt hashes match', bool(receipt['artifacts']) and all(Path(a['path']).stat().st_size == a['bytes'] and hashlib.sha256(Path(a['path']).read_bytes()).hexdigest() == a['sha256'] for a in receipt['artifacts']))
         changes = cli('diff', mission)['diff']
         (output / 'changes.diff').write_text(changes)
@@ -99,7 +98,7 @@ def main():
                 (output / 'failed-mission.json').write_text(json.dumps(latest, indent=2))
             except Exception:
                 pass
-    result = {'status': status, 'kind': args.kind, 'model': args.model, 'mission': mission, 'workspace': str(scope), 'checks': checks}
+    result = {'status': status, 'kind': args.kind, 'runtime': 'codex', 'network': 'allow', 'model_identity': 'Codex default; no independent model identity claim', 'mission': mission, 'workspace': str(scope), 'checks': checks}
     (output / 'result.json').write_text(json.dumps(result, indent=2))
     print(json.dumps(result), flush=True)
     return 0 if status == 'PASS' else 1

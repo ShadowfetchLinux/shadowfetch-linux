@@ -13,10 +13,6 @@ under the MIT License, EXCEPT theme assets derived from KDE's Breeze
 (the Umbra SDDM/Plasma theme), which remain under Breeze's LGPL-2.1+/GPL-2.0+
 terms as required.
 
-The Buzz compose definition is adapted from the Apache-2.0 Buzz project at
-https://github.com/block/buzz. The optional Buzz Desktop package retains its
-upstream Apache-2.0 license and is downloaded only after explicit user consent.
-
 The optional Codex CLI is maintained by OpenAI under Apache-2.0 at
 https://github.com/openai/codex. It is downloaded only after explicit user
 consent and is installed for the current desktop user, not embedded in the ISO.

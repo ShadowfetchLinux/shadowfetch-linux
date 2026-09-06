@@ -2,10 +2,10 @@
 """firewatchd - the Shadowfetch Firewatch telemetry daemon.
 
 Root, strictly read-only against the system, zero network traffic except
-polling Buzz shared compute /v1/models on 127.0.0.1. Publishes the
+publishing system and application measurements. Publishes the
 org.shadowfetch.Firewatch1 D-Bus system service: sensor snapshots, the
 flame level + ELI (the single source Ember consumes), the humanized
-heat map, local model availability, storage health and
+heat map, storage health and
 thermal-throttle events. Part of Shadowfetch Linux 2.1.5 "Fire Edition".
 """
 
@@ -28,7 +28,7 @@ WHAT IT DOES
     SensorSnapshot   CPU/RAM/PSI, hwmon temps and fans, RAPL watts, GPUs
     FlameLevel       flame state + ELI + ELI-work (Ember's idle watchdog input)
     HeatMap          per-app resource rows with human display names
-    Models           Buzz shared-compute models on 127.0.0.1
+    Models           Empty compatibility field; local inference deferred
     StorageHealth    smartctl + nvme smart-log summaries, smartd warnings
     ThrottleEvents   CPU sysfs throttle-counter deltas, GPU throttle reasons
 
@@ -57,7 +57,6 @@ import struct
 import subprocess
 import sys
 import time
-import urllib.request
 
 try:
     import psutil
@@ -88,8 +87,6 @@ INFERNO_ELI = 85.0
 HOT_SUSTAIN_S = 10.0
 THROTTLE_HOLD_S = 30.0  # a throttle event keeps Inferno lit this long
 
-HTTP_TIMEOUT_S = 1.0    # Buzz poll: 127.0.0.1 only, 1 s, size-capped
-HTTP_BODY_CAP = 262144
 
 DESKTOP_DIRS = (
     "/usr/share/applications",
@@ -890,65 +887,6 @@ class HeatMap:
         self._pss_cache = cache
 
 
-# ---- Buzz shared-compute discovery + polling -------------------------------
-
-class BuzzModelWatcher:
-    """Read Buzz's OpenAI-compatible model list on loopback only."""
-
-    URL = "http://127.0.0.1:9337/v1/models"
-
-    def __init__(self):
-        self.models = []
-
-    @staticmethod
-    def _http_get():
-        request = urllib.request.Request(
-            BuzzModelWatcher.URL, headers={"User-Agent": "firewatchd"})
-        try:
-            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT_S) as response:
-                return response.read(HTTP_BODY_CAP)
-        except Exception:
-            return None
-
-    @classmethod
-    def _parse(cls, body):
-        try:
-            document = json.loads(body.decode("utf-8", "replace"))
-        except (AttributeError, UnicodeError, ValueError):
-            return []
-        rows = document.get("data") if isinstance(document, dict) else None
-        if not isinstance(rows, list):
-            return []
-        models = []
-        for raw in rows[:64]:
-            if not isinstance(raw, dict):
-                continue
-            name = raw.get("id")
-            if (not isinstance(name, str) or not name.strip()
-                    or len(name) > 256
-                    or any(ord(char) < 32 or ord(char) == 127 for char in name)):
-                continue
-            record = {
-                "runtime": "buzz-mesh",
-                "name": name.strip(),
-                "model": name.strip(),
-                "state": "available",
-                "port": 9337,
-            }
-            models.append(record)
-        return models
-
-    def poll(self):
-        body = self._http_get()
-        self.models = self._parse(body) if body is not None else []
-        return self.models
-
-    @staticmethod
-    def jobs():
-        # The model-list endpoint intentionally exposes no individual prompts.
-        return []
-
-
 # ---- storage health ---------------------------------------------------------
 
 class StorageHealth:
@@ -1054,7 +992,6 @@ class Collector:
         self.throttle = ThrottleWatcher(self.nvml)
         self.humanizer = Humanizer(systemd_desc_lookup)
         self.heatmap = HeatMap(self.humanizer)
-        self.models = BuzzModelWatcher()
         self.storage = StorageHealth()
         self.armed_lookup = armed_lookup or (lambda: False)
         psutil.cpu_percent(interval=None)   # prime the delta
@@ -1114,8 +1051,8 @@ def run_once():
         "flame": {"level": level, "eli": round(eli, 1),
                   "eli_work": round(eli_work, 1)},
         "heatmap": col.heatmap.sweep(),
-        "models": col.models.poll(),
-        "jobs": col.models.jobs(),
+        "models": [],
+        "jobs": [],
         "storage_health": col.storage.as_dict(),
         "throttle_events": list(col.throttle.events),
     }
@@ -1360,9 +1297,9 @@ def main():
         heat_json = json.dumps(rows)
         service.last_heatmap = heat_json
 
-        models = collector.models.poll()
+        models = []
         models_json = json.dumps({"models": models,
-                                  "jobs": collector.models.jobs()})
+                                  "jobs": []})
         service.last_models = models_json
 
         storage_changed = collector.storage.refresh()

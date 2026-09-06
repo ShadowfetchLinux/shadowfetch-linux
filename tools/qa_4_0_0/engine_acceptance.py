@@ -78,17 +78,17 @@ def main():
         cli('retry',bad['id'])
         record('bounded retry increments attempt',cli('run',bad['id'],expected=1)['attempt']==2)
         for relative in ('../outside','/etc/passwd'):
-            refused=cli('create','--kind','report','--workspace',workspace.name,'--title','Scope check','--prompt','test','--input',relative,expected=1)
+            refused=cli('create','--kind','media','--workspace',workspace.name,'--title','Scope check','--prompt','test','--input',relative,expected=1)
             record('scope refuses '+relative,'error' in refused)
         outside=output/'outside.txt'
         outside.write_text('private sentinel')
         (workspace/'escape.txt').symlink_to(outside)
-        refused=create(kind='report',input='escape.txt',expected=1)
+        refused=create(kind='media',input='escape.txt',expected=1)
         record('symlink input escapes refused','Symbolic links' in refused['error'])
         (workspace/'escape.txt').unlink()
         # Use installed Executor against an actual sleeping sandboxed process.
         # This measures cancellation of execution, not a mocked successful workflow.
-        running=create(kind='report',input='notes.md')
+        running=create(kind='media',input='notes.md')
         store=engine.Store()
         store.update(running['id'],state='running')
         executor=engine.Executor(store,store.get(running['id']))
@@ -112,7 +112,7 @@ def main():
         record('interrupted state requires explicit review',recovered['state']=='failed' and 'no automatic replay' in recovered['error'])
         # Parallel API writers use separate installed CLI processes/connections.
         def parallel(index):
-            args=['shadowfetch-missions','--json','create','--kind','report','--workspace',workspace.name,'--title','Concurrent '+str(index),'--prompt','Summarize','--input','notes.md']
+            args=['shadowfetch-missions','--json','create','--kind','media','--workspace',workspace.name,'--title','Concurrent '+str(index),'--prompt','Summarize','--input','notes.md']
             result=subprocess.run(args,capture_output=True,text=True,env=env,timeout=30)
             if result.returncode: raise AssertionError(result.stdout)
             return json.loads(result.stdout)['id']

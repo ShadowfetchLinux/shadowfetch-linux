@@ -136,7 +136,7 @@ def main():
                 cycle_start = time.monotonic()
                 cycle_deadline = cycle_start + 1020
                 try:
-                    item = mission("create", "--kind", "media", "--workspace", workspace.name, "--title", "QA verified audio export", "--prompt", "Export and decode-verify the selected audio.", "--runtime", "local", "--network", "none", "--input", "tone.wav")
+                    item = mission("create", "--kind", "media", "--workspace", workspace.name, "--title", "QA verified audio export", "--prompt", "Export and decode-verify the selected audio.", "--runtime", "offline", "--network", "none", "--input", "tone.wav")
                     active_id = item["id"]
                     if item['config']['timeout'] != 900:
                         raise ValueError('Installed production timeout default differs from declared 900 seconds')

@@ -1,5 +1,7 @@
 shadowfetch-defaults (4.0.0-1) umbra; urgency=medium
 
+  * Defer Buzz and local model integration; retain Grok, coding agents and workspaces.
+  * Retire only the old distro relay on upgrade/login while preserving user data.
   * Shadowfetch Linux 4.0 Mission Control release.
   * Integrate persistent missions, scoped execution and featured Grok Bot setup.
   * Bound desktop dirty writeback to 64 MiB background / 256 MiB writer limits.

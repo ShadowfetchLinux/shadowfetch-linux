@@ -2,7 +2,7 @@
 
 The palette is the one the 2.1.1 Control Center shipped with (deep graphite
 plus Umbra Gold); every 2.1.2 page draws from here so Ignite, Watch,
-Recover, Guide, Local AI, Drivers and Software & Updates read as one application.
+Recover, Guide, Workspaces, Drivers and Software & Updates read as one application.
 """
 
 from PyQt6.QtCore import Qt, QProcess, pyqtSignal

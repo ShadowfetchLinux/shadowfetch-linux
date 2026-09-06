@@ -3,7 +3,7 @@ Description=Shadowfetch Firewatch telemetry daemon
 Documentation=https://www.shadowfetchlinux.org/
 # Read-only against the system; the only writable path is /run/shadowfetch
 # (the smartd warning socket). Zero network traffic except polling
-# Buzz shared compute /v1/models on 127.0.0.1.
+# Local model service polling is deferred.
 After=dbus.service
 Wants=dbus.service
 

@@ -9,7 +9,7 @@ import json
 import dbus
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--app", default="buzz-desktop")
+parser.add_argument("--app", default="shadowfetch-control")
 parser.add_argument("--click")
 parser.add_argument("--focus-control", help="Focus one observed button, menu item or link")
 parser.add_argument("--fields", action="store_true", help="List editable field labels, never their values")

@@ -8,6 +8,8 @@
   "size_bytes": 0,
   "license": "",
   "min_ram_gb": 0,
-  "requires": ["none"],
-  "blurb": "Create a private project folder with instructions, tasks, durable memory, artifacts, logs, scratch space and skills. Open it with Buzz when the project is ready for collaboration."
+  "requires": [
+    "none"
+  ],
+  "blurb": "Create a private project folder with instructions, tasks, durable memory, artifacts, logs, scratch space and skills. Open it from Workspaces or select it for a mission."
 }

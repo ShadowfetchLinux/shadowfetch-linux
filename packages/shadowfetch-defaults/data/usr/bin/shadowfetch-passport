@@ -393,7 +393,7 @@ def _memory_check(facts: dict) -> tuple[dict, float | None]:
     if total < 4:
         status, summary = "attention", f"{total:g} GiB RAM detected; 4 GiB is the minimum target."
     elif total < 8:
-        status, summary = "note", f"{total:g} GiB RAM detected; the desktop will run, with limited local AI capacity."
+        status, summary = "note", f"{total:g} GiB RAM detected; the desktop will run, with limited capacity for large workloads."
     else:
         status, summary = "ready", f"{total:g} GiB RAM detected."
     return _check("memory", "Memory", status, summary, "local memory probe"), total
@@ -526,40 +526,6 @@ def _packages_check(facts: dict, live: bool) -> dict:
                   "local package and service probes")
 
 
-def _local_ai_check(hwscan: dict | None) -> dict:
-    if not isinstance(hwscan, dict):
-        return _check("local-ai", "Local AI", "unknown",
-                      "Local AI capacity could not be ranked.",
-                      "local Shadowfetch hardware scan", "local-ai", "Open Local AI")
-    verdict = hwscan.get("verdict") if isinstance(hwscan.get("verdict"), dict) else {}
-    sentence = str(verdict.get("sentence") or "").strip()
-    suffixes = verdict.get("suffixes") if isinstance(verdict.get("suffixes"), list) else []
-    missing_driver = any(
-        isinstance(gpu, dict) and "missing-driver" in (gpu.get("flags") or [])
-        for gpu in (hwscan.get("gpus") or [])
-    )
-    if not sentence:
-        return _check("local-ai", "Local AI", "unknown",
-                      "Local AI capacity could not be ranked.",
-                      "local Shadowfetch hardware scan", "local-ai", "Open Local AI")
-    summary = sentence
-    if suffixes:
-        if summary[-1] not in ".!?":
-            summary += "."
-        formatted_suffixes = []
-        for item in suffixes[:3]:
-            suffix = str(item).strip()
-            if not suffix:
-                continue
-            suffix = suffix[:1].upper() + suffix[1:]
-            if suffix[-1] not in ".!?":
-                suffix += "."
-            formatted_suffixes.append(suffix)
-        if formatted_suffixes:
-            summary += " " + " ".join(formatted_suffixes)
-    status = "attention" if missing_driver else "ready"
-    return _check("local-ai", "Local AI", status, summary[:420],
-                  "local Shadowfetch hardware scan", "local-ai", "Open Local AI")
 
 
 def privacy_issues(document: object) -> list[str]:
@@ -612,7 +578,6 @@ def build_passport(facts: dict, hwscan: dict | None, probes: dict,
         _storage_check(facts, probes, live),
         _recovery_check(facts, live),
         _packages_check(facts, live),
-        _local_ai_check(hwscan),
     ]
 
     statuses = [item["status"] for item in checks]

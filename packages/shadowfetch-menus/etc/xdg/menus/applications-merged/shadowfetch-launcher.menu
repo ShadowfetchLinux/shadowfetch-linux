@@ -159,7 +159,7 @@
 		</Include>
 	</Menu>
 
-	<!-- Local AI: Buzz, private workspaces and the Control Center front door. -->
+	<!-- Workspaces and the Control Center front door. -->
 	<Menu>
 		<Name>Shadowfetch-AI</Name>
 		<Directory>shadowfetch-local-ai.directory</Directory>
@@ -167,7 +167,6 @@
 			<Or>
 				<Category>X-Shadowfetch-AI</Category>
 				<Filename>shadowfetch-local-ai.desktop</Filename>
-				<Filename>shadowfetch-buzz.desktop</Filename>
 				<Filename>shadowfetch-welcome.desktop</Filename>
 			</Or>
 		</Include>

@@ -1,9 +1,9 @@
 [Desktop Entry]
 Type=Application
-Name=AI Workspaces
+Name=Workspaces
 Comment=Create private project folders with instructions, tasks and memory
 Exec=konsole -e bash -lc "shadowfetch-agent-workspace; exec bash"
 Icon=shadowfetch
 Terminal=false
-Categories=Development;X-Shadowfetch-AI;
-Keywords=AI;Buzz;workspace;tasks;memory;local;
+Categories=Development;
+Keywords=workspace;tasks;projects;

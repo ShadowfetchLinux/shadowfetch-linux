@@ -14,7 +14,9 @@
   "size_bytes": 33000000,
   "license": "Free software (Debian main)",
   "min_ram_gb": null,
-  "requires": ["none"],
+  "requires": [
+    "none"
+  ],
   "section": "ignition",
-  "blurb": "Workspace tooling for local AI: git, Python environments, rootless containers and the Vulkan GPU path. Buzz remains optional and handles open model selection and download in its native Compute settings."
+  "blurb": "Workspace tools: git, Python environments and rootless containers. Local model installation and inference are deferred in 4.0."
 }

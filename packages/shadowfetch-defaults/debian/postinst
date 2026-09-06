@@ -43,6 +43,14 @@ if [ "$1" = "configure" ] && command -v ufw >/dev/null 2>&1; then
     ufw limit OpenSSH >/dev/null 2>&1 || ufw limit 22/tcp >/dev/null 2>&1 || true
 fi
 
+# Retire only the previous distro relay for logged-in users. Offline users run
+# the same idempotent helper at their next desktop login. Keep failures visible
+# without breaking the unrelated package transaction.
+if [ "$1" = "configure" ] && [ -n "${2:-}" ]; then
+    /usr/libexec/shadowfetch-retire-buzz --all-users || \
+        echo "Shadowfetch relay retirement is pending; next desktop login retries." >&2
+fi
+
 #DEBHELPER#
 
 exit 0

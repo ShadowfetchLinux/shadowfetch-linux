@@ -6,7 +6,7 @@ same four production profiles:
 
 - **Software Studio**: Python, TypeScript, rootless containers, database tools,
   and a Dev Container-ready project template.
-- **AI Lab**: Buzz, JupyterLab, the Hugging Face CLI, model provenance, and GPU
+- **AI Lab**: JupyterLab, the Hugging Face CLI, model provenance, and GPU
   diagnostics. Model downloads remain explicit and are not embedded in the ISO.
 - **Production Ops**: Podman, Buildah, Skopeo, Ansible, runbooks, and deployment
   receipts.
@@ -41,18 +41,14 @@ Workbench. Give the mission a title, project folder, workflow and instructions.
 Use an existing project directly inside `~/Workspaces`; create one in
 Workbench first. Choose one of:
 
-- **Code & tests**: use a local Buzz model or your signed-in Codex CLI. Enter
+- **Code & tests**: use your signed-in Codex CLI. Enter
   the actual test program and arguments. Inspect changes and test receipts
   before accepting the result.
-- **Private report**: select text documents by their paths inside the project
-  and an installed local Buzz model. Inspect the report and its source
-  citations.
 - **Media export**: select media paths inside the project. The engine performs
   a deterministic FFmpeg export and records validation in its receipt.
 
 The connection selector makes external network access explicit. Codex needs
-Fire for its cloud connection; local model and deterministic media workflows
-can use Ice. A queued mission persists locally. Activity, Changes and Results
+Fire for its cloud connection; deterministic media workflows can use Ice. A queued mission persists locally. Activity, Changes and Results
 show its execution evidence. Failed and cancelled missions can be retried;
 completed work waits for your review. Restore changes uses the mission's local
 checkpoint and reports conflicts instead of silently overwriting newer work.
@@ -65,3 +61,14 @@ accepted; move or copy only the files you want the agent to use into a project.
 choice during Welcome. Its cloud tasks and account sign-in live in the official
 Grok Bot app. The Grok Build coding CLI is a separate tool. No API keys or app
 accounts are included in the distro.
+
+Buzz integration and local model execution are deferred in this release. Existing
+models, workspaces and vendor application data are preserved during upgrades.
+
+The upgrade disables the former distro relay and its automatic container restart.
+It stops only recognized Shadowfetch relay containers, keeping their volumes and
+images. Vendor Buzz Desktop, models, profiles, credentials and workspaces remain
+untouched. Custom service overrides or edited relay configurations are preserved.
+If the desktop user manager is unavailable, retirement retries once at the next
+login; failures remain visible in the session journal. The supported retirement
+helper is `/usr/libexec/shadowfetch-retire-buzz` (run as the desktop user).
