@@ -27,8 +27,15 @@ Existing historical receipts and outputs remain available for review and Undo.
 ## Configure the existing Codex adapter
 
 Install Codex using the supported Coding Agents setup first. Mission workers use
-API authentication, separately from an interactive Codex login. `CODEX_API_KEY`
-is preferred, with `OPENAI_API_KEY` as an existing environment fallback.
+a dedicated account login or API authentication. Run
+`shadowfetch-mission-account login` and complete the device sign-in, or use the
+Sign in button in the new-mission dialog. Check it with
+`shadowfetch-mission-account status`; sign out with `shadowfetch-mission-account logout`.
+This profile lives in private `~/.local/state/shadowfetch/mission-account` storage.
+Only approved cloud missions receive it, and refreshed credentials persist. Your
+normal Codex profile is not imported. Account operations wait for an idle account;
+a busy operation fails clearly. `CODEX_API_KEY` takes precedence when configured,
+with `OPENAI_API_KEY` as an existing environment fallback.
 
 The systemd user service loads this optional per-user file:
 `~/.config/shadowfetch/missions/codex.env`. Create its directory with mode 0700 and

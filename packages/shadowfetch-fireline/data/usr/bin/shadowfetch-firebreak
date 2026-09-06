@@ -112,6 +112,26 @@ def arguments(args, ws, sid):
     if net == "none":
         command += ["--unshare-net"]
     environment = {"HOME": "/home/agent", "USER": "agent", "LOGNAME": "agent", "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C.UTF-8", "XDG_CONFIG_HOME": "/home/agent/.config", "XDG_CACHE_HOME": "/home/agent/.cache", "XDG_STATE_HOME": "/home/agent/.local/state", "XDG_DATA_HOME": "/home/agent/.local/share", "SHADOWFETCH_FIREBREAK": sid, "SHADOWFETCH_FIREBREAK_WORKSPACE": ws.name, "TMPDIR": "/tmp", "PYTHONDONTWRITEBYTECODE": "1"}
+    if getattr(args, "codex_account", False):
+        if net != "allow":
+            raise Error("A Codex account grant requires explicit cloud network access")
+        locations = [Path("/usr/lib/shadowfetch/missions")]
+        locations += [parent / "packages/shadowfetch-missions/data/usr/lib/shadowfetch/missions" for parent in Path(__file__).resolve().parents]
+        module_dir = next((p for p in locations if (p / "sf_mission_account.py").is_file()), None)
+        if module_dir is None:
+            raise Error("Install Mission Control account support first")
+        sys.path.insert(0, str(module_dir))
+        from sf_mission_account import account_home, AccountError
+        try:
+            dedicated = account_home()
+        except AccountError as exc:
+            raise Error(str(exc)) from exc
+        if not (dedicated / "auth.json").is_file():
+            raise Error("Sign in with shadowfetch-mission-account login first")
+        if dedicated == ws or dedicated in ws.parents or ws in dedicated.parents:
+            raise Error("Mission account storage must not overlap the workspace")
+        command += ["--bind", str(dedicated), "/home/agent/.codex"]
+        environment["CODEX_HOME"] = "/home/agent/.codex"
     requested = set(args.credential_env)
     if args.keep_secrets:
         requested |= {name for name in CREDENTIALS if name in os.environ and name != "SSH_AUTH_SOCK"}
@@ -125,7 +145,7 @@ def arguments(args, ws, sid):
     for name, value in environment.items():
         command += ["--setenv", name, value]
     command += ["--", *args.agent_command]
-    return command, net, grants, sorted(requested)
+    return command, net, grants, sorted(requested | ({"codex-account"} if getattr(args, "codex_account", False) else set()))
 
 def limits(args):
     def apply():
@@ -215,6 +235,7 @@ def main(argv=None):
     execute.add_argument("--workspace", default="")
     execute.add_argument("--net", choices=("none", "allow"))
     execute.add_argument("--read", action="append", default=[], metavar="ABSOLUTE_PATH")
+    execute.add_argument("--codex-account", action="store_true", help="Grant the dedicated Mission Control account for an approved cloud task")
     execute.add_argument("--credential-env", action="append", default=[], metavar="NAME")
     execute.add_argument("--keep-secrets", action="store_true", help="Deprecated explicit provider credential pass-through")
     execute.add_argument("--no-checkpoint", action="store_true", help="For callers that already own a recovery checkpoint")

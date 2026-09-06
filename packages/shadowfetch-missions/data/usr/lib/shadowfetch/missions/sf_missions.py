@@ -411,10 +411,12 @@ class Executor:
     def event(self, name, detail=""):
         self.store.event(self.mid, name, detail)
 
-    def run_process(self, command, label, *, sandbox=True, env=None, input_path=None):
+    def run_process(self, command, label, *, sandbox=True, env=None, input_path=None, codex_account=False):
         self.check()
         if sandbox:
             wrapper = [executable("shadowfetch-firebreak"), "run", "--workspace", self.ws.name, "--net", self.mission["config"]["network"], "--no-checkpoint", "--memory-mb", "3072", "--cpu-seconds", str(self.mission["config"]["timeout"]), "--processes", "96"]
+            if codex_account:
+                wrapper.append("--codex-account")
             if env and "CODEX_API_KEY" in env:
                 wrapper.extend(["--credential-env", "CODEX_API_KEY"])
             resolved = shutil.which(command[0])
@@ -472,13 +474,25 @@ class Executor:
         if self.mission["config"]["runtime"] != "codex" or self.mission["config"]["network"] != "allow":
             raise MissionError("Codex requires an explicitly approved cloud mission")
         key = os.environ.get("CODEX_API_KEY") or os.environ.get("OPENAI_API_KEY")
+        account_context = contextlib.nullcontext()
         if not key:
-            raise MissionError("Codex API authentication is not configured for the mission worker. Save CODEX_API_KEY in ~/.config/shadowfetch/missions/codex.env (mode0600) and restart the idle shadowfetch-missions user service; host login/config folders are never copied")
-        command = [executable("codex"), "exec", "-c", 'shell_environment_policy.exclude=["CODEX_API_KEY","OPENAI_API_KEY"]', "-c", 'approval_policy="never"', "--skip-git-repo-check", "--sandbox", "read-only" if read_only else "workspace-write", "--json", "-"]
+            sys.path.insert(0, str(Path(__file__).resolve().parent))
+            from sf_mission_account import account_home, account_lock, AccountError
+            try:
+                dedicated = account_home()
+                if not (dedicated / "auth.json").is_file():
+                    raise AccountError("Sign in with shadowfetch-mission-account login first")
+                account_context = account_lock(dedicated)
+            except AccountError as exc:
+                raise MissionError("Codex authentication is not configured: " + str(exc)) from exc
+        command = [executable("codex"), "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral", "-c", 'cli_auth_credentials_store="file"', "-c", 'shell_environment_policy.exclude=["CODEX_API_KEY","OPENAI_API_KEY"]', "-c", 'approval_policy="never"', "--skip-git-repo-check", "--sandbox", "read-only" if read_only else "workspace-write", "--json", "-"]
         request = self.directory / "codex-request.txt"
         atomic(request, prompt)
         try:
-            code, tail, log = self.run_process(command, "codex", env={"CODEX_API_KEY": key}, input_path=request)
+            with account_context:
+                code, tail, log = self.run_process(command, "codex", env={"CODEX_API_KEY": key} if key else None, input_path=request, codex_account=not bool(key))
+        except RuntimeError as exc:
+            raise MissionError(str(exc)) from exc
         finally:
             request.unlink(missing_ok=True)
         if code:
@@ -771,9 +785,15 @@ def review(store, mid, decision):
 
 
 def capabilities():
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from sf_mission_account import account_home, AccountError
+    try:
+        dedicated_account_present = (account_home() / "auth.json").is_file()
+    except (AccountError, OSError):
+        dedicated_account_present = False
     credential_file = Path.home() / ".config/shadowfetch/missions/codex.env"
     credential_file_present = credential_file.is_file() and not credential_file.is_symlink() and credential_file.stat().st_uid == os.getuid() and not stat.S_IMODE(credential_file.stat().st_mode) & 0o077
-    return {"version": VERSION, "workspace_root": str(workspace_root()), "runtimes": {"offline": {"kinds": ["media"], "requires_network_approval": False}, "codex": {"kinds": ["code", "report"], "installed": bool(shutil.which("codex")), "api_key_configured": bool(os.environ.get("CODEX_API_KEY") or os.environ.get("OPENAI_API_KEY")), "worker_environment_file": str(credential_file), "worker_environment_file_present": credential_file_present, "configuration": "Save a user-owned0600 CODEX_API_KEY environment file, then restart the idle shadowfetch-missions user service. Presence does not prove the worker reloaded or authentication works.", "requires_network_approval": True, "authentication": "Worker API key required; key presence is not a verified login"}}, "tools": {name: bool(shutil.which(name)) for name in ("bwrap", "ffmpeg", "ffprobe", "shadowfetch-firebreak")}, "kinds": ["code", "report", "media"], "states": ["queued", "running", "waiting-review", "completed", "failed", "cancelled", "undone"], "max_attempts": 3, "max_parallel": 1, "local_ai": "deferred", "grok_bot": "Launch the official desktop cloud teammate separately; it has no supported mission CLI adapter"}
+    return {"version": VERSION, "workspace_root": str(workspace_root()), "runtimes": {"offline": {"kinds": ["media"], "requires_network_approval": False}, "codex": {"kinds": ["code", "report"], "installed": bool(shutil.which("codex")), "api_key_configured": bool(os.environ.get("CODEX_API_KEY") or os.environ.get("OPENAI_API_KEY")), "dedicated_account_present": dedicated_account_present, "worker_environment_file": str(credential_file), "worker_environment_file_present": credential_file_present, "configuration": "Run shadowfetch-mission-account login for a dedicated account, or save a user-owned0600 CODEX_API_KEY environment file and restart the idle worker. Credential presence does not verify authentication.", "requires_network_approval": True, "authentication": "Dedicated Codex account or worker API key; stored credentials are not a verified login"}}, "tools": {name: bool(shutil.which(name)) for name in ("bwrap", "ffmpeg", "ffprobe", "shadowfetch-firebreak")}, "kinds": ["code", "report", "media"], "states": ["queued", "running", "waiting-review", "completed", "failed", "cancelled", "undone"], "max_attempts": 3, "max_parallel": 1, "local_ai": "deferred", "grok_bot": "Launch the official desktop cloud teammate separately; it has no supported mission CLI adapter"}
 
 
 def worker(store, once=False):

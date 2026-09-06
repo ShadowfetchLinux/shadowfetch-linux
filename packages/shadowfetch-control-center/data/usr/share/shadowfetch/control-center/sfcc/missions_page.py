@@ -4,7 +4,7 @@ import shlex
 from pathlib import Path
 from urllib.parse import unquote
 
-from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtCore import Qt, QTimer, QUrl, QProcess
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFileDialog, QFormLayout,
@@ -83,6 +83,9 @@ class NewMissionDialog(QDialog):
         form.addRow("Provider", self.provider)
         self.provider_setup = label("", "detail", wrap=True)
         form.addRow("", self.provider_setup)
+        self.account_login = QPushButton("Sign in to Codex for missions…")
+        self.account_login.clicked.connect(self._login_account)
+        form.addRow("", self.account_login)
         self.network = QComboBox()
         self.network.addItem("Ice · no external network", "none")
         self.network.addItem("Fire · allow network for this mission", "allow")
@@ -134,12 +137,14 @@ class NewMissionDialog(QDialog):
         is_code = kind == "code"
         is_media = kind == "media"
         self.provider.setText("Offline FFmpeg export" if is_media else "Codex · cloud account required")
-        self.provider_setup.setText("" if is_media else "The mission worker needs CODEX_API_KEY in ~/.config/shadowfetch/missions/codex.env (private mode 0600). After changing it, restart the worker when idle: systemctl --user restart shadowfetch-missions.service. A saved file does not prove authentication.")
+        self.provider_setup.setText("" if is_media else "Sign in with your ChatGPT account for missions, or configure a private CODEX_API_KEY file at ~/.config/shadowfetch/missions/codex.env and restart the idle worker. Mission login is separate from your normal Codex profile; account access is granted only to approved cloud missions.")
         self.network.setEnabled(not is_media and theme.ELEMENT != "ice")
         self.network.setCurrentIndex(0 if is_media or theme.ELEMENT == "ice" else 1)
         self.tests.setEnabled(is_code)
         self.form.setRowVisible(self.tests, is_code)
         self.form.setRowVisible(self.provider_setup, not is_media)
+        self.form.setRowVisible(self.account_login, not is_media)
+        self.account_login.setEnabled(theme.ELEMENT != "ice")
         self.inputs.setPlaceholderText("One relative media path per line" if is_media else "One relative document path per line")
         self.workflow_note.setText({
             "code": "Provide a test command so the result can be checked. Shell syntax is not evaluated; enter a program and its arguments.",
@@ -181,6 +186,14 @@ class NewMissionDialog(QDialog):
                 raise ValueError("The test command cannot be empty.")
             args += ["--test-json", json.dumps(command)]
         return args
+
+    def _login_account(self):
+        if theme.ELEMENT == "ice":
+            self.error.setText("Switch to Fire deliberately before signing in to a cloud account.")
+            return
+        started, _ = QProcess.startDetached("konsole", ["--hold", "-e", "shadowfetch-mission-account", "login"])
+        if not started:
+            self.error.setText("Could not open Konsole. Run shadowfetch-mission-account login in a terminal.")
 
     def _submit(self):
         try:

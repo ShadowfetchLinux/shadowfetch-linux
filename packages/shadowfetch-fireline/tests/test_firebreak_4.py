@@ -47,6 +47,37 @@ class ScopeTests(unittest.TestCase):
         self.assertNotIn(["--ro-bind", "/", "/"], [command[i:i+3] for i in range(len(command))])
         self.assertNotIn("/etc/shadow", command)
         self.assertNotIn(str(Path.home()), command)
+    def test_account_grant_refused_offline(self):
+        with self.assertRaisesRegex(fb.Error, "explicit cloud"):
+            fb.arguments(self.args(codex_account=True), self.ws, "account-test")
+
+    def test_account_grant_is_dedicated_and_recorded(self):
+        module_dir = BASE.parent / "shadowfetch-missions/data/usr/lib/shadowfetch/missions"
+        sys.path.insert(0, str(module_dir))
+        import sf_mission_account as account
+        with patch.object(Path, "home", return_value=self.base):
+            dedicated = account.account_home(create=True)
+            auth = dedicated / "auth.json"
+            auth.write_text('{}')
+            auth.chmod(0o600)
+            command, net, grants, names = fb.arguments(self.args(net="allow", codex_account=True), self.ws, "account-test")
+        triples = [command[i:i+3] for i in range(len(command))]
+        self.assertIn(["--bind", str(dedicated), "/home/agent/.codex"], triples)
+        self.assertIn(["--setenv", "CODEX_HOME", "/home/agent/.codex"], triples)
+        self.assertEqual(names, ["codex-account"])
+        self.assertNotIn(str(dedicated.parent), command)
+        self.assertNotIn(str(self.base / ".codex"), command)
+        self.assertNotIn(str(dedicated.parent / "mission-account.lock"), command)
+
+    def test_account_grant_requires_credentials(self):
+        module_dir = BASE.parent / "shadowfetch-missions/data/usr/lib/shadowfetch/missions"
+        sys.path.insert(0, str(module_dir))
+        import sf_mission_account as account
+        with patch.object(Path, "home", return_value=self.base):
+            account.account_home(create=True)
+            with self.assertRaisesRegex(fb.Error, "Sign in"):
+                fb.arguments(self.args(net="allow", codex_account=True), self.ws, "account-test")
+
     def test_individual_credential_only(self):
         with patch.dict(os.environ, {"CODEX_API_KEY":"designated-test-key", "UNRELATED_SECRET":"private"}):
             command, _, _, names = fb.arguments(self.args(credential_env=["CODEX_API_KEY"]), self.ws, "test")
