@@ -29,7 +29,7 @@ ck 'selected document readable' approved "$(run --net none --read "$fixture/sele
 ck 'read parent stays hidden' hidden "$(run --net none --read "$fixture/selected-document" -- sh -c 'test ! -r "$1" && echo hidden' sh "$fixture/outside-secret")"
 ck 'root shadow hidden' hidden "$(run --net none -- sh -c 'test ! -e /etc/shadow && echo hidden')"
 ck 'network namespace isolated' 1 "$(run --net none -- sh -c 'ip -o link show | wc -l' | tr -d ' ')"
-ck 'memory resource limit' 524288 "$(run --net none --memory-mb 512 -- sh -c 'ulimit -v')"
+ck 'virtual address not pinned to RSS' unlimited "$(run --net none --memory-mb 512 -- sh -c 'ulimit -v')"
 if run --net nonsense -- true; then ck 'invalid network rejected' yes no; else ck 'invalid network rejected' yes yes; fi
 out=$("$FB" run --workspace w --net none -- sh -c 'echo CLOBBER > keep.txt; echo junk > junk.txt' 2>/dev/null)
 cid=$(printf '%s\n' "$out" | awk '$1=="checkpoint" {print $2;exit}')

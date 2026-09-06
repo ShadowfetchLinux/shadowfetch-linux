@@ -150,7 +150,10 @@ def arguments(args, ws, sid):
 def limits(args):
     def apply():
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        resource.setrlimit(resource.RLIMIT_AS, (args.memory_mb * 1024**2, args.memory_mb * 1024**2))
+        # Do not pin RLIMIT_AS to the RSS budget. Codex code-mode-host's V8
+        # sandbox reserves ~1 TiB of virtual address space on first execute;
+        # a 3072 MiB AS cap kills it with SIGTRAP. Physical memory stays
+        # capped by the systemd scope MemoryMax below.
         resource.setrlimit(resource.RLIMIT_CPU, (args.cpu_seconds, args.cpu_seconds + 1))
         resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
         resource.setrlimit(resource.RLIMIT_FSIZE, (8 * 1024**3, 8 * 1024**3))
