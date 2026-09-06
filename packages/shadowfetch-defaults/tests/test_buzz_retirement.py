@@ -50,6 +50,10 @@ class RetirementTests(unittest.TestCase):
                 if args[3] == '{{.State.Running}}':
                     out = 'false'
                 else:
+                    # Podman exposes .ID, unlike the Docker-style .Id spelling.
+                    # The installed Podman rejects unknown template fields.
+                    if args[3] != '[{{json .ID}},{{json .Name}},{{json .Config.Labels}}]':
+                        return subprocess.CompletedProcess(args, 125, '', 'invalid inspect template')
                     ident = args[-1]
                     role = 'redis' if ident == 'a'*64 else 'unrelated'
                     out = json.dumps([ident, f'shadowfetch-buzz_{role}_1', {

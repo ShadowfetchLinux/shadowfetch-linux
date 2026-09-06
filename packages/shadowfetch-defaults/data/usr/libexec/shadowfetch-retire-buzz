@@ -90,7 +90,7 @@ def retire_user(home, uid):
     retired = []
     for ident in sorted(ids):
         row = json.loads(checked(['podman', 'inspect', '--format',
-                                  '[{{json .Id}},{{json .Name}},{{json .Config.Labels}}]', ident]))
+                                  '[{{json .ID}},{{json .Name}},{{json .Config.Labels}}]', ident]))
         if not owned_container(row):
             continue
         # Do not remove containers, volumes, images, models, profiles or secrets.
