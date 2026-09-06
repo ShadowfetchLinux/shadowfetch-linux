@@ -8,7 +8,6 @@ ROOT = Path(__file__).resolve().parents[1]
 PROGRAM_VERSIONS = {
     'packages/shadowfetch-defaults/data/usr/bin/shadowfetch-element': 'VERSION',
     'packages/shadowfetch-fireline/data/usr/bin/shadowfetch-firebreak': 'VERSION',
-    'packages/shadowfetch-fireline/data/usr/bin/shadowfetch-ai-ignition': 'VERSION',
     'packages/shadowfetch-fireline/data/usr/lib/shadowfetch/mcp/sf_mcp.py': 'SERVER_VERSION',
     'packages/shadowfetch-missions/data/usr/lib/shadowfetch/missions/sf_missions.py': 'VERSION',
 }
@@ -34,7 +33,7 @@ def stamp(version: str) -> None:
     path = ROOT / 'packages/shadowfetch-themes/data/usr/share/sddm/themes/umbra/metadata.desktop'
     text = re.sub(r'(?m)^Version=.*$', f'Version={version}', path.read_text())
     path.write_text(text)
-    for filename in ('LICENSES.md', 'SOURCES.md', 'BUZZ.md'):
+    for filename in ('LICENSES.md', 'SOURCES.md'):
         path = ROOT / 'packages/shadowfetch-defaults/data/usr/share/doc/shadowfetch' / filename
         text = re.sub(r'(Shadowfetch Linux\s+)[0-9]+\.[0-9]+\.[0-9]+', lambda match: match[1] + version, path.read_text())
         path.write_text(text)

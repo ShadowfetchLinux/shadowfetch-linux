@@ -9,6 +9,11 @@ SPEC.loader.exec_module(MODULE)
 
 
 class StampTests(unittest.TestCase):
+    def test_stamp_targets_exist_in_release_source(self):
+        for name in MODULE.PROGRAM_VERSIONS:
+            with self.subTest(path=name):
+                self.assertTrue((MODULE.ROOT / name).is_file())
+
     def test_stamps_identity_without_replacing_upstream_versions(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -17,7 +22,6 @@ class StampTests(unittest.TestCase):
                 'packages/shadowfetch-themes/data/usr/share/sddm/themes/umbra/metadata.desktop': '[SddmGreeterTheme]\nVersion=3.5.0\nQtVersion=6.8.2\n',
                 'packages/shadowfetch-defaults/data/usr/share/doc/shadowfetch/LICENSES.md': '# Shadowfetch Linux 3.5.0\nCodex 0.150.1\n',
                 'packages/shadowfetch-defaults/data/usr/share/doc/shadowfetch/SOURCES.md': '# Shadowfetch Linux 3.5.0\nVendor 0.43.0\n',
-                'packages/shadowfetch-defaults/data/usr/share/doc/shadowfetch/BUZZ.md': '# Shadowfetch Linux 3.5.0\nBuzz 0.5.17\n',
             }
             for name, variable in MODULE.PROGRAM_VERSIONS.items():
                 files[name] = variable + ' = "3.5.0"\nUPSTREAM_VERSION = "0.43.0"\n'
