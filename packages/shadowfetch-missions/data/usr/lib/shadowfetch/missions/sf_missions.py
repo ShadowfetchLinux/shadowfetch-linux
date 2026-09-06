@@ -361,7 +361,9 @@ def checkpoint_call(name, ws, **kwargs):
         raise MissionError(f"Workspace {name} failed: {clean(exc)}")
 
 def executable(name):
-    found = shutil.which(name)
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from sf_mission_account import codex_executable
+    found = codex_executable() if name == "codex" else shutil.which(name)
     if found:
         return found
     for parent in Path(__file__).resolve().parents:
@@ -786,14 +788,14 @@ def review(store, mid, decision):
 
 def capabilities():
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from sf_mission_account import account_home, AccountError
+    from sf_mission_account import account_home, AccountError, codex_executable
     try:
         dedicated_account_present = (account_home() / "auth.json").is_file()
     except (AccountError, OSError):
         dedicated_account_present = False
     credential_file = Path.home() / ".config/shadowfetch/missions/codex.env"
     credential_file_present = credential_file.is_file() and not credential_file.is_symlink() and credential_file.stat().st_uid == os.getuid() and not stat.S_IMODE(credential_file.stat().st_mode) & 0o077
-    return {"version": VERSION, "workspace_root": str(workspace_root()), "runtimes": {"offline": {"kinds": ["media"], "requires_network_approval": False}, "codex": {"kinds": ["code", "report"], "installed": bool(shutil.which("codex")), "api_key_configured": bool(os.environ.get("CODEX_API_KEY") or os.environ.get("OPENAI_API_KEY")), "dedicated_account_present": dedicated_account_present, "worker_environment_file": str(credential_file), "worker_environment_file_present": credential_file_present, "configuration": "Run shadowfetch-mission-account login for a dedicated account, or save a user-owned0600 CODEX_API_KEY environment file and restart the idle worker. Credential presence does not verify authentication.", "requires_network_approval": True, "authentication": "Dedicated Codex account or worker API key; stored credentials are not a verified login"}}, "tools": {name: bool(shutil.which(name)) for name in ("bwrap", "ffmpeg", "ffprobe", "shadowfetch-firebreak")}, "kinds": ["code", "report", "media"], "states": ["queued", "running", "waiting-review", "completed", "failed", "cancelled", "undone"], "max_attempts": 3, "max_parallel": 1, "local_ai": "deferred", "grok_bot": "Launch the official desktop cloud teammate separately; it has no supported mission CLI adapter"}
+    return {"version": VERSION, "workspace_root": str(workspace_root()), "runtimes": {"offline": {"kinds": ["media"], "requires_network_approval": False}, "codex": {"kinds": ["code", "report"], "installed": bool(codex_executable()), "api_key_configured": bool(os.environ.get("CODEX_API_KEY") or os.environ.get("OPENAI_API_KEY")), "dedicated_account_present": dedicated_account_present, "worker_environment_file": str(credential_file), "worker_environment_file_present": credential_file_present, "configuration": "Run shadowfetch-mission-account login for a dedicated account, or save a user-owned0600 CODEX_API_KEY environment file and restart the idle worker. Credential presence does not verify authentication.", "requires_network_approval": True, "authentication": "Dedicated Codex account or worker API key; stored credentials are not a verified login"}}, "tools": {name: bool(shutil.which(name)) for name in ("bwrap", "ffmpeg", "ffprobe", "shadowfetch-firebreak")}, "kinds": ["code", "report", "media"], "states": ["queued", "running", "waiting-review", "completed", "failed", "cancelled", "undone"], "max_attempts": 3, "max_parallel": 1, "local_ai": "deferred", "grok_bot": "Launch the official desktop cloud teammate separately; it has no supported mission CLI adapter"}
 
 
 def worker(store, once=False):

@@ -21,6 +21,15 @@ class AccountStorageTests(unittest.TestCase):
         self.patch.start()
         self.addCleanup(self.patch.stop)
 
+    def test_fresh_install_without_desktop_path_refresh(self):
+        binary = self.home / '.local/bin/codex'
+        binary.parent.mkdir(parents=True)
+        binary.write_text('#!/bin/sh\nexit 0\n')
+        with patch.dict(os.environ, {'PATH': '/nonexistent'}):
+            self.assertIsNone(account.codex_executable())
+            binary.chmod(0o755)
+            self.assertEqual(account.codex_executable(), str(binary))
+
     def test_missing_login_does_not_create_storage(self):
         with self.assertRaises(account.AccountError):
             account.account_home()

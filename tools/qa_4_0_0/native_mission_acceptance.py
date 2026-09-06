@@ -44,7 +44,7 @@ def main():
 
     try:
         capabilities = cli('capabilities')
-        check('Codex CLI installed and API key configured for this QA process', capabilities['runtimes']['codex']['installed'] and capabilities['runtimes']['codex']['api_key_configured'])
+        check('Codex CLI installed and credentials available; real inference verified below', capabilities['runtimes']['codex']['installed'] and (capabilities['runtimes']['codex']['api_key_configured'] or capabilities['runtimes']['codex'].get('dedicated_account_present', False)))
         if args.kind == 'code':
             (scope / 'title.py').write_text('def normalize_title(title):\n    return title\n')
             tests = "from title import normalize_title\nassert normalize_title('  Shadowfetch \\n Linux  ') == 'Shadowfetch Linux'\nassert normalize_title('Ice\\tEdition') == 'Ice Edition'\nassert normalize_title('  café   日本語 ') == 'café 日本語'\nassert normalize_title('   ') == ''\nprint('4 independent normalization checks passed')\n"

@@ -13,6 +13,11 @@ class AccountError(RuntimeError):
     pass
 
 
+def codex_executable():
+    """Find a first-run install before the desktop has refreshed its PATH."""
+    return shutil.which('codex') or shutil.which('codex', path=str(Path.home() / '.local/bin'))
+
+
 def account_home(*, create=False):
     home = Path.home()
     parent = home
@@ -65,7 +70,7 @@ def main(argv=None):
     try:
         if os.getuid() == 0:
             raise AccountError('Run this as your desktop user, not root')
-        codex = shutil.which('codex')
+        codex = codex_executable()
         if not codex:
             raise AccountError('Install Codex from the agent setup first')
         home = account_home(create=args.action == 'login')
