@@ -8,7 +8,7 @@ from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFileDialog, QFormLayout,
-    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+    QGridLayout, QHBoxLayout, QLabel, QLayout, QLineEdit, QListWidget, QListWidgetItem,
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSplitter,
     QTabWidget, QVBoxLayout, QWidget,
 )
@@ -50,7 +50,9 @@ class NewMissionDialog(QDialog):
         scroll.setWidgetResizable(True)
         body = QWidget()
         form = QFormLayout(body)
-        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        self.form = form
+        form.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         form.setVerticalSpacing(10)
         self.kind = QComboBox()
         for key, name in KINDS.items():
@@ -136,6 +138,8 @@ class NewMissionDialog(QDialog):
         self.network.setEnabled(not is_media and theme.ELEMENT != "ice")
         self.network.setCurrentIndex(0 if is_media or theme.ELEMENT == "ice" else 1)
         self.tests.setEnabled(is_code)
+        self.form.setRowVisible(self.tests, is_code)
+        self.form.setRowVisible(self.provider_setup, not is_media)
         self.inputs.setPlaceholderText("One relative media path per line" if is_media else "One relative document path per line")
         self.workflow_note.setText({
             "code": "Provide a test command so the result can be checked. Shell syntax is not evaluated; enter a program and its arguments.",

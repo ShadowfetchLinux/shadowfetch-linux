@@ -1866,7 +1866,16 @@ class WelcomePage(QWidget):
     def __init__(self, on_next, on_ignition=None, on_catalog=None,
                  on_guide=None, on_workbench=None):
         super().__init__()
-        lay = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        lay = QVBoxLayout(content)
+        lay.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
         lay.setContentsMargins(40, 34, 40, 30)
         lay.setSpacing(14)
         version_file = Path("/usr/share/shadowfetch/version")
@@ -1956,11 +1965,11 @@ class ElementPage(QWidget):
             ("fire", "Fire — run hot", "#D8A24A",
              "Umbra gold and the ember desktop. Firebreak agent sandboxes may use "
              "the network by default. Setup leads with creative, gaming and "
-             "full-auto agent profiles."),
+             "coding-agent profiles."),
             ("ice", "Ice — run cold", "#4AA2D8",
              "Glacier azure and the frost desktop. Firebreak agent sandboxes start "
              "with NO network — you grant it per session, deliberately. Setup leads "
-             "with the private developer and fully-local AI profiles."),
+             "with private development and offline workspace profiles. Local model inference is deferred in 4.0."),
         )
         self._radios = {}
         group = QButtonGroup(self)

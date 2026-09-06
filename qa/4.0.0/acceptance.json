@@ -54,7 +54,7 @@
       "status": "pending",
       "title": "Fire live desktop and Mission Control render and work",
       "evidence": [],
-      "acceptance_scope": "Exact candidate6 live Calamares desktop and installed Fire Mission Control, real local code and cited report missions with inspected artifacts, actual deterministic media Accept/Restore, native model verification, and prominent official Grok startup/setup/native application captures."
+      "acceptance_scope": "Exact final-image live desktop, installed Fire Mission Control and first-run setup render and work. Verify real media review/Undo, featured Grok startup/setup, and installed coding-agent choices. Authenticated code and cited report results are required by MISSION-01."
     },
     {
       "id": "ICE-01",
@@ -64,7 +64,7 @@
       "status": "pending",
       "title": "Ice desktop, task network isolation and offline media/workspaces",
       "evidence": [],
-      "acceptance_scope": "Fresh native Calamares BIOS8GiB Fire and UEFI4GiB Ice installations with normal PAM login, distinct machine/boot identities, exact installed payloads, software graphics and successful corrected pickup. Ice policy and real native inference were separately exercised in the8GiB Fire install, then exact original Fire element bytes/metadata restored."
+      "acceptance_scope": "Exact final-image installed Ice boots and operates offline. Verify Ice element policy, default sandbox network isolation, offline workspace creation and real media review/Undo. Local model installation and inference are deferred by user decision."
     },
     {
       "id": "INSTALL-01",
@@ -74,7 +74,7 @@
       "status": "pending",
       "title": "Fresh BIOS and UEFI Calamares installs boot from disk",
       "evidence": [],
-      "acceptance_scope": "Fresh native Calamares BIOS8GiB Fire and UEFI4GiB Ice installations with normal PAM login, distinct machine/boot identities, exact installed payloads, software graphics and successful corrected pickup. Ice policy and real native inference were separately exercised in the8GiB Fire install, then exact original Fire element bytes/metadata restored."
+      "acceptance_scope": "Fresh native Calamares BIOS Fire and UEFI Ice installations from the exact final ISO boot from disk with normal PAM login, distinct machine and boot identities, correct installed payloads, desktop rendering and working crash pickup. Record actual VM resources and offline installation conditions."
     },
     {
       "id": "UPGRADE-01",
@@ -84,7 +84,7 @@
       "status": "pending",
       "title": "Existing 3.5 installed system upgrades with preserved user data and working recovery",
       "evidence": [],
-      "acceptance_scope": "Exact candidate6 upgrade, real Phoenix rollback and re-upgrade with preserved user data; verified project diff/Undo and failure recovery are included for RECOVERY-01. Native inference and full stress are separate cases."
+      "acceptance_scope": "An existing 3.5 installation upgrades using the final packages, preserving user data. Verify scoped Buzz retirement without deleting user models, volumes, credentials or overrides; test real Phoenix rollback and re-upgrade."
     },
     {
       "id": "MISSION-01",
@@ -94,7 +94,7 @@
       "status": "pending",
       "title": "Real code, cited document and media missions complete with validated artifacts",
       "evidence": [],
-      "acceptance_scope": "Exact candidate6 live Calamares desktop and installed Fire Mission Control, real local code and cited report missions with inspected artifacts, actual deterministic media Accept/Restore, native model verification, and prominent official Grok startup/setup/native application captures."
+      "acceptance_scope": "On the final installed release, complete real authenticated code and cited report missions through a supported cloud provider with inspected outputs, passing code tests and verified source citations. Complete real offline media missions and native Accept/Restore. Local inference is deferred; mocks and key-presence checks cannot satisfy cloud execution."
     },
     {
       "id": "DURABLE-01",
@@ -104,7 +104,7 @@
       "status": "pending",
       "title": "Cancellation, retry, interrupted service recovery and no duplicated side effects",
       "evidence": [],
-      "acceptance_scope": "Fresh exact-image installed Ice: real cancellation, persisted queue/retry, interrupted private worker without automatic replay, mandatory checkpoint failure and preserved source. Native inference and sustained load remain separate."
+      "acceptance_scope": "Final installed system: real cancellation, persisted queue/retry, interrupted private worker without automatic replay, mandatory checkpoint failure and preserved source. Authenticated inference and sustained load remain separate requirements."
     },
     {
       "id": "SCOPE-01",
@@ -124,7 +124,7 @@
       "status": "pending",
       "title": "Official Grok Bot package integrity, installation, native launch, callback registration and observed account boundary",
       "evidence": [],
-      "acceptance_scope": "Official pinned native installation, package integrity, actual renderer sandbox, callback registration and signed vendor update source passed on the fresh installed image. Initial sign-in and later pre-authentication connection-error states are preserved. Authentication and cloud tasks remain unverified."
+      "acceptance_scope": "Verify official pinned native installation, package integrity, actual renderer sandbox, callback registration and signed vendor update source on the final installed image. Preserve observed account and connection boundaries; do not claim authenticated cloud tasks without direct evidence."
     },
     {
       "id": "GROK-VISUAL-01",
@@ -134,7 +134,7 @@
       "status": "pending",
       "title": "Prominent actual Grok Bot screenshot plus featured installer and desktop entry",
       "evidence": [],
-      "acceptance_scope": "Exact candidate6 live Calamares desktop and installed Fire Mission Control, real local code and cited report missions with inspected artifacts, actual deterministic media Accept/Restore, native model verification, and prominent official Grok startup/setup/native application captures."
+      "acceptance_scope": "Prominent unmodified native Grok Bot sign-in screenshot plus featured first-run selection and desktop entry on the final image. Error or Retry screens are QA evidence, not the marketing hero."
     },
     {
       "id": "RESOURCE-01",
@@ -154,7 +154,7 @@
       "status": "pending",
       "title": "Project diff/undo and supported system rollback verified after injected failures",
       "evidence": [],
-      "acceptance_scope": "Exact candidate6 upgrade, real Phoenix rollback and re-upgrade with preserved user data; verified project diff/Undo and failure recovery are included for RECOVERY-01. Native inference and full stress are separate cases."
+      "acceptance_scope": "Final-package upgrade, real Phoenix rollback and re-upgrade preserve user data. Verify actual project diff/Undo and failed/interrupted mission recovery. Authenticated inference and full stress remain separate."
     },
     {
       "id": "STRESS-01",
@@ -174,7 +174,7 @@
       "status": "pending",
       "title": "Fire/Ice, Welcome, Mission Control, Grok Bot, installer and under-load screenshots at both resolutions",
       "evidence": [],
-      "acceptance_scope": "Twenty actual native screenshots, ten scenes at1920x1080 and true1366x768, with independent original-image review and exact capture provenance. Two additional native local-model screenshots document the single midpoint check."
+      "acceptance_scope": "Twenty actual native screenshots covering ten release scenes at1920x1080 and true1366x768, with original-image review and exact capture provenance. Include Grok startup/native sign-in, Mission Control and offline Workspaces; omit retired local-model scenes."
     },
     {
       "id": "EVIDENCE-01",

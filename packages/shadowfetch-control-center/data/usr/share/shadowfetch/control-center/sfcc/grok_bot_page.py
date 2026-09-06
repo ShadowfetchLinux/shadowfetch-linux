@@ -122,6 +122,10 @@ class GrokBotPage(QWidget):
             self.state.setText("Ready to install the official native app")
             self.state.setObjectName("statusWarn")
             self.progress.setText(f"Download: {fmt_bytes(data.get('download_bytes'))} · Eligible account and plan required")
+        if theme.ELEMENT == "ice":
+            self.state.setText("Ice is active — Grok Bot cloud setup is paused")
+            self.state.setObjectName("statusWarn")
+            self.progress.setText("Switch to Fire deliberately to install or open Grok Bot. Offline workspaces remain available in Ice.")
         self.state.style().unpolish(self.state)
         self.state.style().polish(self.state)
         self.install.setText("Installed" if ready else "Repair installation" if data.get("installed") else "Install Grok Bot")
