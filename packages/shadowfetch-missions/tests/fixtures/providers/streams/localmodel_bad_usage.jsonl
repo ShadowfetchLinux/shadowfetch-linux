@@ -1,0 +1,12 @@
+{"event":"session.started","session":"s-usage","model":"phi-3-mini-q4"}
+{"event":"token","delta":"The "}
+{"event":"token","delta":"launch "}
+{"event":"token","delta":"is "}
+{"event":"token","delta":"Friday "}
+{"event":"token","delta":"and "}
+{"event":"token","delta":"the "}
+{"event":"token","delta":"release "}
+{"event":"token","delta":"contains "}
+{"event":"token","delta":"three "}
+{"event":"token","delta":"workflows."}
+{"event":"generation.done","stop":"eos","usage":"not-a-dict"}

@@ -1,0 +1,12 @@
+{"event":"session.started","session":"s-rep-1","model":"phi-3-mini-q4"}
+{"event":"session.started","session":"s-rep-1","model":"phi-3-mini-q4"}
+{"event":"token","delta":"First "}
+{"event":"token","delta":"answer."}
+{"event":"generation.done","stop":"eos","usage":{"completion_tokens":2}}
+{"event":"generation.done","stop":"eos","usage":{"completion_tokens":2}}
+{"event":"session.started","session":"s-rep-2","model":"phi-3-mini-q4"}
+{"event":"token","delta":"Second "}
+{"event":"token","delta":"answer."}
+{"event":"generation.done","stop":"eos","usage":{"completion_tokens":2}}
+{"event":"session.ended","session":"s-rep-2"}
+{"event":"session.ended","session":"s-rep-2"}

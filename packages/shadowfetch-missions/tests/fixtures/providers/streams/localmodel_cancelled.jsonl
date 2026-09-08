@@ -1,0 +1,5 @@
+{"event":"session.started","session":"s-cancel","model":"phi-3-mini-q4"}
+{"event":"token","delta":"The launch "}
+{"event":"token","delta":"is "}
+{"event":"heartbeat","elapsed_ms":900}
+{"event":"cancelled","reason":"client-abort"}

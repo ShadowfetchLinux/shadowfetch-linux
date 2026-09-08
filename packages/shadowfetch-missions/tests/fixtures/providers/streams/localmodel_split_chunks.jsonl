@@ -1,0 +1,4 @@
+{"event":"session.started","session":"s-split","model":"phi-3-mini-q4"}
+{"event":"token","delta":"The "}
+{"event":"token","delta":"launch "}
+{"event":"token","del

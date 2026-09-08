@@ -1,0 +1,15 @@
+{"event":"session.started","session":"s-uni","model":"qwen2.5-7b"}
+{"event":"token","delta":"日本"}
+{"event":"token","delta":"語の"}
+{"event":"token","delta":"テキスト "}
+{"event":"token","delta":"🐛"}
+{"event":"token","delta":"‍"}
+{"event":"token","delta":"🔥"}
+{"event":"token","delta":" "}
+{"event":"token","delta":"e"}
+{"event":"token","delta":"́"}
+{"event":"token","delta":"cole "}
+{"event":"token","delta":"‏مرحبا‎ "}
+{"event":"token","delta":"𝕊"}
+{"event":"token","delta":"hadowfetch"}
+{"event":"generation.done","stop":"eos","usage":{"completion_tokens":13}}

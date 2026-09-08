@@ -1,0 +1,7 @@
+{"event":"session.started","session":"s-empty","model":"phi-3-mini-q4"}
+{"event":"token","delta":""}
+
+{"event":"token","delta":""}
+   
+{"event":"token","delta":""}
+{"event":"generation.done","stop":"eos","usage":{"completion_tokens":0}}

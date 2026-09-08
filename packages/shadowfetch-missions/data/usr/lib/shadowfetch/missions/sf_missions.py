@@ -8,6 +8,7 @@ media exports run offline. Local AI is deferred for this release.
 """
 from __future__ import annotations
 import argparse
+import codecs
 import contextlib
 import datetime as dt
 import difflib
@@ -34,6 +35,11 @@ ACTIVE = ("queued", "running")
 FINAL = ("completed", "undone")
 MAX_TEXT = 200_000
 MAX_OUTPUT = 2_000_000
+# Written between the retained head and the retained tail when a provider
+# out-produces MAX_OUTPUT. Not JSON, so an adapter parsing records sees an
+# unparseable line -- which every adapter already treats as a log line --
+# rather than a plausible-looking record that was never emitted.
+TRUNCATION_NOTE = b"--- shadowfetch: output truncated; tail follows ---"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sf_redact
 from sf_providers import (LEGACY_KIND_CAPABILITY, CAPABILITY_LEGACY_KIND,
@@ -734,34 +740,70 @@ class Executor:
         # reason the shared redactor is stateful rather than a plain function.
         redactor = sf_redact.StreamRedactor(
             values=sf_redact.credential_values(process_env))
+        # ONE decoder for the life of the process. Decoding each 65536-byte read
+        # on its own splits any multi-byte character that straddles a read
+        # boundary into replacement characters -- a euro sign became three
+        # U+FFFD and the turn still succeeded, so the person was shown corrupt
+        # text with no indication anything was wrong. Neither shipped provider
+        # emits enough non-ASCII to hit it; a token-streaming one does constantly.
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
         selector = selectors.DefaultSelector()
         selector.register(proc.stdout, selectors.EVENT_READ)
+        code = None
         try:
             with log.open("wb") as stream:
-                while selector.get_map():
-                    self.check()
-                    for key, _ in selector.select(timeout=.2):
-                        block = os.read(key.fileobj.fileno(), 65536)
-                        if not block:
-                            selector.unregister(key.fileobj)
-                            continue
-                        tail.extend(block)
-                        del tail[:-12000]
-                        if size < MAX_OUTPUT:
-                            safe = redactor.feed_bytes(
-                                clean(block.decode("utf-8", "replace")).encode())
-                            stream.write(safe[:MAX_OUTPUT - size])
-                            size += len(safe)
-                code = proc.wait(timeout=3)
-                # Whatever is not flushed is never returned.
-                remainder = redactor.flush_bytes()
-                if remainder and size < MAX_OUTPUT:
-                    stream.write(remainder[:MAX_OUTPUT - size])
-                    size += len(remainder)
+                try:
+                    while selector.get_map():
+                        self.check()
+                        for key, _ in selector.select(timeout=.2):
+                            block = os.read(key.fileobj.fileno(), 65536)
+                            if not block:
+                                selector.unregister(key.fileobj)
+                                continue
+                            tail.extend(block)
+                            del tail[:-12000]
+                            if size < MAX_OUTPUT:
+                                safe = redactor.feed_bytes(
+                                    clean(decoder.decode(block)).encode())
+                                stream.write(safe[:MAX_OUTPUT - size])
+                                size += len(safe)
+                    code = proc.wait(timeout=3)
+                finally:
+                    # ALWAYS flush. StreamRedactor holds back a 20608-character
+                    # overlap so a secret cannot hide on a block boundary, and
+                    # whatever is not flushed is never returned. This used to run
+                    # only on the normal path, so cancelling a generation shorter
+                    # than the overlap wrote a log of exactly zero bytes: the
+                    # person was shown nothing of what the provider had produced,
+                    # at the one moment they most wanted to see it.
+                    remainder = redactor.feed_bytes(
+                        clean(decoder.decode(b"", final=True)).encode())
+                    remainder += redactor.flush_bytes()
+                    if remainder and size < MAX_OUTPUT:
+                        stream.write(remainder[:MAX_OUTPUT - size])
+                        size += len(remainder)
+                    if size >= MAX_OUTPUT and tail:
+                        # A terminal event is by definition LAST, so a head-only
+                        # window turns an exit-0 success into "did not record a
+                        # complete successful turn" and the receipt blames the
+                        # provider. Keep a marked tail as well, started at the
+                        # first record boundary so no adapter is handed a
+                        # spliced half-record.
+                        cut = bytes(tail)
+                        edge = cut.find(b"\n")
+                        cut = cut[edge + 1:] if edge >= 0 else cut
+                        if cut:
+                            stream.write(b"\n" + TRUNCATION_NOTE + b"\n"
+                                         + sf_redact.redact(
+                                             clean(cut.decode("utf-8", "replace")),
+                                             values=sf_redact.credential_values(
+                                                 process_env)).encode())
         finally:
             selector.close()
             kill_tree(proc)
             proc.stdout.close()
+        if code is None:
+            code = proc.poll()
         self.event("process-finished", f"{label}: exit {code}; log={log}")
         # The tail is quoted verbatim in MissionError messages and receipts,
         # so it is redacted too -- one-shot here, since it is a whole string.

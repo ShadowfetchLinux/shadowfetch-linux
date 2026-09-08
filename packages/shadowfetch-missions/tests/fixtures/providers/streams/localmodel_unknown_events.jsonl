@@ -1,0 +1,16 @@
+{"event":"session.started","session":"s-unknown","model":"phi-3-mini-q4"}
+{"event":"speculative.draft","accepted":4,"rejected":1}
+{"event":"kv_cache.evict","blocks":17}
+{"event":"grammar.constraint","applied":true}
+{"event":"token","delta":"The "}
+{"event":"token","delta":"launch "}
+{"event":"token","delta":"is "}
+{"event":"token","delta":"Friday "}
+{"event":"token","delta":"and "}
+{"event":"token","delta":"the "}
+{"event":"token","delta":"release "}
+{"event":"token","delta":"contains "}
+{"event":"token","delta":"three "}
+{"event":"token","delta":"workflows."}
+{"event":"telemetry","gpu_layers":33,"vram_mb":5100}
+{"event":"generation.done","stop":"eos","usage":{"completion_tokens":11}}

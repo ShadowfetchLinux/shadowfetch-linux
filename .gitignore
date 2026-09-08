@@ -9,6 +9,12 @@
 *.dsc
 *.tar.*
 *.log
+# ...but the provider conformance suite reads recorded provider output as
+# fixtures, and two of them are .log files. Without this exception a fresh
+# clone cannot run test_provider_conformance.py at all -- it dies with
+# FileNotFoundError at import, which reads as a broken suite rather than a
+# missing file.
+!packages/shadowfetch-missions/tests/fixtures/providers/streams/*.log
 
 # live-build state (regenerable from config/)
 /live-build/.build/

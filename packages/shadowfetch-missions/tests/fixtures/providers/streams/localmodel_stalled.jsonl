@@ -1,0 +1,10 @@
+{"event":"session.started","session":"s-stall","model":"phi-3-mini-q4"}
+{"event":"model.status","state":"loading","progress":0.1}
+{"event":"heartbeat","elapsed_ms":1000}
+{"event":"heartbeat","elapsed_ms":2000}
+{"event":"heartbeat","elapsed_ms":3000}
+{"event":"heartbeat","elapsed_ms":4000}
+{"event":"heartbeat","elapsed_ms":5000}
+{"event":"heartbeat","elapsed_ms":6000}
+{"event":"heartbeat","elapsed_ms":7000}
+{"event":"heartbeat","elapsed_ms":8000}

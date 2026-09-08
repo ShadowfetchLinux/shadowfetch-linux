@@ -1,0 +1,2 @@
+local-model-bridge: connect /run/shadowfetch/local-model.sock: connection refused
+local-model-bridge: is the shadowfetch-local-model service running?

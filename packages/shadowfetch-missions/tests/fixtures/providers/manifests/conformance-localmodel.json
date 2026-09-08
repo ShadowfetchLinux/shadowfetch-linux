@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "id": "conformance-localmodel",
+  "display_name": "Local model bridge (test fixture)",
+  "interface_version": 1,
+  "adapter_module": "sf_provider_conformance_localmodel",
+  "adapter_class": "ConformanceLocalModelProvider",
+  "capabilities": [
+    "code_change",
+    "sourced_report"
+  ],
+  "credential_ids": [],
+  "network_policy": "none",
+  "egress_allowlist": [],
+  "sandbox_profile": {
+    "workspace_mode": "workspace-write",
+    "memory_mb": 8192,
+    "cpu_seconds": 7200,
+    "processes": 16,
+    "read_grants": [
+      "/usr/share/shadowfetch/models"
+    ],
+    "masked_paths": []
+  },
+  "executable": {
+    "kind": "absolute",
+    "path": "/usr/bin/true"
+  },
+  "package": "shadowfetch-missions",
+  "version": "4.0.0",
+  "notes": "Phase 2.5 architectural stress test. TEST FIXTURE ONLY: it does not ship and no shipped manifest names it. It models a long-lived local model server that streams incremental token deltas, holds a resumable session, sends heartbeats and tool rounds, and sometimes ends without a terminal event. network_policy is none on purpose: Firebreak offers only unshare-net or the whole host network, so reaching a host loopback model server today would mean granting unfiltered internet, and the transport is therefore injected rather than real. See the adapter docstring."
+}
