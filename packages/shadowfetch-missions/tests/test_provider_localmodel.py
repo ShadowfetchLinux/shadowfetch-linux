@@ -34,6 +34,8 @@ import threading
 import time
 import unittest
 
+import mission_approvals
+
 import mission_states
 from pathlib import Path
 from unittest import mock
@@ -1124,6 +1126,7 @@ class OrchestratorSurvivalTests(unittest.TestCase):
 
     def test_a_provider_error_during_a_turn_fails_the_mission_with_a_receipt(self):
         mission = self.create()
+        mission_approvals.approve(self.store, mission)
 
         def explode(executor, prompt, **kwargs):
             raise ProviderError("Unknown agent event type: 'text-delta'")

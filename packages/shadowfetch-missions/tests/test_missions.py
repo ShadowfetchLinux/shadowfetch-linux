@@ -16,6 +16,8 @@ import threading
 import time
 import unittest
 
+import mission_approvals
+
 import mission_states
 from unittest.mock import patch
 
@@ -45,6 +47,14 @@ class MissionTests(unittest.TestCase):
         values = dict(kind="report", workspace_value="example", title="Launch report", prompt="Summarize the launch", inputs=["facts.md"], network="allow")
         values.update(kwargs)
         return self.store.create(**values)
+
+    def approved(self, **kwargs):
+        """A mission a person has approved. Most tests here are about execution,
+        not about the approval gate, so they say so in one line rather than
+        having the harness approve everything silently."""
+        mission = self.create(**kwargs)
+        mission_approvals.approve(self.store, mission)
+        return mission
     def test_durable_queue_across_connections(self):
         mission = self.create()
         self.assertEqual(m.Store().get(mission["id"])["state"], "queued")
@@ -75,7 +85,7 @@ class MissionTests(unittest.TestCase):
         with self.assertRaises(m.MissionError):
             self.create(kind="code", runtime="codex", network="none", test=["python3", "tests.py"])
     def test_report_real_checkpoint_diff_receipt_and_undo(self):
-        mission = self.create()
+        mission = self.approved()
         with patch.object(m.Executor, "agent_turn", return_value="The launch is Friday. [S1:L1]\nThe release contains three workflows. [S1:L2]"):
             result = m.run_mission(self.store, mission["id"])
         self.assertEqual(result["state"], "waiting-review", result["error"])
@@ -88,7 +98,7 @@ class MissionTests(unittest.TestCase):
         self.assertFalse((self.ws / "mission-output").exists())
         self.assertEqual((self.ws / "facts.md").read_text().splitlines()[0], "The launch is Friday.")
     def test_invalid_citation_does_not_publish_or_claim_success(self):
-        mission = self.create()
+        mission = self.approved()
         with patch.object(m.Executor, "agent_turn", return_value="Invented fact. [S1:L99]"):
             result = m.run_mission(self.store, mission["id"])
         self.assertEqual(result["state"], "failed")
@@ -96,10 +106,10 @@ class MissionTests(unittest.TestCase):
         self.assertIn("invalid source citation", result["error"])
         self.assertTrue(Path(result["receipt"]).is_file())
     def test_pending_review_prevents_other_workspace_mutation(self):
-        first = self.create()
+        first = self.approved()
         with patch.object(m.Executor, "agent_turn", return_value="Friday. [S1:L1]"):
             m.run_mission(self.store, first["id"])
-        second = self.create()
+        second = self.approved()
         with self.assertRaisesRegex(m.MissionError, "Review the previous"):
             m.run_mission(self.store, second["id"])
         self.assertEqual(self.store.get(second["id"])["state"], "queued")
@@ -124,7 +134,7 @@ class MissionTests(unittest.TestCase):
         with self.assertRaisesRegex(m.MissionError, "exhausted"):
             self.store.retry(mission["id"])
     def test_queued_cancellation_is_durable(self):
-        mission = self.create()
+        mission = self.approved()
         self.store.cancel(mission["id"])
         self.assertEqual(m.Store().get(mission["id"])["state"], "cancelled")
         with self.assertRaises(m.MissionError):
@@ -152,7 +162,7 @@ class MissionTests(unittest.TestCase):
 
     def test_codex_code_runs_actual_required_test(self):
         (self.ws / "app.py").write_text("def add(a, b): return a - b\n")
-        mission = self.create(kind="code", inputs=["app.py"], test=[sys.executable, "-c", "from app import add; assert add(2,3)==5"])
+        mission = self.approved(kind="code", inputs=["app.py"], test=[sys.executable, "-c", "from app import add; assert add(2,3)==5"])
         original = m.Executor.run_process
         def fixture_codex(executor, prompt):
             (executor.ws / "app.py").write_text("def add(a,b): return a+b\n")
@@ -166,7 +176,7 @@ class MissionTests(unittest.TestCase):
         self.assertEqual(receipt["runtime"], "codex")
         self.assertIn("return a+b", (self.ws / "app.py").read_text())
     def test_resume_only_after_published_hash_verification(self):
-        mission = self.create()
+        mission = self.approved()
         with patch.object(m.Executor, "agent_turn", return_value="Friday. [S1:L1]"):
             result = m.run_mission(self.store, mission["id"])
         # Stands in for "the report was published, then a later step failed" --
@@ -178,7 +188,7 @@ class MissionTests(unittest.TestCase):
         self.assertEqual(result["state"], "waiting-review", result["error"])
         self.assertTrue(any(e["event"] == "step-resumed" for e in self.store.events(mission["id"])))
     def test_changed_report_inputs_refuse_resume_and_preserve_manual_edits(self):
-        mission = self.create()
+        mission = self.approved()
         with patch.object(m.Executor, "agent_turn", return_value="Friday. [S1:L1]"):
             first = m.run_mission(self.store, mission["id"])
         report_path = next(Path(path) for path in first["artifacts"] if path.endswith("report.md"))
@@ -198,7 +208,7 @@ class MissionTests(unittest.TestCase):
             m.review(self.store, mission["id"], "undo")
         self.assertTrue(json.loads(Path(result["receipt"]).read_text())["recovery_index_preserved"])
     def test_report_resume_retains_historical_codex_inference_provenance(self):
-        mission = self.create()
+        mission = self.approved()
         # Controlled unit fixture; release integration uses a real native server.
         original = {"provider": "codex", "model": None, "usage": {"output_tokens": 11}, "observed_at": "2026-09-05T00:00:00Z", "attempt": 1, "response_sha256": "a" * 64, "reused": False}
         def inference(executor, *args, **kwargs):
@@ -229,7 +239,7 @@ class MissionTests(unittest.TestCase):
             self.assertIn("Historical", reused["verification_scope"])
             self.assertEqual(self.store.step(mission["id"], "report-provenance"), provenance)
     def test_report_resume_refuses_missing_inference_provenance(self):
-        mission = self.create()
+        mission = self.approved()
         with patch.object(m.Executor, "agent_turn", return_value="Friday. [S1:L1]"):
             m.run_mission(self.store, mission["id"])
         self.store.step(mission["id"], "report-provenance", {})
@@ -251,7 +261,7 @@ class MissionTests(unittest.TestCase):
         self.assertNotIn("after/facts.md", diff)
 
     def test_undo_refuses_newer_manual_file_changes(self):
-        mission = self.create()
+        mission = self.approved()
         with patch.object(m.Executor, "agent_turn", return_value="Friday. [S1:L1]"):
             m.run_mission(self.store, mission["id"])
         (self.ws / "newer-manual.txt").write_text("keep me")
@@ -260,7 +270,7 @@ class MissionTests(unittest.TestCase):
         self.assertEqual((self.ws / "newer-manual.txt").read_text(), "keep me")
     def test_code_cannot_rewrite_validation_to_pass(self):
         (self.ws / "test_app.py").write_text("raise AssertionError('required behavior')\n")
-        mission = self.create(kind="code", inputs=["test_app.py"], test=["python3", "test_app.py"])
+        mission = self.approved(kind="code", inputs=["test_app.py"], test=["python3", "test_app.py"])
         def tamper(executor, prompt):
             (executor.ws / "test_app.py").write_text("pass\n")
         with patch.object(m.Executor, "agent_turn", tamper):
@@ -302,7 +312,7 @@ class MissionTests(unittest.TestCase):
                 executor.agent_turn("task")
 
     def test_legacy_provider_is_not_silently_sent_to_cloud(self):
-        item = self.create()
+        item = self.approved()
         config = dict(item["config"], runtime="local", network="none")
         with self.store.db() as db:
             db.execute("UPDATE missions SET config=? WHERE id=?", (json.dumps(config), item["id"]))
@@ -352,18 +362,18 @@ class MissionTests(unittest.TestCase):
                 self.store.page(**invalid)
 
     def test_pending_review_beyond_one_page_still_blocks_new_work(self):
-        first = self.create()
+        first = self.approved()
         with patch.object(m.Executor, "agent_turn", return_value="Friday. [S1:L1]"):
             self.assertEqual(m.run_mission(self.store, first["id"])["state"], "waiting-review")
         self.bulk_missions(m.LIST_PAGE_LIMIT, year=2099)
-        second = self.create()
+        second = self.approved()
         with patch.object(m.Executor, "agent_turn", side_effect=AssertionError("must not run beside an unreviewed result")):
             with self.assertRaisesRegex(m.MissionError, "Review the previous"):
                 m.run_mission(self.store, second["id"])
         self.assertEqual(self.store.get(second["id"])["state"], "queued")
 
     def test_undo_finds_its_place_in_a_queue_larger_than_one_page(self):
-        mission = self.create()
+        mission = self.approved()
         with patch.object(m.Executor, "agent_turn", return_value="Friday. [S1:L1]"):
             m.run_mission(self.store, mission["id"])
         self.bulk_missions(m.LIST_PAGE_LIMIT, year=2099)
@@ -371,7 +381,7 @@ class MissionTests(unittest.TestCase):
         self.assertFalse((self.ws / "mission-output").exists())
 
     def test_undo_reports_a_missing_queue_row_instead_of_crashing(self):
-        mission = self.create()
+        mission = self.approved()
         with patch.object(m.Executor, "agent_turn", return_value="Friday. [S1:L1]"):
             m.run_mission(self.store, mission["id"])
         with patch.object(m.Store, "list", return_value=[]):
@@ -390,7 +400,7 @@ class MissionTests(unittest.TestCase):
     # W-16: the guard covers new validation files, measured against a pristine baseline.
     def test_code_refuses_newly_added_validation_files(self):
         (self.ws / "app.py").write_text("def add(a, b): return a - b\n")
-        mission = self.create(kind="code", inputs=["app.py"], test=[sys.executable, "-c", "import app"])
+        mission = self.approved(kind="code", inputs=["app.py"], test=[sys.executable, "-c", "import app"])
         def sneak(executor, prompt):
             (executor.ws / "app.py").write_text("def add(a, b): return a + b\n")
             (executor.ws / "conftest.py").write_text("collect_ignore_glob = ['*']\n")
@@ -405,7 +415,7 @@ class MissionTests(unittest.TestCase):
     def test_validation_guard_baseline_stays_pristine_across_retries(self):
         (self.ws / "app.py").write_text("value = 1\n")
         (self.ws / "test_app.py").write_text("raise AssertionError('required behavior')\n")
-        mission = self.create(kind="code", inputs=["app.py"], test=[sys.executable, "test_app.py"])
+        mission = self.approved(kind="code", inputs=["app.py"], test=[sys.executable, "test_app.py"])
         with patch.object(m.Executor, "agent_turn", lambda executor, prompt: (executor.ws / "test_app.py").write_text("pass\n")):
             first = m.run_mission(self.store, mission["id"])
         self.assertEqual(first["state"], "failed")
@@ -421,7 +431,7 @@ class MissionTests(unittest.TestCase):
         (self.ws / "app.py").write_text("def add(a, b): return a - b\n")
         (self.ws / "tests").mkdir()
         (self.ws / "tests" / "test_add.py").write_text("import app\nassert app.add(2, 3) == 5\n")
-        mission = self.create(kind="code", inputs=["app.py"], test=[sys.executable, "tests/test_add.py"])
+        mission = self.approved(kind="code", inputs=["app.py"], test=[sys.executable, "tests/test_add.py"])
         original = m.Executor.run_process
         with patch.object(m.Executor, "agent_turn", lambda executor, prompt: (executor.ws / "app.py").write_text("def add(a, b): return a + b\n")), \
              patch.object(m.Executor, "run_process", lambda executor, command, label, **kwargs: original(executor, command, label, sandbox=False, env={"PYTHONPATH": str(executor.ws)})):
@@ -462,7 +472,7 @@ class MissionTests(unittest.TestCase):
         self.assertLessEqual(len(body.encode()), m.MAX_OUTPUT)
 
     def test_receipt_records_a_structured_change_summary(self):
-        mission = self.create()
+        mission = self.approved()
         with patch.object(m.Executor, "agent_turn", return_value="Friday. [S1:L1]"):
             result = m.run_mission(self.store, mission["id"])
         receipt = json.loads(Path(result["receipt"]).read_text())

@@ -116,6 +116,7 @@ MAX_OUTPUT = 2_000_000
 TRUNCATION_NOTE = b"--- shadowfetch: output truncated; tail follows ---"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sf_audit
+import sf_policy
 import sf_redact
 from sf_providers import (LEGACY_KIND_CAPABILITY, CAPABILITY_LEGACY_KIND,
                          sandbox_enforcement, unenforced_fields,
@@ -199,6 +200,19 @@ def task_transition_allowed(current, target):
 class TransitionError(MissionError):
     """A refused state change. Its own class so callers can tell a rejected
     transition from a storage failure, and so nothing catches it by accident."""
+
+
+class ApprovalRequired(MissionError):
+    """This mission needs a human decision that does not exist yet.
+
+    Its own class so a UI can offer an Approve button for exactly this case and
+    not for a mission that failed for some other reason.
+    """
+
+    def __init__(self, message, *, decision=None, subject=None):
+        super().__init__(message)
+        self.decision = decision
+        self.subject = subject
 
 
 class Cancelled(MissionError):
@@ -787,6 +801,93 @@ class Store:
     def event(self, mid, event, detail="", **correlation):
         """The name every existing call site uses. Now chained."""
         return self.append_event(mid, event, detail, **correlation)
+
+    # ------------------------------------------------------ approvals ---
+    def grant_approval(self, *, subject, scope, granted_by, method,
+                       expires_at=None, reason=None):
+        """Record a human decision. Returns the approval id.
+
+        granted_by and method are required, not optional: an approval that
+        cannot say who granted it and how is not evidence of anything.
+        """
+        if not granted_by or not method:
+            raise MissionError(
+                "An approval must record who granted it and by what method")
+        aid = "appr-" + uuid.uuid4().hex[:16]
+        at = now()
+        blob = scope.to_json() if hasattr(scope, "to_json") else json.dumps(scope, sort_keys=True)
+        mission = subject.split(":", 1)[1] if subject.startswith("mission:") else "*"
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT INTO approvals(id,subject,scope,granted_by,method,granted_at,"
+                "expires_at,reason) VALUES(?,?,?,?,?,?,?,?)",
+                (aid, subject, blob, granted_by, method, at, expires_at, reason))
+            row = self._append(db, mission=mission, event="approval-granted",
+                               actor=ACTOR_USER, at=at,
+                               detail=f"{subject} by {granted_by} via {method}"
+                                      + (f"; expires {expires_at}" if expires_at else ""))
+        self.mirror(row)
+        return aid
+
+    def revoke_approval(self, aid, *, reason=None):
+        at = now()
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT subject,revoked_at FROM approvals WHERE id=?",
+                             (aid,)).fetchone()
+            if row is None:
+                raise MissionError("Approval does not exist")
+            if row["revoked_at"]:
+                raise MissionError("Approval was already revoked")
+            db.execute("UPDATE approvals SET revoked_at=?,reason=COALESCE(?,reason) "
+                       "WHERE id=?", (at, reason, aid))
+            subject = row["subject"]
+            mission = subject.split(":", 1)[1] if subject.startswith("mission:") else "*"
+            appended = self._append(db, mission=mission, event="approval-revoked",
+                                    actor=ACTOR_USER, at=at,
+                                    detail=f"{subject}: {reason or 'no reason given'}")
+        self.mirror(appended)
+
+    def approvals(self, subject=None):
+        with self.db() as db:
+            if subject is None:
+                rows = db.execute("SELECT * FROM approvals ORDER BY granted_at DESC").fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT * FROM approvals WHERE subject=? ORDER BY granted_at DESC",
+                    (subject,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def find_approval(self, subject, required):
+        """The one valid approval covering `required`, or (None, why not).
+
+        Every rejection reason is returned rather than just "no", because
+        "expired at 14:02" and "approved for a different workspace" send a
+        person to different places.
+        """
+        rows = self.approvals(subject)
+        if not rows:
+            return None, f"no approval exists for {subject}"
+        problems = []
+        stamp = now()
+        for row in rows:
+            if row["revoked_at"]:
+                problems.append(f"{row['id']} was revoked at {row['revoked_at']}")
+                continue
+            if row["expires_at"] and row["expires_at"] <= stamp:
+                problems.append(f"{row['id']} expired at {row['expires_at']}")
+                continue
+            try:
+                granted = sf_policy.Scope.from_json(row["scope"])
+            except (ValueError, TypeError):
+                problems.append(f"{row['id']} has an unreadable scope")
+                continue
+            covered, why = sf_policy.approval_covers(granted, required)
+            if covered:
+                return row, None
+            problems.append(f"{row['id']}: {why}")
+        return None, "; ".join(problems)
 
     # ---------------------------------------------------------- tasks ---
     def create_task(self, mission_id, *, kind, seq, depends_on=(), sandbox_spec=None):
@@ -2143,12 +2244,81 @@ class Executor:
         self.store.update(self.mid, receipt=str(path), artifacts=json.dumps([r["path"] for r in records]))
 
 
+def policy_engine():
+    """The engine's single PolicyEngine. A function rather than a module global
+    so a test can substitute one without reaching into another module's state."""
+    return sf_policy.PolicyEngine()
+
+
+def mission_decision(store, mission):
+    """What policy says about this mission, and the scope it would need.
+
+    Computed from the PROVIDER'S DECLARED CEILING, not from whatever an adapter
+    would build at run time: an approval has to be decidable before execution,
+    and a scope derived from something the provider chooses later would be an
+    approval for whatever it felt like doing.
+    """
+    capability = (mission.get("capability")
+                  or LEGACY_KIND_CAPABILITY.get(mission["kind"]))
+    provider_id = mission.get("provider_id") or (mission["config"] or {}).get("provider_id")
+    if not capability or not provider_id:
+        return None, None
+    try:
+        provider = provider_for(capability, provider_id)
+    except ProviderError as exc:
+        raise MissionError(str(exc)) from exc
+    manifest = provider.manifest
+    ceiling = sandbox_from_manifest(manifest)
+    # The mission's own network choice narrows the manifest's, never widens it.
+    requested_network = (mission["config"] or {}).get("network") or "none"
+    if requested_network == "none":
+        ceiling = dataclasses.replace(ceiling, network="none", egress_allowlist=())
+    decision = policy_engine().evaluate(
+        capability=capability, provider_id=provider_id,
+        workspace=mission["workspace"], sandbox=ceiling,
+        provider_trust=str((manifest.get("_policy") or {}).get("trust") or "unknown"))
+    return decision, ceiling
+
+
+def require_approval(store, mission):
+    """Refuse to run a mission whose policy decision needs a human, unless a
+    valid approval covers exactly what it will be allowed to do."""
+    decision, _ceiling = mission_decision(store, mission)
+    if decision is None:
+        return None                      # a retired provider; execute() refuses it
+    subject = "mission:" + mission["id"]
+    if decision.outcome == sf_policy.DENY:
+        store.event(mission["id"], "policy-denied", "; ".join(decision.reasons),
+                    actor=ACTOR_ORCHESTRATOR)
+        raise MissionError("Policy refuses this mission: " + "; ".join(decision.reasons))
+    if decision.outcome != sf_policy.ESCALATE:
+        return None
+    row, why = store.find_approval(subject, decision.scope)
+    if row is None:
+        store.event(mission["id"], "approval-required", "; ".join(decision.reasons),
+                    actor=ACTOR_ORCHESTRATOR)
+        raise ApprovalRequired(
+            "This mission needs approval before it can run: "
+            + "; ".join(decision.reasons) + ". " + (why or ""),
+            decision=decision, subject=subject)
+    store.event(mission["id"], "approval-used", f"{row['id']} granted by "
+                f"{row['granted_by']} via {row['method']}",
+                actor=ACTOR_ORCHESTRATOR)
+    store.update(mission["id"], approval_id=row["id"])
+    return row["id"]
+
+
 def run_mission(store, mid):
     with store.lock():
         store.recover()
         mission = store.get(mid)
         if mission["state"] != "queued":
             raise MissionError("Only queued missions can run")
+        # BEFORE the state moves. A mission that needs approval and has none
+        # never reaches running, so there is no window in which it is executing
+        # unapproved, and every entry point -- CLI, worker, desktop -- is covered
+        # because they all come through here.
+        require_approval(store, mission)
         # Two missions may target the same workspace, but a result must be reviewed
         # before another can mutate it, preserving a meaningful Undo boundary.
         if any(m["id"] != mid and m["workspace"] == mission["workspace"] for m in store.list(states=("waiting-review",))):
@@ -2423,6 +2593,21 @@ def main(argv=None):
             command.add_argument("--decision", choices=("accept", "undo"), required=True)
     command = sub.add_parser("worker")
     command.add_argument("--once", action="store_true")
+    approve = sub.add_parser("approve")
+    approve.add_argument("id")
+    approve.add_argument("--expires-at", default=None,
+                         help="ISO-8601 instant after which this approval stops working")
+    approve.add_argument("--reason", default=None)
+    revoke = sub.add_parser("revoke")
+    revoke.add_argument("approval")
+    revoke.add_argument("--reason", default=None)
+    listing_approvals = sub.add_parser("approvals")
+    listing_approvals.add_argument("id", nargs="?", default=None)
+    policy = sub.add_parser("policy")
+    policy_sub = policy.add_subparsers(dest="policy_command", required=True)
+    policy_show = policy_sub.add_parser("show")
+    policy_show.add_argument("id")
+    policy_sub.add_parser("matrix")
     audit = sub.add_parser("audit")
     audit_sub = audit.add_subparsers(dest="audit_command", required=True)
     audit_sub.add_parser("verify")
@@ -2430,6 +2615,43 @@ def main(argv=None):
     try:
         if args.command == "capabilities":
             result = capabilities()
+        elif args.command == "approve":
+            store = Store()
+            mission = store.get(args.id)
+            decision, _ceiling = mission_decision(store, mission)
+            if decision is None:
+                raise MissionError("This mission uses a retired provider")
+            if not decision.needs_approval:
+                result = {"approved": False, "outcome": decision.outcome,
+                          "reason": "this mission does not require approval: "
+                                    + "; ".join(decision.reasons)}
+            else:
+                aid = store.grant_approval(
+                    subject="mission:" + args.id, scope=decision.scope,
+                    # The invoking uid IS the granter. There is no way to record
+                    # somebody else's decision, which is the point.
+                    granted_by=f"uid:{os.getuid()}", method="cli",
+                    expires_at=args.expires_at, reason=args.reason)
+                result = {"approved": True, "approval": aid,
+                          "scope": dataclasses.asdict(decision.scope),
+                          "reasons": list(decision.reasons),
+                          "not_enforced": list(decision.advisory_fields)}
+        elif args.command == "revoke":
+            store = Store()
+            store.revoke_approval(args.approval, reason=args.reason)
+            result = {"revoked": args.approval}
+        elif args.command == "approvals":
+            store = Store()
+            result = store.approvals("mission:" + args.id if args.id else None)
+        elif args.command == "policy":
+            if args.policy_command == "matrix":
+                result = sf_policy.PolicyEngine.capability_matrix()
+            else:
+                store = Store()
+                decision, _ceiling = mission_decision(store, store.get(args.id))
+                if decision is None:
+                    raise MissionError("This mission uses a retired provider")
+                result = decision.as_dict()
         elif args.command == "audit":
             store = Store()
             result = store.verify_chain()
