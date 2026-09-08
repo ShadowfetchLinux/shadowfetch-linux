@@ -1044,6 +1044,12 @@ class ProviderRegistry:
         return dict(entry.manifest)
 
     @property
+    def policy(self) -> ApprovedPolicy | None:
+        """The policy this registry applied, for callers that must show or check
+        it. Read-only by convention: the document it wraps is the loaded one."""
+        return self._policy
+
+    @property
     def errors(self) -> list:
         return list(self._errors) + [
             f"{pid}: {e.error}" for pid, e in self._entries.items() if not e.usable]

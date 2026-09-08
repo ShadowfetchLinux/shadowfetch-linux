@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import ast
 import atexit
+import copy
 import contextlib
 import dataclasses
 import json
@@ -66,9 +67,17 @@ if str(MISSION_MODULES) not in sys.path:
 
 import sf_providers  # noqa: E402
 from sf_providers import (  # noqa: E402
-    Acceptance, AgentEvent, AgentProvider, CAPABILITIES, Capability, Invocation,
-    ProviderError, ProviderRegistry, Readiness, SandboxSpec, sandbox_from_manifest,
+    ACCEPTED_EXECUTABLE_TRUST, Acceptance, AgentEvent, AgentProvider,
+    ApprovedPolicy, CAPABILITIES, Capability, Invocation, ProviderError,
+    ProviderRegistry, Readiness, SandboxSpec, classify_executable,
+    resolve_executable, sandbox_from_manifest,
 )
+
+# AgentEvent has no public roster of its types, and a test that hard-codes
+# one would not notice a type being added. Read it off the class.
+EVENT_TYPES = frozenset(
+    v for k, v in vars(AgentEvent).items()
+    if k.isupper() and isinstance(v, str))
 
 SCHEMA_NAME = "provider-manifest.schema.json"
 
@@ -734,6 +743,143 @@ class ProviderConformanceTests(unittest.TestCase):
                 base.narrow(workspace_mode="workspace-write")
         # Narrowing in the safe direction still works.
         self.assertEqual(base.narrow(credential_ids=()).credential_ids, ())
+
+    # ================= MANIFEST TRUST ====================================
+    def test_this_provider_is_active_only_because_a_policy_approved_it(self):
+        """Remove the approval and the provider must disappear, with a reason.
+
+        This is the property Phase 2.5 exists to establish. Phase 2 replaced an
+        AST freeze with a schema, and a schema says a manifest is well FORMED --
+        never that anyone agreed to run it.
+        """
+        policy = self.registry.policy
+        self.assertIsNotNone(policy, "the registry activated a provider with no policy at all")
+        self.assertIn(self.case.provider_id, policy,
+                      "this provider is active but no policy entry approves it")
+        stripped = copy.deepcopy(policy.document)
+        del stripped["providers"][self.case.provider_id]
+        without = ProviderRegistry(root=self.registry.root,
+                                   module_root=self.registry.module_root,
+                                   policy=ApprovedPolicy(stripped, source="<conformance>"))
+        self.assertNotIn(self.case.provider_id, without.ids(),
+                         "a provider stayed active after its approval was removed")
+        reason = " ".join(without.errors)
+        self.assertIn(self.case.provider_id, reason)
+        self.assertIn("approved-provider policy", reason,
+                      f"the refusal does not say why: {reason!r}")
+
+    def test_a_manifest_changed_after_approval_is_refused(self):
+        """The pin is on BYTES, so an approval survives no edit to what it approved."""
+        policy = self.registry.policy
+        tampered = copy.deepcopy(policy.document)
+        tampered["providers"][self.case.provider_id]["manifest_sha256"] = "0" * 64
+        without = ProviderRegistry(root=self.registry.root,
+                                   module_root=self.registry.module_root,
+                                   policy=ApprovedPolicy(tampered, source="<conformance>"))
+        self.assertNotIn(self.case.provider_id, without.ids())
+        self.assertIn("digest", " ".join(without.errors))
+
+    def test_the_effective_manifest_never_exceeds_what_was_approved(self):
+        """Effective privilege is the INTERSECTION of manifest and policy."""
+        entry = self.registry.policy.entries[self.case.provider_id]
+        for field in ("capabilities", "credential_ids", "egress_allowlist"):
+            with self.subTest(field=field):
+                self.assertLessEqual(set(self.manifest.get(field) or ()),
+                                     set(entry.get(field) or ()),
+                                     f"the active manifest carries {field} beyond its ceiling")
+
+    def test_the_program_classifies_into_a_tier_its_manifest_declares(self):
+        """Absolute is not trusted. What decides is who can replace the file."""
+        declaration = (self.manifest.get("executable") or {}).get("trust", "system")
+        self.assertIn(declaration, ACCEPTED_EXECUTABLE_TRUST,
+                      f"unknown executable trust declaration {declaration!r}")
+        if (self.manifest.get("executable") or {}).get("kind") == "none":
+            self.skipTest("this provider runs no program")
+        try:
+            program = resolve_executable(self.manifest)
+        except ProviderError as exc:
+            self.skipTest(f"this provider has no resolvable program here: {exc}")
+        tier, reason = classify_executable(program)
+        self.assertIn(tier, ACCEPTED_EXECUTABLE_TRUST[declaration],
+                      f"{program} classifies as {tier} ({reason}), which executable "
+                      f"trust {declaration!r} does not accept")
+
+    # ================= INTERFACE GENERALITY ==============================
+    def test_the_adapter_names_no_other_provider(self):
+        """An adapter that knows a sibling's id has knowledge the seam forbids.
+
+        `if provider == "codex"` outside a provider adapter is the shape Phase 2
+        set out to remove. Inside one adapter, naming ANOTHER provider is the
+        same defect wearing a different hat.
+        """
+        module = sys.modules[self.manifest["adapter_module"]]
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        code = chr(10).join(l for l in source.splitlines()
+                            if not l.lstrip().startswith("#"))
+        for other in self.registry.ids():
+            if other == self.case.provider_id:
+                continue
+            with self.subTest(other=other):
+                self.assertNotIn(chr(34) + other + chr(34), code)
+                self.assertNotIn(chr(39) + other + chr(39), code)
+
+    def test_an_unknown_native_event_is_absorbed_rather_than_raised(self):
+        """A provider version bump that adds an event must not fail a mission."""
+        alien = ('{"type":"conformance.unknown.v99","payload":{"a":1}}' + chr(10)
+                 + "conformance: a line in no provider format at all" + chr(10))
+        for case in self.profile.streams:
+            with self.subTest(stream=case.name):
+                events = self.provider.parse_stream(case.text + alien)
+                self.assertIsInstance(events, (list, tuple))
+                for event in events:
+                    self.assertIn(event.type, EVENT_TYPES)
+
+    def test_parse_stream_does_not_mutate_the_adapter(self):
+        """An adapter must be stateless across turns.
+
+        ProviderRegistry memoises one adapter instance per manifest and the
+        registry is cached for the worker's life, so anything parse_stream
+        stores on self is visible to the NEXT person's mission. Per-turn state
+        belongs in the invoked program, not in the adapter object.
+        """
+        before = {k: repr(v) for k, v in vars(self.provider).items()
+                  if not k.startswith("_")}
+        for case in self.profile.streams:
+            self.provider.parse_stream(case.text)
+        after = {k: repr(v) for k, v in vars(self.provider).items()
+                 if not k.startswith("_")}
+        self.assertEqual(before, after,
+                         "parse_stream changed the adapter, so one mission's state "
+                         "leaks into the next")
+
+    # ================= STREAMING =========================================
+    def test_the_same_bytes_in_any_split_parse_identically(self):
+        """Nothing but the pipe decides where a read boundary falls, so parsing
+        must not depend on how the bytes were handed over."""
+        for case in self.profile.streams:
+            with self.subTest(stream=case.name):
+                whole = self.provider.parse_stream(case.text)
+                half = len(case.text) // 2
+                rejoined = self.provider.parse_stream(case.text[:half] + case.text[half:])
+                self.assertEqual([(e.type, e.text) for e in whole],
+                                 [(e.type, e.text) for e in rejoined])
+
+    def test_an_empty_stream_is_absorbed_and_never_succeeds_on_a_bad_exit(self):
+        """Cancel and deadline can hand an adapter very little, or nothing.
+
+        An empty stream is NOT universally a failure -- ffmpeg at loglevel=error
+        emits nothing at all when it succeeds, so offline-media synthesises a
+        terminal event and is right to. What must hold for every provider is
+        that a process which exited non-zero never produced a successful turn:
+        a stream carries no way to tell "finished" from "killed", and the exit
+        code is the fact that does.
+        """
+        for text in ("", chr(10), "   " + chr(10) + chr(10)):
+            with self.subTest(text=repr(text)):
+                events = self.provider.parse_stream(text)
+                self.assertIsInstance(events, (list, tuple))
+                self.assertFalse(self.profile.turn_succeeded(events, 1),
+                                 "a non-zero exit was reported as a successful turn")
 
     def test_the_adapter_does_not_resolve_its_program_through_path(self):
         module = sys.modules[self.manifest["adapter_module"]]
