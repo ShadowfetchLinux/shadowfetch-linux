@@ -22,10 +22,11 @@ Phase 1 found real defects of each kind:
     value is injected at the Firebreak boundary by code that never came from a
     provider.
 
-  * An Invocation's executable must be an absolute path AND must resolve
-    inside a packaging-owned directory. An adapter may look its program up
-    however it likes; trusted_executable() re-checks the answer, so a binary
-    in a user-writable location -- ~/.local/bin, say -- cannot be executed.
+  * An Invocation's executable is CLASSIFIED by who can modify it, and the
+    class must be one its manifest declared. An adapter may look its program
+    up however it likes; classify_executable() re-checks the answer against
+    the ownership and mode of the file and of every directory above it, so a
+    program anyone else could substitute cannot be executed.
 """
 from __future__ import annotations
 
@@ -36,6 +37,7 @@ import importlib.util
 import json
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -70,61 +72,173 @@ MANIFEST_DIR = Path("/usr/share/shadowfetch/providers")
 POLICY_DIR = Path("/usr/share/shadowfetch/provider-policy")
 POLICY_NAME = "approved.json"
 
-# A provider program may only be executed from a directory the packaging
-# system owns. This is the mechanism behind "no PATH resolution": even an
-# adapter that resolves its binary through PATH cannot return one from a
-# user-writable location, because trusted_executable() re-checks the answer.
-TRUSTED_EXEC_PREFIXES = ("/usr/bin/", "/usr/sbin/", "/usr/libexec/",
-                        "/usr/lib/", "/usr/local/lib/shadowfetch/",
-                        "/bin/", "/sbin/", "/opt/")
+# Directories the packaging system owns. Membership here is ONE condition of
+# being distro-managed, not the whole test: the prefix says where a file is,
+# and says nothing about who may replace it.
+PACKAGED_EXEC_PREFIXES = ("/usr/bin/", "/usr/sbin/", "/usr/libexec/",
+                          "/usr/lib/", "/usr/local/lib/shadowfetch/",
+                          "/bin/", "/sbin/", "/opt/")
 
 
-def trusted_executable(path, *, trust="system"):
-    """Return the resolved absolute path, or raise if it fails its trust tier.
+class ExecutableTrust:
+    """What a program's location actually proves about who can change it.
 
-    An adapter is packaged code, but its OUTPUT is not trusted: whatever it
-    says its program is, that answer is checked here.
-
-    trust="system"        the program must live in a packaging-owned directory.
-                          This is the default and what a provider should use.
-    trust="user-runtime"  the program is a user-installed runtime -- an npm or
-                          pip CLI -- so it legitimately lives under the user's
-                          home. It must then be owned by the invoking user and
-                          not world-writable. This tier exists because the
-                          Codex CLI is genuinely installed that way; declaring
-                          it makes the exception visible in the manifest and at
-                          the release gate instead of being silently universal.
-
-    Group-writability is accepted for user-runtime because npm and nvm install
-    0775 under the user's personal group. That is a real residual gap on a
-    machine with shared groups, and it is recorded in PHASE2_REMAINING_RISKS.
+    These are OBSERVATIONS, derived from the filesystem. A manifest's
+    executable.trust field is a REQUIREMENT, spelled differently on purpose --
+    "system"/"user-runtime" is what a provider asks to be allowed; these four
+    are what its program turned out to be. Conflating the two is how a
+    declaration comes to look like a control.
     """
-    if not path:
-        raise ProviderError("Provider executable was not found")
+
+    DISTRO_MANAGED = "distro-managed"   # packaged path, root-owned all the way up
+    USER_MANAGED = "user-managed"       # the invoking user's own space, nobody else writable
+    DEVELOPER = "developer"             # integrity fine, provenance unmanaged
+    UNTRUSTED = "untrusted"             # somebody else can substitute it
+
+
+# What each manifest declaration will accept. Deliberately a set per
+# declaration rather than a rank: "root-owned in an unmanaged directory" and
+# "user-owned under $HOME" are not comparable, and forcing them onto one axis
+# would make one of the two orderings wrong.
+ACCEPTED_EXECUTABLE_TRUST = {
+    "system": (ExecutableTrust.DISTRO_MANAGED,),
+    "user-runtime": (ExecutableTrust.DISTRO_MANAGED, ExecutableTrust.USER_MANAGED),
+    "developer": (ExecutableTrust.DISTRO_MANAGED, ExecutableTrust.USER_MANAGED,
+                  ExecutableTrust.DEVELOPER),
+}
+
+# How much latitude each declaration asks for, so a policy can approve less.
+EXECUTABLE_TRUST_LATITUDE = {"system": 0, "user-runtime": 1, "developer": 2}
+
+# Retained: Phase 2 code and tests refer to this name.
+TRUSTED_EXEC_PREFIXES = PACKAGED_EXEC_PREFIXES
+
+
+def _private_group(gid: int, uid: int) -> bool:
+    """True if gid is a per-user group whose only member is that user.
+
+    Debian gives each user a group of the same name, so npm and nvm install
+    0775 under $HOME group-writable by a group of one. That is materially
+    different from 0775 under a shared group like staff or adm, and the
+    difference decides whether "group-writable" means someone else can swap the
+    binary. Phase 2 accepted all group-writability for user runtimes and
+    recorded the gap in PHASE2_REMAINING_RISKS; this measures it instead.
+    """
+    try:
+        import grp
+        import pwd
+        user = pwd.getpwuid(uid)
+        group = grp.getgrgid(gid)
+    except (ImportError, KeyError, OSError):
+        return False
+    if set(group.gr_mem) - {user.pw_name}:
+        return False
+    return group.gr_gid == user.pw_gid or group.gr_name == user.pw_name
+
+
+def _substitutable_by_others(info, uid: int):
+    """Why a third party could replace this inode, or None if none could."""
+    mode = info.st_mode
+    if info.st_uid not in (0, uid):
+        return f"owned by uid {info.st_uid}"
+    if stat.S_ISDIR(mode) and mode & stat.S_ISVTX:
+        # Sticky: only an entry's own owner may replace it, so a world-writable
+        # /tmp does not let anyone substitute another user's file.
+        return None
+    if mode & 0o002:
+        return "world-writable"
+    if mode & 0o020 and not _private_group(info.st_gid, uid):
+        return f"writable by shared group gid {info.st_gid}"
+    return None
+
+
+def classify_executable(path, *, uid: int | None = None):
+    """Return (ExecutableTrust value, human reason) for a program.
+
+    The walk covers every directory above the file as well as the file itself,
+    because replacing a directory entry is as good as replacing its target --
+    a check that stops at the file's own mode misses the more likely attack.
+    """
+    uid = os.getuid() if uid is None else uid
     resolved = Path(path).resolve()
     if not resolved.is_absolute():
-        raise ProviderError(f"Provider executable is not absolute: {resolved}")
-    if str(resolved).startswith(tuple(TRUSTED_EXEC_PREFIXES)):
-        return str(resolved)
-    if trust != "user-runtime":
-        raise ProviderError(
-            f"Provider executable {resolved} is outside the packaging-owned "
-            "directories and its manifest does not declare a user-runtime "
-            "executable. A program in a user-writable location is not run as "
-            "part of a mission unless a provider declares that it is one.")
+        return ExecutableTrust.UNTRUSTED, f"{resolved} is not an absolute path"
     try:
         info = resolved.stat()
     except OSError as exc:
-        raise ProviderError(f"Provider executable {resolved} cannot be inspected: {exc}")
-    if info.st_uid != os.getuid():
+        return ExecutableTrust.UNTRUSTED, f"{resolved} cannot be inspected: {exc}"
+    if not stat.S_ISREG(info.st_mode):
+        return ExecutableTrust.UNTRUSTED, f"{resolved} is not a regular file"
+    if not os.access(str(resolved), os.X_OK):
+        return ExecutableTrust.UNTRUSTED, f"{resolved} is not executable"
+
+    root_owned_throughout = True
+    for component in (resolved, *resolved.parents):
+        try:
+            cinfo = component.stat()
+        except OSError as exc:
+            return ExecutableTrust.UNTRUSTED, f"{component} cannot be inspected: {exc}"
+        problem = _substitutable_by_others(cinfo, uid)
+        if problem is not None:
+            return (ExecutableTrust.UNTRUSTED,
+                    f"{component} is {problem}, so the program can be substituted "
+                    "by someone other than root or the invoking user")
+        if cinfo.st_uid != 0:
+            root_owned_throughout = False
+
+    if str(resolved).startswith(tuple(PACKAGED_EXEC_PREFIXES)):
+        if root_owned_throughout:
+            return (ExecutableTrust.DISTRO_MANAGED,
+                    f"{resolved} is root-owned throughout a packaging-owned directory")
+        return (ExecutableTrust.USER_MANAGED,
+                f"{resolved} is in a packaging-owned directory but part of its path "
+                f"is owned by uid {uid} rather than root")
+    if root_owned_throughout:
+        return (ExecutableTrust.DEVELOPER,
+                f"{resolved} is root-owned and nobody else can write it, but it is "
+                "outside the packaging-owned directories, so nothing vouches for "
+                "where it came from")
+    return (ExecutableTrust.USER_MANAGED,
+            f"{resolved} is writable only by root and uid {uid}")
+
+
+def trusted_executable(path, *, trust="system"):
+    """Return the resolved absolute path, or raise if the program is not of a
+    class its manifest declared.
+
+    An adapter is packaged code, but its OUTPUT is not trusted: whatever it says
+    its program is, that answer is classified here and matched against the
+    manifest's declaration.
+
+    trust="system"        accepts only distro-managed programs. The default,
+                          and what a provider should use.
+    trust="user-runtime"  additionally accepts a program in the invoking user's
+                          own space -- an npm or pip CLI -- provided no third
+                          party can substitute it. The Codex CLI is genuinely
+                          installed that way; declaring it makes the exception
+                          visible in the manifest, at the release gate and in
+                          the approved-provider policy rather than universal.
+    trust="developer"     additionally accepts an unmanaged root-owned location.
+                          Only usable by a provider a policy approved for it.
+
+    UNTRUSTED is never accepted by any declaration, because it means a third
+    party can replace the program, which no manifest may consent to on the
+    user's behalf.
+    """
+    if not path:
+        raise ProviderError("Provider executable was not found")
+    accepted = ACCEPTED_EXECUTABLE_TRUST.get(trust)
+    if accepted is None:
         raise ProviderError(
-            f"Provider executable {resolved} is not owned by the user running "
-            "the mission; refusing to execute it.")
-    if info.st_mode & 0o002:
+            f"Provider declares unknown executable trust {trust!r}; refusing to "
+            f"execute. Known: {', '.join(sorted(ACCEPTED_EXECUTABLE_TRUST))}")
+    tier, reason = classify_executable(path)
+    if tier not in accepted:
         raise ProviderError(
-            f"Provider executable {resolved} is world-writable; refusing to "
-            "execute it.")
-    return str(resolved)
+            f"Provider executable classifies as {tier}: {reason}. Its manifest "
+            f"declares executable trust {trust!r}, which accepts "
+            f"{', '.join(accepted)}. Refusing to execute it.")
+    return str(Path(path).resolve())
 SCHEMA_NAME = "provider-manifest.schema.json"
 
 
@@ -616,6 +730,26 @@ class ApprovedPolicy:
                     f"provider {provider_id!r} requests {field} it was not approved "
                     f"for: {', '.join(excess)}")
 
+        declared_exec = (manifest.get("executable") or {}).get("trust", "system")
+        approved_exec = entry.get("executable_trust")
+        if approved_exec is None:
+            raise PolicyError(
+                f"provider {provider_id!r}: policy entry has no executable_trust. "
+                "How far outside the packaging system a provider's program may "
+                "live is a privilege, so it is approved explicitly or not at all.")
+        if declared_exec not in EXECUTABLE_TRUST_LATITUDE:
+            raise PolicyError(
+                f"provider {provider_id!r} declares unknown executable trust "
+                f"{declared_exec!r}")
+        if approved_exec not in EXECUTABLE_TRUST_LATITUDE:
+            raise PolicyError(
+                f"provider {provider_id!r}: policy approves unknown executable "
+                f"trust {approved_exec!r}")
+        if EXECUTABLE_TRUST_LATITUDE[declared_exec] > EXECUTABLE_TRUST_LATITUDE[approved_exec]:
+            raise PolicyError(
+                f"provider {provider_id!r} declares executable trust "
+                f"{declared_exec!r}, approved only for {approved_exec!r}")
+
         wanted = NETWORK_RANK.get(manifest.get("network_policy"), 99)
         allowed = NETWORK_RANK.get(entry.get("network_policy"), -1)
         if wanted > allowed:
@@ -632,6 +766,14 @@ class ApprovedPolicy:
             if field in manifest:
                 permitted = set(entry.get(field) or ())
                 effective[field] = [v for v in manifest[field] if v in permitted]
+        # min() rather than the manifest's own value, so a policy deliberately
+        # narrower than a manifest narrows what actually runs.
+        if EXECUTABLE_TRUST_LATITUDE[approved_exec] < EXECUTABLE_TRUST_LATITUDE[declared_exec]:
+            narrower = approved_exec
+        else:
+            narrower = declared_exec
+        if manifest.get("executable"):
+            effective["executable"] = {**manifest["executable"], "trust": narrower}
         if not effective.get("capabilities"):
             raise PolicyError(
                 f"provider {provider_id!r} has no approved capability left after "
@@ -641,6 +783,7 @@ class ApprovedPolicy:
             "package": entry.get("package"),
             "manifest_sha256": digest,
             "trust": entry.get("trust", "distro-managed"),
+            "executable_trust": narrower,
         }
         return effective
 

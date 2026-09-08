@@ -699,6 +699,7 @@ class ReleaseGateTests(unittest.TestCase):
             "egress_allowlist": echo["egress_allowlist"],
             "manifest_sha256":
                 hashlib.sha256(manifest_text.encode("utf-8")).hexdigest(),
+            "executable_trust": (echo.get("executable") or {}).get("trust", "system"),
             "trust": "developer",
         }
         extra = {

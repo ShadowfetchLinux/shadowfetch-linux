@@ -54,7 +54,11 @@
       "minItems": 1,
       "uniqueItems": true,
       "items": {
-        "enum": ["code_change", "sourced_report", "media_export"]
+        "enum": [
+          "code_change",
+          "sourced_report",
+          "media_export"
+        ]
       }
     },
     "credential_ids": {
@@ -69,12 +73,20 @@
     "credential_aliases": {
       "description": "Historical environment variable names that also satisfy a declared credential identity. Declared as data so the orchestrator does not need a per-provider branch to honour an older spelling. Each alias maps to an identity that must itself appear in credential_ids.",
       "type": "object",
-      "additionalProperties": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{2,60}$" },
-      "propertyNames": { "pattern": "^[A-Z][A-Z0-9_]{2,60}$" }
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Z0-9_]{2,60}$"
+      },
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Z0-9_]{2,60}$"
+      }
     },
     "network_policy": {
       "description": "The MOST network this provider may ever request. 'none' means the sandbox is run with an unshared network namespace. 'allowlist' additionally requires a non-empty egress_allowlist. The adapter cannot widen this at invocation time; the registry clamps it.",
-      "enum": ["none", "allowlist"]
+      "enum": [
+        "none",
+        "allowlist"
+      ]
     },
     "egress_allowlist": {
       "description": "Hosts this provider may reach when network_policy is 'allowlist'. Declared for audit and for future enforcement; recorded in the receipt so a reviewer can see what was permitted.",
@@ -88,30 +100,58 @@
     "sandbox_profile": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["workspace_mode", "memory_mb", "cpu_seconds", "processes"],
+      "required": [
+        "workspace_mode",
+        "memory_mb",
+        "cpu_seconds",
+        "processes"
+      ],
       "properties": {
         "workspace_mode": {
           "description": "read-only: the provider may not modify the workspace at all. workspace-write: it may write inside the mission workspace and nowhere else.",
-          "enum": ["read-only", "workspace-write"]
+          "enum": [
+            "read-only",
+            "workspace-write"
+          ]
         },
-        "memory_mb": { "type": "integer", "minimum": 64, "maximum": 32768 },
-        "cpu_seconds": { "type": "integer", "minimum": 10, "maximum": 7200 },
-        "processes": { "type": "integer", "minimum": 1, "maximum": 512 },
+        "memory_mb": {
+          "type": "integer",
+          "minimum": 64,
+          "maximum": 32768
+        },
+        "cpu_seconds": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 7200
+        },
+        "processes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 512
+        },
         "read_grants": {
           "description": "Absolute paths the provider may read outside its workspace. Each is passed to Firebreak as an explicit --read grant. The firebreak denylist still applies on top: no filesystem root, no whole home directory, no credential store.",
           "type": "array",
           "uniqueItems": true,
-          "items": { "type": "string", "pattern": "^/[^\\0]*$" }
+          "items": {
+            "type": "string",
+            "pattern": "^/[^\\0]*$"
+          }
         },
         "account_mount": {
           "description": "A named credential store the sandbox should mount for this provider. Declared as data so the orchestrator forwards it without knowing which provider asked: there is no provider name in the execution path.",
-          "enum": ["codex-account"]
+          "enum": [
+            "codex-account"
+          ]
         },
         "masked_paths": {
           "description": "Paths that must NOT be visible even if some other grant would expose them.",
           "type": "array",
           "uniqueItems": true,
-          "items": { "type": "string", "pattern": "^/[^\\0]*$" }
+          "items": {
+            "type": "string",
+            "pattern": "^/[^\\0]*$"
+          }
         }
       }
     },
@@ -119,36 +159,84 @@
       "description": "How the provider's program is located. PATH resolution is not an option, deliberately: Phase 1 removed several PATH- and environment-selected privileged executables and this format does not allow the class back in. See the kind field for the forms available.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind"],
+      "required": [
+        "kind"
+      ],
       "properties": {
         "kind": {
           "description": "How the program is located. 'absolute' is one fixed path. 'candidates' is an ordered list of absolute or ~-relative globs, tried in order -- this is the preferred form because the manifest, not the environment, decides what may run. 'none' means the provider runs nothing. PATH lookup is not an option in any form.",
-          "enum": ["absolute", "candidates", "none"]
+          "enum": [
+            "absolute",
+            "candidates",
+            "none"
+          ]
         },
         "trust": {
-          "description": "Where this program is allowed to live. 'system' (the default) requires a packaging-owned directory. 'user-runtime' permits a user-installed CLI under the user's home, and is then checked for ownership and world-writability. Declaring user-runtime makes the exception visible in review rather than universal.",
-          "enum": ["system", "user-runtime"]
+          "description": "How far outside the packaging system this provider's program is permitted to live. It is a REQUIREMENT, not a description: at run time the program is classified from the ownership and mode of the file and of every directory above it, and refused unless the class is one this declaration accepts. 'system' (the default) accepts only a distro-managed program. 'user-runtime' also accepts one in the invoking user's own space, which is how npm and pip CLIs are really installed. 'developer' also accepts an unmanaged root-owned location and is not for shipped providers. A program a third party could substitute is refused under every declaration. The approved-provider policy carries its own executable_trust ceiling, and the narrower of the two wins.",
+          "enum": [
+            "system",
+            "user-runtime",
+            "developer"
+          ]
         },
-        "path": { "type": "string", "pattern": "^/[^\\0]*$" },
+        "path": {
+          "type": "string",
+          "pattern": "^/[^\\0]*$"
+        },
         "candidates": {
           "description": "Ordered absolute or ~-relative globs. The first existing executable that passes the trust tier is used. Later entries are fallbacks, so put packaged locations first.",
-          "type": "array", "minItems": 1, "uniqueItems": true,
-          "items": { "type": "string", "pattern": "^(~/|/)[^\\0]*$" }
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(~/|/)[^\\0]*$"
+          }
         },
         "runtime_root_markers": {
           "description": "Directory names that, if found among the executable path's parents, mark the root of its runtime distribution. The sandbox is given read access to that root so the program can load its own files. Declared as data so the orchestrator needs no per-provider knowledge; without it only the executable's own directory is granted.",
-          "type": "array", "uniqueItems": true,
-          "items": { "type": "string", "pattern": "^[@A-Za-z0-9._-]{1,64}$" }
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[@A-Za-z0-9._-]{1,64}$"
+          }
         }
       },
       "allOf": [
         {
-          "if": { "properties": { "kind": { "const": "absolute" } }, "required": ["kind"] },
-          "then": { "required": ["path"] }
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "absolute"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "path"
+            ]
+          }
         },
         {
-          "if": { "properties": { "kind": { "const": "candidates" } }, "required": ["kind"] },
-          "then": { "required": ["candidates"] }
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "candidates"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "required": [
+              "candidates"
+            ]
+          }
         }
       ]
     },
@@ -161,28 +249,53 @@
       "type": "string",
       "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+"
     },
-    "notes": { "type": "string", "maxLength": 2000 }
+    "notes": {
+      "type": "string",
+      "maxLength": 2000
+    }
   },
   "allOf": [
     {
       "description": "An allowlist network policy without an allowlist would be an unbounded grant wearing a policy's name.",
       "if": {
-        "properties": { "network_policy": { "const": "allowlist" } },
-        "required": ["network_policy"]
+        "properties": {
+          "network_policy": {
+            "const": "allowlist"
+          }
+        },
+        "required": [
+          "network_policy"
+        ]
       },
       "then": {
-        "required": ["egress_allowlist"],
-        "properties": { "egress_allowlist": { "minItems": 1 } }
+        "required": [
+          "egress_allowlist"
+        ],
+        "properties": {
+          "egress_allowlist": {
+            "minItems": 1
+          }
+        }
       }
     },
     {
       "description": "A provider that declares no network must not carry an egress allowlist, so the two can never disagree.",
       "if": {
-        "properties": { "network_policy": { "const": "none" } },
-        "required": ["network_policy"]
+        "properties": {
+          "network_policy": {
+            "const": "none"
+          }
+        },
+        "required": [
+          "network_policy"
+        ]
       },
       "then": {
-        "properties": { "egress_allowlist": { "maxItems": 0 } }
+        "properties": {
+          "egress_allowlist": {
+            "maxItems": 0
+          }
+        }
       }
     }
   ]

@@ -273,6 +273,8 @@ class ThirdProviderNeedsNoGateEdit(unittest.TestCase):
             "network_policy": self.THIRD["network_policy"],
             "egress_allowlist": self.THIRD["egress_allowlist"],
             "manifest_sha256": hashlib.sha256(third.encode("utf-8")).hexdigest(),
+            "executable_trust":
+                (self.THIRD.get("executable") or {}).get("trust", "system"),
             "trust": "distro-managed",
         }
         read = overlay(**{

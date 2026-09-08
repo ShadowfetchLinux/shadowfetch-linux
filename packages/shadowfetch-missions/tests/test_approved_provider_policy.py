@@ -76,6 +76,8 @@ class Bench:
                       "credential_ids", "network_policy", "egress_allowlist"):
             entry[field] = manifest.get(field)
         entry["manifest_sha256"] = manifest_digest(path)
+        entry["executable_trust"] = (manifest.get("executable") or {}).get(
+            "trust", "system")
         entry.setdefault("trust", "distro-managed")
         self.write_policy(doc)
 

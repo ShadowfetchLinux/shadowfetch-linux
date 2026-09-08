@@ -14,6 +14,7 @@
         "chatgpt.com",
         "auth.openai.com"
       ],
+      "executable_trust": "user-runtime",
       "interface_version": 1,
       "manifest_sha256": "9508a119bea46a32be987edc1ad8374bd6d829fe37ffc94205d9b827a7a032d0",
       "network_policy": "allowlist",
@@ -27,6 +28,7 @@
       ],
       "credential_ids": [],
       "egress_allowlist": [],
+      "executable_trust": "system",
       "interface_version": 1,
       "manifest_sha256": "c6730894f10b2dd788c73bf1a88ce7cd9d1622922c04bfd16980311daabc9c2e",
       "network_policy": "none",

@@ -153,6 +153,8 @@ def policy_root_for(manifests_dir: Path) -> Path:
             "network_policy": manifest.get("network_policy"),
             "egress_allowlist": manifest.get("egress_allowlist"),
             "manifest_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "executable_trust": (manifest.get("executable") or {})
+                                .get("trust", "system"),
             "trust": "developer",
             "approved_note": "conformance fixture",
         }
