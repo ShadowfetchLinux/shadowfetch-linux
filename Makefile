@@ -121,6 +121,7 @@ test:
 	python3 -m unittest discover -s packages/shadowfetch-firewatchd/tests -v
 	python3 -m unittest discover -s packages/shadowfetch-fireproof/tests -v
 	python3 -m unittest discover -s packages/shadowfetch-hwscan/tests -v
+	python3 -m unittest discover -s packages/shadowfetch-phoenix/tests -v
 	python3 packages/shadowfetch-fireline/tests/test_fireline_mcp.py
 	python3 packages/shadowfetch-fireline/tests/test_checkpoint_roundtrip.py
 	python3 packages/shadowfetch-fireline/tests/test_firebreak_4.py
