@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "id": "offline-media",
+  "display_name": "Offline media export (ffmpeg)",
+  "interface_version": 1,
+  "adapter_module": "sf_provider_offline_media",
+  "adapter_class": "OfflineMediaProvider",
+  "capabilities": ["media_export"],
+  "credential_ids": [],
+  "network_policy": "none",
+  "egress_allowlist": [],
+  "sandbox_profile": {
+    "workspace_mode": "workspace-write",
+    "memory_mb": 3072,
+    "cpu_seconds": 900,
+    "processes": 96,
+    "read_grants": [],
+    "masked_paths": []
+  },
+  "executable": { "kind": "absolute", "path": "/usr/bin/ffmpeg" },
+  "package": "shadowfetch-missions",
+  "version": "4.0.0",
+  "notes": "A deliberately non-LLM provider. It proves the abstraction is not shaped around chat models: it has no credentials, no network, and its native stream is ffmpeg/ffprobe process output rather than turn events. If the interface can carry this and Codex without branching, it can carry a future local model too."
+}
