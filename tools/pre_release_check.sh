@@ -35,8 +35,17 @@ else
   fi
 fi
 
-if command -v git >/dev/null 2>&1 && git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  tracked_cache=$(git -C "$ROOT" ls-files | grep -E '(^|/)\.wrangler(/|$)' || true)
+# An unusable git is a hard failure, not a skip: without it this check cannot see
+# tracked credential/cache state, and the release would print PRE_RELEASE_CHECK_PASSED
+# having verified nothing.
+if ! command -v git >/dev/null 2>&1; then
+  add_failure "git is not installed: the tracked-credential-state check cannot run"
+elif ! git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  add_failure "git cannot read $ROOT as a work tree: the tracked-credential-state check cannot run"
+elif ! tracked_files=$(git -C "$ROOT" ls-files); then
+  add_failure "git ls-files failed in $ROOT: the tracked-credential-state check cannot run"
+else
+  tracked_cache=$(printf '%s\n' "$tracked_files" | grep -E '(^|/)\.wrangler(/|$)' || true)
   if [[ -n "$tracked_cache" ]]; then
     add_failure "tracked Wrangler cache/state files must be removed from git before release: $(printf '%s' "$tracked_cache" | paste -sd, -)"
   fi

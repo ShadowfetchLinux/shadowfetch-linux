@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from mission_provider_contract import validate_provider_payload
 
+import argparse
 import ast
 import json
 import os
@@ -85,13 +86,58 @@ def run(label: str, command: list[str], *, cwd: Path = ROOT) -> None:
     print(f"PASS: {label}")
 
 
+class GitHistoryUnavailable(RuntimeError):
+    """Git cannot enumerate this tree, so the Git-history secret scan cannot run."""
+
+
+NO_GIT_REMEDY = (
+    "the Git-history secret scan cannot run and the candidate file list cannot be "
+    "derived from the index. Repair the repository, or re-run with --no-git to scan "
+    "the working tree only -- history is then NOT scanned."
+)
+NO_GIT_SKIP_DIRECTORIES = frozenset(
+    {".git", "__pycache__", ".debhelper", "node_modules", ".wrangler"}
+)
+
+
+def git_tree_status() -> str:
+    """Return "" when Git can enumerate ROOT, otherwise the reason it cannot."""
+    if shutil.which("git") is None:
+        return "the git executable is not installed"
+    probe = subprocess.run(
+        ["git", "rev-parse", "--is-inside-work-tree"],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if probe.returncode != 0:
+        detail = probe.stderr.decode("utf-8", "replace").strip().splitlines()
+        return (
+            f"{ROOT} is not a usable Git work tree "
+            f"({detail[-1] if detail else 'git rev-parse failed'})"
+        )
+    if probe.stdout.strip() != b"true":
+        return f"{ROOT} is not inside a Git work tree"
+    return ""
+
+
 def candidate_files() -> list[Path]:
+    reason = git_tree_status()
+    if reason:
+        raise GitHistoryUnavailable(f"Git is unusable: {reason}; {NO_GIT_REMEDY}")
     result = subprocess.run(
         ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
         cwd=ROOT,
-        check=True,
         stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", "replace").strip().splitlines()
+        raise GitHistoryUnavailable(
+            f"git ls-files failed in {ROOT} "
+            f"({detail[-1] if detail else f'exit status {result.returncode}'}); "
+            f"{NO_GIT_REMEDY}"
+        )
     candidates: list[Path] = []
     for raw in result.stdout.split(b"\0"):
         if not raw:
@@ -102,6 +148,52 @@ def candidate_files() -> list[Path]:
         path = ROOT / relative
         if path.is_file():
             candidates.append(path)
+    return sorted(set(candidates))
+
+
+def is_debhelper_staging(path: Path) -> bool:
+    """True for a packages/<source>/debian/<binary>/ tree.
+
+    dpkg-buildpackage rebuilds these on every build: they are byte copies of files
+    already enumerated from their real location, so scanning them adds nothing and
+    reports the originals' allowlisted matches at a path no allowlist covers.
+    """
+    parts = path.relative_to(ROOT).parts
+    return (
+        len(parts) == 4
+        and parts[0] == "packages"
+        and parts[2] == "debian"
+        and (path / "DEBIAN").is_dir()
+    )
+
+
+def filesystem_candidate_files() -> list[Path]:
+    """Enumerate the working tree without Git, for the --no-git fallback scan.
+
+    This cannot honour .gitignore, so it applies the same BLOCKED_PREFIXES as the
+    Git path plus the generated directories Git would have excluded.
+    """
+    candidates: list[Path] = []
+    for directory, subdirectories, names in os.walk(ROOT):
+        base = Path(directory)
+        keep: list[str] = []
+        for name in subdirectories:
+            if name in NO_GIT_SKIP_DIRECTORIES:
+                continue
+            relative = (base / name).relative_to(ROOT).as_posix() + "/"
+            if relative.startswith(BLOCKED_PREFIXES):
+                continue
+            if is_debhelper_staging(base / name):
+                continue
+            keep.append(name)
+        subdirectories[:] = sorted(keep)
+        for name in names:
+            path = base / name
+            relative = path.relative_to(ROOT).as_posix()
+            if relative.startswith(BLOCKED_PREFIXES):
+                continue
+            if path.is_file():
+                candidates.append(path)
     return sorted(set(candidates))
 
 
@@ -173,7 +265,7 @@ def parser_gates(candidates: list[Path]) -> None:
         )
 
 
-def secret_gates(candidates: list[Path]) -> None:
+def secret_gates(candidates: list[Path], *, scan_history: bool = True) -> None:
     if not shutil.which("gitleaks"):
         raise RuntimeError("gitleaks is required")
     with tempfile.TemporaryDirectory(prefix="shadowfetch-source-gate-") as temporary:
@@ -197,6 +289,13 @@ def secret_gates(candidates: list[Path]) -> None:
             ],
             cwd=mirror,
         )
+    if not scan_history:
+        print(
+            "WARNING: Git history was NOT secret-scanned (--no-git): only the "
+            f"{len(candidates)} working-tree files above were scanned. A secret "
+            "removed from the tree but still present in history would be missed."
+        )
+        return
     run(
         "Gitleaks Git history",
         [
@@ -345,10 +444,32 @@ def platform_contract_gate() -> None:
     print("PASS: Phoenix recovery packaging and SDDM greeter contracts")
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--no-git",
+        action="store_true",
+        help=(
+            "run without Git: enumerate the working tree directly and still secret-scan "
+            "it with 'gitleaks dir'. The Git history is NOT scanned, 'git diff --check' "
+            "is skipped, and the run reports SOURCE_GATE_PASSED_WITHOUT_GIT_HISTORY."
+        ),
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     os.environ.setdefault("LC_ALL", "C.UTF-8")
     os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
-    candidates = candidate_files()
+    if args.no_git:
+        print(
+            "WARNING: --no-git requested. The Git history secret scan and the Git "
+            "whitespace check will NOT run; this is a degraded gate."
+        )
+        candidates = filesystem_candidate_files()
+    else:
+        candidates = candidate_files()
     if not candidates:
         raise RuntimeError("candidate source set is empty")
     apple_double = [path for path in candidates if path.name.startswith("._")]
@@ -360,7 +481,10 @@ def main() -> int:
     print(f"Shadowfetch Linux 4.0.0 source gate: {len(candidates)} candidate files")
 
     run("behavioral and unit tests", ["make", "test"])
-    run("Git whitespace validation", ["git", "diff", "--check"])
+    if args.no_git:
+        print("SKIPPED: Git whitespace validation (--no-git)")
+    else:
+        run("Git whitespace validation", ["git", "diff", "--check"])
 
     owned_shell, vendored_shell = shell_files(candidates)
     if not shutil.which("shellcheck"):
@@ -384,10 +508,13 @@ def main() -> int:
     build_time_downloader_gate()
     guide_contract_gate()
     platform_contract_gate()
-    secret_gates(candidates)
+    secret_gates(candidates, scan_history=not args.no_git)
     migration_manifest_gate()
     retired_runtime_gate()
-    print("\nSOURCE_GATE_PASSED")
+    if args.no_git:
+        print("\nSOURCE_GATE_PASSED_WITHOUT_GIT_HISTORY")
+    else:
+        print("\nSOURCE_GATE_PASSED")
     return 0
 
 
