@@ -175,12 +175,12 @@ def validate_provider_payload(paths, mission_source, *, read=None):
         if kind == "absolute":
             if not str(executable.get("path", "")).startswith("/"):
                 raise ProviderPolicyError(f"{name}: executable path must be absolute")
-        elif kind == "resolver":
-            adapter_text = read(adapter_path) or ""
-            resolver = executable.get("resolver", "")
-            if f"def {resolver}(" not in adapter_text:
-                raise ProviderPolicyError(
-                    f"{name}: names executable resolver {resolver}() which {adapter} does not define")
+        elif kind == "candidates":
+            for candidate in executable.get("candidates") or []:
+                if not str(candidate).startswith(("/", "~/")):
+                    raise ProviderPolicyError(
+                        f"{name}: executable candidate {candidate!r} is not absolute; "
+                        "a provider program is never located through PATH")
         elif kind != "none":
             raise ProviderPolicyError(f"{name}: unknown executable kind {kind!r}")
 

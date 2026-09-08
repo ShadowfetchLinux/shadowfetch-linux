@@ -19,33 +19,18 @@ from pathlib import Path
 
 try:
     from sf_providers import (AgentEvent, AgentProvider, Acceptance, Invocation,
-                              ProviderError, Readiness, Capability)
+                              ProviderError, Readiness, Capability, resolve_executable)
 except ImportError:  # source tree
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from sf_providers import (AgentEvent, AgentProvider, Acceptance, Invocation,
-                              ProviderError, Readiness, Capability)
+                              ProviderError, Readiness, Capability, resolve_executable)
 
 
-def codex_executable():
-    """Absolute path to the Codex CLI, or None.
-
-    Delegates to sf_mission_account, which locates the binary in the explicit
-    runtime distribution. It is never resolved through PATH: a provider program
-    chosen by the environment is the defect class Phase 1 removed twice.
-    """
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    try:
-        from sf_mission_account import codex_executable as locate
-    except ImportError:
-        return None
-    try:
-        found = locate()
-    except Exception:
-        return None
-    if not found:
-        return None
-    resolved = Path(found).resolve()
-    return str(resolved) if resolved.is_absolute() else None
+# The Codex CLI is located from the candidate list its MANIFEST declares.
+# There is deliberately no lookup helper here: an earlier version delegated to
+# sf_mission_account.codex_executable(), which ends at shutil.which('codex'),
+# so the environment still chose the program. The conformance suite traces a
+# resolver into the modules it delegates to, and was right to fail that.
 
 
 class CodexCliProvider(AgentProvider):
@@ -55,7 +40,7 @@ class CodexCliProvider(AgentProvider):
 
     # -- readiness ---------------------------------------------------------
     def readiness(self) -> Readiness:
-        binary = codex_executable()
+        binary = resolve_executable(self.manifest)
         missing = []
         facts = {}
         if binary:
@@ -117,9 +102,10 @@ class CodexCliProvider(AgentProvider):
 
     # -- invocation --------------------------------------------------------
     def build_invocation(self, capability: str, request: dict) -> Invocation:
-        binary = codex_executable()
+        binary = resolve_executable(self.manifest)
         if not binary:
-            raise ProviderError("The Codex CLI is not installed")
+            raise ProviderError(
+                "The Codex CLI was not found in any location its manifest declares")
         prompt_path = request.get("prompt_path")
         if not prompt_path:
             raise ProviderError("Codex requires a prompt file")
@@ -142,6 +128,7 @@ class CodexCliProvider(AgentProvider):
         )
         return Invocation(
             executable=binary,
+            manifest_executable=self.manifest.get("executable"),
             argv=argv,
             stdin_path=str(prompt_path),
             # Identities only. The value is injected at the Firebreak boundary by

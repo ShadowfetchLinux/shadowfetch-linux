@@ -15,6 +15,7 @@ Here ffprobe writes to a file with -o, so there is no prose to parse.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -39,7 +40,7 @@ class OfflineMediaProvider(AgentProvider):
     # -- readiness ---------------------------------------------------------
     def readiness(self) -> Readiness:
         missing = [name for name, path in (("ffmpeg", FFMPEG), ("ffprobe", FFPROBE))
-                   if not Path(path).is_file()]
+                   if not (Path(path).is_file() and os.access(path, os.X_OK))]
         installed = not missing
         return Readiness(
             installed=installed,

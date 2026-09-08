@@ -268,7 +268,7 @@ class MissionTests(unittest.TestCase):
             log = executor.directory / "fixture-events.jsonl"
             log.write_text(json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "Friday. [S1:L1]"}}) + "\n" + json.dumps({"type": "turn.completed", "usage": {"output_tokens": 9}}) + "\n")
             return 0, "", log
-        with patch.dict(os.environ, {"CODEX_API_KEY": "unit-only-placeholder"}), patch.object(codex_adapter, "codex_executable", return_value="/usr/bin/true"), patch.object(executor, "run_process", cli):
+        with patch.dict(os.environ, {"CODEX_API_KEY": "unit-only-placeholder"}), patch.object(codex_adapter, "resolve_executable", return_value="/usr/bin/true"), patch.object(executor, "run_process", cli):
             self.assertEqual(executor.agent_turn("Selected source context", read_only=True), "Friday. [S1:L1]")
         self.assertEqual(observed["command"][-1], "-")
         self.assertEqual(observed["command"][observed["command"].index("--sandbox")+1], "read-only")
@@ -285,7 +285,7 @@ class MissionTests(unittest.TestCase):
                 executor.agent_turn("task")
         log = executor.directory / "failed.jsonl"
         log.write_text(json.dumps({"type": "turn.failed", "error": {"message": "fixture"}}))
-        with patch.dict(os.environ, {"CODEX_API_KEY": "unit-only-placeholder"}), patch.object(codex_adapter, "codex_executable", return_value="/usr/bin/true"), patch.object(executor, "run_process", return_value=(0,"",log)):
+        with patch.dict(os.environ, {"CODEX_API_KEY": "unit-only-placeholder"}), patch.object(codex_adapter, "resolve_executable", return_value="/usr/bin/true"), patch.object(executor, "run_process", return_value=(0,"",log)):
             with self.assertRaisesRegex(m.MissionError, "complete successful turn"):
                 executor.agent_turn("task")
 

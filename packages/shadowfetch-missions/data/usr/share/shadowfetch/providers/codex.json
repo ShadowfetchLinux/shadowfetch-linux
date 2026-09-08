@@ -7,6 +7,7 @@
   "adapter_class": "CodexCliProvider",
   "capabilities": ["code_change", "sourced_report"],
   "credential_ids": ["CODEX_API_KEY"],
+  "credential_aliases": { "OPENAI_API_KEY": "CODEX_API_KEY" },
   "network_policy": "allowlist",
   "egress_allowlist": ["api.openai.com", "chatgpt.com", "auth.openai.com"],
   "sandbox_profile": {
@@ -18,8 +19,20 @@
     "masked_paths": [],
     "account_mount": "codex-account"
   },
-  "executable": { "kind": "resolver", "resolver": "codex_executable" },
+  "executable": {
+    "kind": "candidates",
+    "trust": "user-runtime",
+    "candidates": [
+      "/usr/bin/codex",
+      "/usr/local/bin/codex",
+      "~/.nvm/versions/node/*/bin/codex",
+      "~/.local/share/npm/bin/codex",
+      "~/.npm-global/bin/codex",
+      "~/.local/bin/codex"
+    ],
+    "runtime_root_markers": ["codex", "@openai"]
+  },
   "package": "shadowfetch-missions",
   "version": "4.0.0",
-  "notes": "The Codex CLI reads its prompt on stdin and emits JSONL turn events. Its executable is located by sf_mission_account.codex_executable(), never by PATH. The dedicated mission account is used when no CODEX_API_KEY identity is supplied; either way the VALUE is injected at the Firebreak boundary and never travels in the Invocation."
+  "notes": "The Codex CLI reads its prompt on stdin and emits JSONL turn events. Its executable is located from the candidate list declared above, never through PATH. The dedicated mission account is used when no CODEX_API_KEY identity is supplied; either way the VALUE is injected at the Firebreak boundary and never travels in the Invocation."
 }

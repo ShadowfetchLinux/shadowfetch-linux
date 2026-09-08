@@ -37,7 +37,7 @@ MAX_OUTPUT = 2_000_000
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sf_providers import (LEGACY_KIND_CAPABILITY, CAPABILITY_LEGACY_KIND,
                          CAPABILITIES, Capability, ProviderRegistry,
-                         ProviderError)
+                         ProviderError, verify_invocation, trusted_executable)
 
 MAX_FILES = 40
 REVIEW_LOCK_WAIT_SECONDS = 10
@@ -568,9 +568,10 @@ def checkpoint_call(name, ws, **kwargs):
         raise MissionError(f"Workspace {name} failed: {clean(exc)}")
 
 def executable(name):
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from sf_mission_account import codex_executable
-    found = codex_executable() if name == "codex" else shutil.which(name)
+    # Provider programs are NOT resolved here any more -- a provider declares
+    # its own candidate paths and the registry resolves them. This helper now
+    # only finds Shadowfetch's own tools.
+    found = shutil.which(name)
     if found:
         return found
     for parent in Path(__file__).resolve().parents:
@@ -672,10 +673,16 @@ class Executor:
             resolved = str(command[0]) if invocation is not None else shutil.which(command[0])
             if resolved and not str(Path(resolved).resolve()).startswith(("/usr/", "/bin/", "/sbin/", "/lib/")):
                 # Explicit runtime binary distribution only; never ~/.config.
+                # Which parent directory is the runtime root is DECLARED by the
+                # manifest; the orchestrator does not know any provider's
+                # packaging layout. Without markers, only the program's own
+                # directory is granted.
                 real = Path(resolved).resolve()
+                markers = tuple(((invocation.manifest_executable or {}) if invocation
+                                 else {}).get("runtime_root_markers") or ())
                 runtime_root = real.parent
                 for parent in real.parents:
-                    if parent.name in ("codex", "@openai"):
+                    if parent.name in markers:
                         runtime_root = parent
                         break
                 wrapper.extend(["--read", str(runtime_root)])
@@ -730,12 +737,14 @@ class Executor:
             value = os.environ.get(name)
             if value:
                 values[name] = value
-        if not values and provider.id == "codex":
-            # Historical alias: 4.0.0 accepted OPENAI_API_KEY for the Codex
-            # identity. Kept so an existing worker environment keeps working.
-            alias = os.environ.get("OPENAI_API_KEY")
-            if alias and "CODEX_API_KEY" in (provider.manifest.get("credential_ids") or ()):
-                values["CODEX_API_KEY"] = alias
+        # Historical spellings are declared by the manifest, not branched on
+        # here. There is no provider name in this function.
+        declared = set(provider.manifest.get("credential_ids") or ())
+        for alias, identity in (provider.manifest.get("credential_aliases") or {}).items():
+            if identity in declared and identity not in values:
+                value = os.environ.get(alias)
+                if value:
+                    values[identity] = value
         return values
 
     def agent_turn(self, prompt, *, read_only=False):
@@ -811,6 +820,13 @@ class Executor:
         """Execute one provider Invocation. The sandbox is built by run_process
         from the Invocation's own SandboxSpec, so there is exactly one place in
         the engine that constructs a Firebreak command line."""
+        # The ceiling is re-derived from the manifest and enforced here, in the
+        # orchestrator. An adapter that never calls narrow(), or that builds a
+        # SandboxSpec from scratch, is still bounded by what it declared.
+        try:
+            verify_invocation(invocation, self.provider.manifest)
+        except ProviderError as exc:
+            raise MissionError(str(exc)) from exc
         return self.run_process(invocation.command, invocation.label, sandbox=True,
                                 env=dict(secrets or {}), input_path=invocation.stdin_path,
                                 invocation=invocation)

@@ -22,13 +22,16 @@ Phase 1 found real defects of each kind:
     value is injected at the Firebreak boundary by code that never came from a
     provider.
 
-  * An Invocation's executable must be an absolute path. There is no code path
-    that resolves a provider program through PATH.
+  * An Invocation's executable must be an absolute path AND must resolve
+    inside a packaging-owned directory. An adapter may look its program up
+    however it likes; trusted_executable() re-checks the answer, so a binary
+    in a user-writable location -- ~/.local/bin, say -- cannot be executed.
 """
 from __future__ import annotations
 
 import dataclasses
 import importlib
+import importlib.util
 import json
 import os
 import re
@@ -46,6 +49,8 @@ __all__ = [
     "INTERFACE_VERSION", "ProviderError", "ManifestError",
     "SandboxSpec", "Invocation", "AgentEvent", "Readiness", "Acceptance",
     "AgentProvider", "ProviderRegistry", "load_manifest", "manifest_schema",
+    "trusted_executable", "TRUSTED_EXEC_PREFIXES", "verify_invocation",
+    "resolve_executable",
 ]
 
 INTERFACE_VERSION = 1
@@ -54,6 +59,62 @@ different interface_version is reported unavailable with a reason rather than
 imported and failed later."""
 
 MANIFEST_DIR = Path("/usr/share/shadowfetch/providers")
+
+# A provider program may only be executed from a directory the packaging
+# system owns. This is the mechanism behind "no PATH resolution": even an
+# adapter that resolves its binary through PATH cannot return one from a
+# user-writable location, because trusted_executable() re-checks the answer.
+TRUSTED_EXEC_PREFIXES = ("/usr/bin/", "/usr/sbin/", "/usr/libexec/",
+                        "/usr/lib/", "/usr/local/lib/shadowfetch/",
+                        "/bin/", "/sbin/", "/opt/")
+
+
+def trusted_executable(path, *, trust="system"):
+    """Return the resolved absolute path, or raise if it fails its trust tier.
+
+    An adapter is packaged code, but its OUTPUT is not trusted: whatever it
+    says its program is, that answer is checked here.
+
+    trust="system"        the program must live in a packaging-owned directory.
+                          This is the default and what a provider should use.
+    trust="user-runtime"  the program is a user-installed runtime -- an npm or
+                          pip CLI -- so it legitimately lives under the user's
+                          home. It must then be owned by the invoking user and
+                          not world-writable. This tier exists because the
+                          Codex CLI is genuinely installed that way; declaring
+                          it makes the exception visible in the manifest and at
+                          the release gate instead of being silently universal.
+
+    Group-writability is accepted for user-runtime because npm and nvm install
+    0775 under the user's personal group. That is a real residual gap on a
+    machine with shared groups, and it is recorded in PHASE2_REMAINING_RISKS.
+    """
+    if not path:
+        raise ProviderError("Provider executable was not found")
+    resolved = Path(path).resolve()
+    if not resolved.is_absolute():
+        raise ProviderError(f"Provider executable is not absolute: {resolved}")
+    if str(resolved).startswith(tuple(TRUSTED_EXEC_PREFIXES)):
+        return str(resolved)
+    if trust != "user-runtime":
+        raise ProviderError(
+            f"Provider executable {resolved} is outside the packaging-owned "
+            "directories and its manifest does not declare a user-runtime "
+            "executable. A program in a user-writable location is not run as "
+            "part of a mission unless a provider declares that it is one.")
+    try:
+        info = resolved.stat()
+    except OSError as exc:
+        raise ProviderError(f"Provider executable {resolved} cannot be inspected: {exc}")
+    if info.st_uid != os.getuid():
+        raise ProviderError(
+            f"Provider executable {resolved} is not owned by the user running "
+            "the mission; refusing to execute it.")
+    if info.st_mode & 0o002:
+        raise ProviderError(
+            f"Provider executable {resolved} is world-writable; refusing to "
+            "execute it.")
+    return str(resolved)
 SCHEMA_NAME = "provider-manifest.schema.json"
 
 
@@ -140,6 +201,10 @@ class SandboxSpec:
             raise ProviderError("An adapter may not add egress hosts it did not declare")
         if not set(candidate.read_grants) <= set(self.read_grants):
             raise ProviderError("An adapter may not add read grants it did not declare")
+        # Masks are the one field whose safe direction is inverted: adding a
+        # mask narrows, removing one widens.
+        if not set(self.masked_paths) <= set(candidate.masked_paths):
+            raise ProviderError("An adapter may not drop a masked path it was given")
         for field in ("memory_mb", "cpu_seconds", "processes"):
             if getattr(candidate, field) > getattr(self, field):
                 raise ProviderError(f"An adapter may not raise its declared {field}")
@@ -163,6 +228,9 @@ class Invocation:
     env_allowlist: tuple = ()
     sandbox: SandboxSpec | None = None
     label: str = "provider"
+    manifest_executable: dict | None = None
+    """The manifest executable block, carried so the orchestrator can honour
+    declared runtime_root_markers and trust tier without knowing the provider."""
 
     def __post_init__(self):
         if not self.executable or not str(self.executable).startswith("/"):
@@ -343,6 +411,51 @@ class AgentProvider:
 # Manifest loading
 # --------------------------------------------------------------------------- #
 
+def resolve_executable(manifest):
+    """Locate a provider program from its DECLARED candidates. No PATH.
+
+    Candidates are absolute paths or globs, optionally starting with ~ for the
+    invoking user's home, tried in the order the manifest lists them. The
+    first existing executable file that passes the declared trust tier wins.
+    Returns None when the program is simply not installed, which is a
+    readiness answer rather than an error.
+    """
+    block = (manifest or {}).get("executable") or {}
+    kind = block.get("kind")
+    trust = block.get("trust", "system")
+    if kind == "absolute":
+        path = Path(block["path"])
+        if not (path.is_file() and os.access(path, os.X_OK)):
+            return None
+        try:
+            return trusted_executable(path, trust=trust)
+        except ProviderError:
+            return None
+    if kind != "candidates":
+        return None
+    home = Path.home()
+    for pattern in block.get("candidates") or ():
+        pattern = str(pattern)
+        if pattern.startswith("~/"):
+            base, relative = home, pattern[2:]
+        elif pattern.startswith("/"):
+            base, relative = Path("/"), pattern[1:]
+        else:
+            continue                       # never a relative lookup
+        try:
+            matches = sorted(base.glob(relative), reverse=True)
+        except (OSError, ValueError):
+            continue
+        for match in matches:
+            if not (match.is_file() and os.access(match, os.X_OK)):
+                continue
+            try:
+                return trusted_executable(match, trust=trust)
+            except ProviderError:
+                continue
+    return None
+
+
 def _schema_path(root: Path) -> Path:
     return Path(root) / SCHEMA_NAME
 
@@ -361,10 +474,24 @@ def manifest_schema(root: Path | None = None) -> dict:
 def _default_root() -> Path:
     override = os.environ.get("SHADOWFETCH_PROVIDER_MANIFESTS")
     if override:
-        # Test/QA seam only. It selects DATA that is then fully validated, never
-        # an executable, and every adapter it can name must still live in the
-        # packaged module root.
-        return Path(override).expanduser()
+        # A test/QA seam, but not an unconditional one. The document it selects
+        # decides network policy, credential identities, read grants and
+        # resource caps -- so an environment-selected manifest root is the
+        # Phase-1 defect class one layer up from PATH. It is honoured only from
+        # a directory the invoking user owns and that no one else can write.
+        candidate = Path(override).expanduser()
+        try:
+            info = candidate.stat()
+            safe = (candidate.is_dir() and not candidate.is_symlink()
+                    and info.st_uid in (0, os.getuid())
+                    and not info.st_mode & 0o022)
+        except OSError:
+            safe = False
+        if safe:
+            return candidate
+        sys.stderr.write(
+            f"ignoring SHADOWFETCH_PROVIDER_MANIFESTS={candidate}: it must be a "
+            "directory you own that is not group- or world-writable\n")
     if MANIFEST_DIR.is_dir():
         return MANIFEST_DIR
     for parent in Path(__file__).resolve().parents:
@@ -418,6 +545,60 @@ def sandbox_from_manifest(manifest: dict) -> SandboxSpec:
 # --------------------------------------------------------------------------- #
 # Registry
 # --------------------------------------------------------------------------- #
+
+def verify_invocation(invocation, manifest):
+    """Check a built Invocation against the ceiling its manifest declares.
+
+    narrow() is a convenience an adapter can simply not call, and
+    Invocation(sandbox=...) accepts any SandboxSpec an adapter constructs from
+    scratch. Without this, "an adapter cannot widen what it declared" is a
+    convention. This is the mechanism: the orchestrator re-derives the ceiling
+    from the manifest and refuses anything above it, whatever the adapter did.
+    """
+    ceiling = sandbox_from_manifest(manifest)
+    spec = invocation.sandbox
+    if spec is None:
+        raise ProviderError(
+            f"{manifest['id']}: built an invocation with no sandbox specification")
+    if spec.network != ceiling.network and ceiling.network == "none":
+        raise ProviderError(
+            f"{manifest['id']}: requested network {spec.network!r} but declares none")
+    checks = (
+        ("credential", set(spec.credential_ids), set(ceiling.credential_ids)),
+        ("egress host", set(spec.egress_allowlist), set(ceiling.egress_allowlist)),
+        ("read grant", set(spec.read_grants), set(ceiling.read_grants)),
+    )
+    for what, got, allowed in checks:
+        extra = sorted(got - allowed)
+        if extra:
+            raise ProviderError(
+                f"{manifest['id']}: requested undeclared {what}(s): {', '.join(extra)}")
+    # Masks may only be ADDED. This is the one field whose safe direction is
+    # inverted, which is exactly why it was missed in narrow().
+    dropped = sorted(set(ceiling.masked_paths) - set(spec.masked_paths))
+    if dropped:
+        raise ProviderError(
+            f"{manifest['id']}: dropped declared masked path(s): {', '.join(dropped)}")
+    for field in ("memory_mb", "cpu_seconds", "processes"):
+        if getattr(spec, field) > getattr(ceiling, field):
+            raise ProviderError(
+                f"{manifest['id']}: requested {field}={getattr(spec, field)} above its "
+                f"declared {getattr(ceiling, field)}")
+    if ceiling.workspace_mode == "read-only" and spec.workspace_mode != "read-only":
+        raise ProviderError(f"{manifest['id']}: upgraded a read-only workspace to writable")
+    if spec.account_mount and spec.account_mount != ceiling.account_mount:
+        raise ProviderError(
+            f"{manifest['id']}: requested credential mount {spec.account_mount!r} "
+            "which it does not declare")
+    trusted_executable(invocation.executable,
+                       trust=(manifest.get("executable") or {}).get("trust", "system"))
+    undeclared = sorted(set(invocation.env_allowlist) - set(ceiling.credential_ids))
+    if undeclared:
+        raise ProviderError(
+            f"{manifest['id']}: invocation environment names undeclared "
+            f"credential(s): {', '.join(undeclared)}")
+    return invocation
+
 
 @dataclasses.dataclass(frozen=True)
 class _Entry:
@@ -480,9 +661,24 @@ class ProviderRegistry:
             return _Entry(manifest, None,
                           f"adapter module {module_name} is not installed at {self.module_root}")
         try:
-            if str(self.module_root) not in sys.path:
-                sys.path.insert(0, str(self.module_root))
-            module = importlib.import_module(module_name)
+            # Load from the VERIFIED file, not by name through sys.path.
+            # sf_missions.py inserts several directories onto sys.path, so an
+            # import by name could resolve to a same-named module elsewhere
+            # while the existence check above passed against module_root.
+            target = (self.module_root / f"{module_name}.py").resolve()
+            existing = sys.modules.get(module_name)
+            loaded_from = Path(getattr(existing, "__file__", "") or "/nonexistent")
+            if existing is not None and loaded_from.resolve() == target:
+                # Already imported from exactly the file we verified. Reuse it,
+                # so there is ONE module object for this adapter: two copies
+                # would mean anything patching or inspecting the adapter could
+                # be looking at a different object than the registry uses.
+                module = existing
+            else:
+                spec = importlib.util.spec_from_file_location(module_name, target)
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                spec.loader.exec_module(module)
             klass = getattr(module, manifest["adapter_class"])
             provider = klass(manifest, sandbox_from_manifest(manifest))
         except Exception as exc:  # a broken adapter must not take the engine down

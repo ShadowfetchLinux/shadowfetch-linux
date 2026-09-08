@@ -141,9 +141,24 @@ class MalformedManifestsFail(unittest.TestCase):
         doc = manifest("codex"); doc["adapter_module"] = "os"
         self._reject(doc, "does not satisfy the schema")
 
-    def test_resolver_the_adapter_does_not_define(self):
-        doc = manifest("codex"); doc["executable"] = {"kind": "resolver", "resolver": "nowhere"}
-        self._reject(doc, "does not define")
+    def test_executable_candidate_that_is_not_absolute(self):
+        """A relative candidate would be a PATH lookup wearing a manifest."""
+        doc = manifest("codex")
+        doc["executable"] = {"kind": "candidates", "trust": "user-runtime",
+                             "candidates": ["codex"]}
+        self._reject(doc, "does not satisfy the schema")
+
+    def test_candidates_kind_without_candidates(self):
+        doc = manifest("codex")
+        doc["executable"] = {"kind": "candidates"}
+        self._reject(doc, "does not satisfy the schema")
+
+    def test_retired_resolver_kind_is_refused(self):
+        """executable.kind "resolver" let an adapter function choose the program,
+        and the shipped one ended at shutil.which. The kind is gone."""
+        doc = manifest("codex")
+        doc["executable"] = {"kind": "resolver", "resolver": "codex_executable"}
+        self._reject(doc, "does not satisfy the schema")
 
     def test_credential_value_instead_of_identity(self):
         doc = manifest("codex"); doc["credential_ids"] = ["sk-live-abcdef"]

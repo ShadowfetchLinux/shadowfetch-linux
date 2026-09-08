@@ -66,6 +66,12 @@
         "pattern": "^[A-Z][A-Z0-9_]{2,60}$"
       }
     },
+    "credential_aliases": {
+      "description": "Historical environment variable names that also satisfy a declared credential identity. Declared as data so the orchestrator does not need a per-provider branch to honour an older spelling. Each alias maps to an identity that must itself appear in credential_ids.",
+      "type": "object",
+      "additionalProperties": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]{2,60}$" },
+      "propertyNames": { "pattern": "^[A-Z][A-Z0-9_]{2,60}$" }
+    },
     "network_policy": {
       "description": "The MOST network this provider may ever request. 'none' means the sandbox is run with an unshared network namespace. 'allowlist' additionally requires a non-empty egress_allowlist. The adapter cannot widen this at invocation time; the registry clamps it.",
       "enum": ["none", "allowlist"]
@@ -115,9 +121,25 @@
       "additionalProperties": false,
       "required": ["kind"],
       "properties": {
-        "kind": { "enum": ["absolute", "resolver", "none"] },
+        "kind": {
+          "description": "How the program is located. 'absolute' is one fixed path. 'candidates' is an ordered list of absolute or ~-relative globs, tried in order -- this is the preferred form because the manifest, not the environment, decides what may run. 'none' means the provider runs nothing. PATH lookup is not an option in any form.",
+          "enum": ["absolute", "candidates", "none"]
+        },
+        "trust": {
+          "description": "Where this program is allowed to live. 'system' (the default) requires a packaging-owned directory. 'user-runtime' permits a user-installed CLI under the user's home, and is then checked for ownership and world-writability. Declaring user-runtime makes the exception visible in review rather than universal.",
+          "enum": ["system", "user-runtime"]
+        },
         "path": { "type": "string", "pattern": "^/[^\\0]*$" },
-        "resolver": { "type": "string", "pattern": "^[a-z_][a-z0-9_]{2,48}$" }
+        "candidates": {
+          "description": "Ordered absolute or ~-relative globs. The first existing executable that passes the trust tier is used. Later entries are fallbacks, so put packaged locations first.",
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^(~/|/)[^\\0]*$" }
+        },
+        "runtime_root_markers": {
+          "description": "Directory names that, if found among the executable path's parents, mark the root of its runtime distribution. The sandbox is given read access to that root so the program can load its own files. Declared as data so the orchestrator needs no per-provider knowledge; without it only the executable's own directory is granted.",
+          "type": "array", "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[@A-Za-z0-9._-]{1,64}$" }
+        }
       },
       "allOf": [
         {
@@ -125,8 +147,8 @@
           "then": { "required": ["path"] }
         },
         {
-          "if": { "properties": { "kind": { "const": "resolver" } }, "required": ["kind"] },
-          "then": { "required": ["resolver"] }
+          "if": { "properties": { "kind": { "const": "candidates" } }, "required": ["kind"] },
+          "then": { "required": ["candidates"] }
         }
       ]
     },
