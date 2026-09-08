@@ -15,7 +15,22 @@ from harness import (FAKE_UUID, NEW_KERNEL, OLD_KERNEL, RESTORE, ROOT,
                      SandboxTestCase, tree_state)
 
 
-def git_show(path: Path, revision: str = "HEAD") -> str:
+# The regression proofs below compare against the code as PUBLISHED, not
+# against HEAD. Pinning to HEAD made these tests self-invalidating: once the
+# fix was committed, HEAD held the fixed script and every "the old code did
+# X" assertion failed against code that no longer does X.
+SHIPPED_REVISION = "v4.0.0"
+
+
+def assert_is_the_pre_fix_script(source: str, current: Path) -> None:
+    """Guard: the revision really is the code before the fix."""
+    if source == current.read_text():
+        raise AssertionError(
+            "%s resolves to the CURRENT script, so this regression proof would "
+            "compare the fix against itself" % SHIPPED_REVISION)
+
+
+def git_show(path: Path, revision: str = SHIPPED_REVISION) -> str:
     rel = path.relative_to(ROOT)
     return subprocess.run(["git", "-C", str(ROOT), "show", f"{revision}:{rel}"],
                           capture_output=True, text=True, check=True).stdout
@@ -126,7 +141,7 @@ class InterruptedRestoreLeavesBootConsistent(SandboxTestCase):
         self.assertIn("restore requested for Point #1", in_root.read_text())
 
     def test_the_pre_fix_script_did_not_roll_boot_back(self):
-        """Same interrupt, the script as shipped in HEAD.
+        """Same interrupt, the script as shipped in v4.0.0.
 
         Modelled with a mount that survives cleanup (a busy top-level mount -
         `umount` in the old cleanup is best-effort and ignores its own failure).

@@ -39,7 +39,14 @@ SMART_JSON = f"""{{
 """
 
 
-def git_show(path: Path, revision: str = "HEAD") -> str:
+# The regression proofs below compare against the code as PUBLISHED, not
+# against HEAD. Pinning to HEAD made these tests self-invalidating: once the
+# fix was committed, HEAD held the fixed script and every "the old code did
+# X" assertion failed against code that no longer does X.
+SHIPPED_REVISION = "v4.0.0"
+
+
+def git_show(path: Path, revision: str = SHIPPED_REVISION) -> str:
     rel = path.relative_to(ROOT)
     return subprocess.run(["git", "-C", str(ROOT), "show", f"{revision}:{rel}"],
                           capture_output=True, text=True, check=True).stdout
