@@ -561,9 +561,19 @@ def checkpoint_module():
         raise MissionError("Install shadowfetch-fireline for workspace recovery")
 
 def checkpoint_call(name, ws, **kwargs):
+    """Structured call into the checkpoint engine.
+
+    Returns the engine's own dict -- {"id", "method", "workspace", ...} for a
+    snapshot. The previous version went through the MCP tool handler, which
+    returns a human sentence, and the caller recovered the recovery-point id
+    with re.search(r"checkpoint ([0-9-]+)"). Rewording that sentence would have
+    silently broken recovery, which is the feature this distribution is built
+    around. The engine now renders its sentence FROM this result rather than
+    the other way round.
+    """
     module = checkpoint_module()
     try:
-        return module.build_checkpoint().tools[name].handler({"workspace": ws.name, **kwargs})
+        return module.checkpoint_call(name, workspace=ws.name, **kwargs)
     except Exception as exc:
         raise MissionError(f"Workspace {name} failed: {clean(exc)}")
 
@@ -1070,11 +1080,11 @@ class Executor:
             self.event("checkpoint-started", "Taking workspace recovery point")
             atomic(before_path, json.dumps(tree_index(self.ws)))
             result = checkpoint_call("snapshot", self.ws, label="mission:" + self.mid)
-            match = re.search(r"checkpoint ([0-9-]+)", result)
-            if not match:
+            recovery_id = (result or {}).get("id")
+            if not recovery_id:
                 raise MissionError("Checkpoint engine returned no recovery id")
-            self.store.update(self.mid, checkpoint=match.group(1))
-            self.event("checkpoint-created", match.group(1))
+            self.store.update(self.mid, checkpoint=recovery_id)
+            self.event("checkpoint-created", recovery_id)
         getattr(self, self.CAPABILITY_METHOD[capability])()
         self.check()
 

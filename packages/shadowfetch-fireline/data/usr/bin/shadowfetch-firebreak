@@ -25,6 +25,40 @@ PUBLIC_ETC = ("ld.so.cache", "ld.so.conf", "ld.so.conf.d", "alternatives", "ssl/
 class Error(Exception):
     pass
 
+def redact(text):
+    """Strip credentials from text on its way to the terminal.
+
+    Firebreak's error messages quote a child process's stderr (a failed
+    checkpoint, a failed namespace probe), so they are an output path like any
+    other. The one shared implementation lives in shadowfetch-missions -- which
+    Depends on THIS package, so it cannot be a hard dependency in this
+    direction. Use it when it is installed.
+
+    Without it, fall back to striking out the exact values of the credentials
+    this process was actually handed. That is genuinely narrower than the
+    shared rules (no vendor prefixes, no PEM blocks, no Authorization headers),
+    but it covers the only secret material Firebreak itself is given, and it is
+    never a no-op pretending to be a redactor.
+    """
+    text = str(text)
+    locations = [Path("/usr/lib/shadowfetch/missions")]
+    locations += [parent / "packages/shadowfetch-missions/data/usr/lib/shadowfetch/missions"
+                  for parent in Path(__file__).resolve().parents]
+    for location in locations:
+        if (location / "sf_redact.py").is_file():
+            if str(location) not in sys.path:
+                sys.path.insert(0, str(location))
+            try:
+                from sf_redact import redact as shared
+            except ImportError:
+                break
+            return shared(text)
+    for name in sorted(CREDENTIALS - {"SSH_AUTH_SOCK"}):
+        value = os.environ.get(name)
+        if value and len(value) >= 8:
+            text = text.replace(value, "[REDACTED]")
+    return text
+
 def root():
     return Path(os.environ.get("SHADOWFETCH_AGENT_WORKSPACES", str(Path.home() / "Workspaces"))).expanduser().resolve()
 
@@ -187,13 +221,19 @@ def run(args):
     cmd = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--unit=" + sid, "--description=Shadowfetch Firebreak isolated task", "--property=TasksMax=" + str(args.processes), "--property=MemoryMax=" + str(args.memory_mb) + "M", "--property=CPUQuota=200%", "--", *cmd]
     checkpoint = None
     if not args.no_checkpoint:
-        result = subprocess.run([checkpoint_bin(), "snapshot", ws.name, "--label", "firebreak:" + sid], capture_output=True, text=True, timeout=600)
+        # --json: the recovery id comes back as a value. Splitting the human
+        # sentence made the wording of that sentence the recovery contract, and
+        # silently truncated any id containing a character outside [0-9-].
+        result = subprocess.run([checkpoint_bin(), "snapshot", ws.name, "--label", "firebreak:" + sid, "--json"], capture_output=True, text=True, timeout=600)
         if result.returncode:
             raise Error("Checkpoint failed; execution refused: " + result.stderr[-500:])
-        words = result.stdout.split()
-        if len(words) < 2 or words[0] != "checkpoint":
+        try:
+            receipt = json.loads(result.stdout)
+            checkpoint = receipt["id"]
+        except (ValueError, TypeError, KeyError):
             raise Error("Checkpoint engine returned an invalid receipt; execution refused")
-        checkpoint = words[1]
+        if not isinstance(checkpoint, str) or not checkpoint.strip():
+            raise Error("Checkpoint engine returned an invalid receipt; execution refused")
         print("checkpoint " + checkpoint + " taken", flush=True)
     started = datetime.datetime.now(datetime.timezone.utc).isoformat()
     manifest = {"session": sid, "workspace": str(ws), "network": net, "private_home": True, "read_grants": list(map(str, grants)), "credential_names": credentials, "checkpoint": checkpoint, "started": started, "limits": {"memory_mb": args.memory_mb, "cpu_seconds": args.cpu_seconds, "processes": args.processes}}
@@ -268,7 +308,7 @@ def main(argv=None):
         parser.print_help()
         return 0
     except (Error, OSError, subprocess.TimeoutExpired) as exc:
-        print("Firebreak: " + str(exc), file=sys.stderr)
+        print("Firebreak: " + redact(exc), file=sys.stderr)
         return 1
 
 if __name__ == "__main__":

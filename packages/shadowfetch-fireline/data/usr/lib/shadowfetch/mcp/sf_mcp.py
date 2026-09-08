@@ -234,24 +234,143 @@ def build_phoenix() -> Server:
 
 
 # --------------------------------------------------------------------------- #
-# Server: checkpoint  (WRITES — scoped to one workspace under ~/Workspaces)
+# Checkpoint engine  (structured data; the MCP tools and the CLI render FROM it)
 # --------------------------------------------------------------------------- #
-def build_checkpoint() -> Server:
-    s = Server("checkpoint",
-               "Snapshot, inspect and undo changes inside ONE agent workspace "
-               "under ~/Workspaces. snapshot() and undo() WRITE (a snapshot copy, "
-               "or a restore of the workspace); they touch only the named "
-               "workspace. Use snapshot() before letting an agent run, then undo() "
-               "to reverse everything it did.")
+# Recovery is the guarantee this distribution advertises, so a checkpoint id has
+# to travel as DATA. Before this change every caller recovered it by running a
+# regular expression over the English sentence the MCP tool returns --
+# sf_missions.py did re.search(r"checkpoint ([0-9-]+)", ...) and Firebreak split
+# the same words -- which made a human sentence the recovery ABI. Reword the
+# sentence, or mint an id containing anything outside [0-9-], and recovery
+# breaks silently.
+#
+# CheckpointEngine returns dictionaries. format_*() renders the same sentences
+# those callers read today FROM those dictionaries, so the words and the data
+# cannot drift apart. Every field below is something the engine actually knows:
+# it comes from the metadata file the engine itself writes, or from the tree
+# comparison it performs.
+#
+#   snapshot  {"action": "snapshot", "id": str, "workspace": str,
+#              "method": "btrfs"|"tar", "label": str, "created": str,
+#              "archive": str|None}            # archive: "tar" method only
+#   list      {"action": "list", "workspace": str, "count": int,
+#              "checkpoints": [{"id", "method", "label", "created", "archive"}]}
+#   diff      {"action": "diff", "workspace": str, "checkpoint": str,
+#              "method": str, "count": int, "truncated": bool,
+#              "changes": [{"status": "added"|"removed"|"modified",
+#                           "path": str}]}      # "truncated": text form elides
+#   undo      {"action": "undo", "workspace": str, "checkpoint": str,
+#              "method": str, "label": str,
+#              "safety": {"id": str, "method": str}}
+#
+# The strings format_*() produces are an interface: agents read them and
+# shadowfetch-checkpoint prints them. Changing one is an interface change, not a
+# copy edit -- and a caller that needs the id should read result["id"] instead.
 
-    def _snapshot(ws: Path, label: str) -> dict:
+CHECKPOINT_ACTIONS = ("snapshot", "list", "diff", "undo")
+DIFF_TEXT_LIMIT = 500
+_CHANGE_MARK = {"added": "+", "removed": "-", "modified": "M"}
+
+
+def _mint_id() -> str:
+    # Second-precision ids collide when two snapshots land in the same second
+    # (the pre-undo safety snapshot did exactly that and clobbered the target
+    # checkpoint's archive). A nanosecond tail separates them.
+    return time.strftime("%Y%m%d-%H%M%S") + f"-{time.monotonic_ns() % 1000000:06d}"
+
+
+def _new_checkpoint_id(store: Path) -> str:
+    cid = _mint_id()
+    while (store / f"{cid}.json").exists() or (store / f"{cid}.tar.gz").exists():
+        cid = _mint_id()
+    return cid
+
+
+def _no_ckpt_dir(ws):
+    def f(ti: tarfile.TarInfo):
+        return None if "/.sf-checkpoints/" in ("/" + ti.name + "/") else ti
+    return f
+
+
+class CheckpointEngine:
+    """Snapshot / list / diff / undo one workspace, returning structured data.
+
+    Nothing in this class formats or parses prose. A caller that needs the
+    checkpoint id reads result["id"]; a caller that needs to show a person
+    something passes the result to the matching format_*() function.
+    """
+
+    def snapshot(self, workspace: str, label: str = "manual") -> dict:
+        ws = _workspace(workspace)
+        if not ws.is_dir():
+            raise _ToolError(f"workspace does not exist: {ws}")
+        meta = self._snapshot(ws, label)
+        return {"action": "snapshot", "id": meta["id"], "workspace": meta["workspace"],
+                "method": meta["method"], "label": meta["label"],
+                "created": meta["created"], "archive": meta.get("archive")}
+
+    def list(self, workspace: str) -> dict:
+        ws = _workspace(workspace)
         store = _ckpt_store(ws)
-        # Second-precision ids collide when two snapshots land in the same second
-        # (the pre-undo safety snapshot did exactly that and clobbered the target
-        # checkpoint's archive). Add a nanosecond tail and guard against reuse.
-        cid = time.strftime("%Y%m%d-%H%M%S") + f"-{time.monotonic_ns() % 1000000:06d}"
-        while (store / f"{cid}.json").exists() or (store / f"{cid}.tar.gz").exists():
-            cid = time.strftime("%Y%m%d-%H%M%S") + f"-{time.monotonic_ns() % 1000000:06d}"
+        rows = []
+        for stem in sorted(p.stem for p in store.glob("*.json")):
+            meta = json.loads((store / f"{stem}.json").read_text())
+            rows.append({"id": meta["id"], "method": meta["method"],
+                         "label": meta.get("label", ""),
+                         "created": meta.get("created"),
+                         "archive": meta.get("archive")})
+        return {"action": "list", "workspace": ws.name,
+                "count": len(rows), "checkpoints": rows}
+
+    def diff(self, workspace: str, checkpoint: str) -> dict:
+        ws = _workspace(workspace)
+        store = _ckpt_store(ws)
+        cid, meta = self._meta(store, checkpoint)
+        base = _restore_tree(store, meta)
+        changes = _tree_changes(base, ws)
+        _cleanup_tmp(base, meta)
+        return {"action": "diff", "workspace": ws.name, "checkpoint": cid,
+                "method": meta["method"], "count": len(changes),
+                "truncated": len(changes) > DIFF_TEXT_LIMIT,
+                "changes": [{"status": status, "path": path} for status, path in changes]}
+
+    def undo(self, workspace: str, checkpoint: str) -> dict:
+        ws = _workspace(workspace)
+        store = _ckpt_store(ws)
+        cid, meta = self._meta(store, checkpoint)
+        safety = self._snapshot(ws, f"pre-undo-of-{cid}")  # never lose current state silently
+        base = _restore_tree(store, meta)
+        # replace workspace contents (preserving the .sf-checkpoints store, which
+        # lives OUTSIDE ws) with the checkpoint tree
+        for child in ws.iterdir():
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        for child in base.iterdir():
+            dst = ws / child.name
+            if child.is_symlink():
+                dst.symlink_to(os.readlink(child))
+            elif child.is_dir():
+                shutil.copytree(child, dst, symlinks=True)
+            else:
+                shutil.copy2(child, dst, follow_symlinks=False)
+        _cleanup_tmp(base, meta)
+        return {"action": "undo", "workspace": ws.name, "checkpoint": cid,
+                "method": meta["method"], "label": meta.get("label", ""),
+                "safety": {"id": safety["id"], "method": safety["method"]}}
+
+    # -- internals ---------------------------------------------------------- #
+    def _meta(self, store: Path, checkpoint: str) -> tuple[str, dict]:
+        cid = _safe_name(checkpoint)
+        meta_p = store / f"{cid}.json"
+        if not meta_p.exists():
+            raise _ToolError(f"no such checkpoint: {cid}")
+        return cid, json.loads(meta_p.read_text())
+
+    def _snapshot(self, ws: Path, label: str) -> dict:
+        store = _ckpt_store(ws)
+        cid = _new_checkpoint_id(store)
         meta = {"id": cid, "label": label, "workspace": ws.name,
                 "created": cid, "method": None}
         is_btrfs = _run(["stat", "-f", "-c", "%T", str(ws)]).stdout.strip() == "btrfs"
@@ -270,10 +389,65 @@ def build_checkpoint() -> Server:
         (store / f"{cid}.json").write_text(json.dumps(meta, indent=2))
         return meta
 
-    def _no_ckpt_dir(ws):
-        def f(ti: tarfile.TarInfo):
-            return None if "/.sf-checkpoints/" in ("/" + ti.name + "/") else ti
-        return f
+
+def checkpoint_call(action: str, **kwargs) -> dict:
+    """Structured entry point for the rest of Shadowfetch.
+
+    Mission Control and Firebreak use this (or `shadowfetch-checkpoint --json`)
+    instead of scraping the human sentence:
+
+        recovery = sf_mcp.checkpoint_call("snapshot", workspace=ws.name,
+                                          label="mission:" + mid)["id"]
+
+    Raises _ToolError on bad input, exactly as the MCP tool handlers do.
+    """
+    if action not in CHECKPOINT_ACTIONS:
+        raise _ToolError(f"unknown checkpoint action: {action}")
+    return getattr(CheckpointEngine(), action)(**kwargs)
+
+
+# -- human rendering: the shipped sentences, built from the structured result - #
+def format_snapshot(result: dict) -> str:
+    return (f"checkpoint {result['id']} taken ({result['method']}) "
+            f"for workspace '{result['workspace']}'.")
+
+
+def format_list(result: dict) -> str:
+    if not result["checkpoints"]:
+        return f"no checkpoints for '{result['workspace']}'."
+    rows = [f"  {c['id']}  {c['method']:6}  {c['label']}" for c in result["checkpoints"]]
+    return f"checkpoints for '{result['workspace']}':\n" + "\n".join(rows)
+
+
+def format_diff(result: dict) -> str:
+    if not result["changes"]:
+        return "no changes since checkpoint."
+    rows = [f"  {_CHANGE_MARK[c['status']]} {c['path']}"
+            for c in result["changes"][:DIFF_TEXT_LIMIT]]
+    return "changed since checkpoint:\n" + "\n".join(rows)
+
+
+def format_undo(result: dict) -> str:
+    return (f"workspace '{result['workspace']}' restored to checkpoint "
+            f"{result['checkpoint']}. A safety checkpoint of the pre-undo state "
+            f"was taken first.")
+
+
+CHECKPOINT_FORMATTERS = {"snapshot": format_snapshot, "list": format_list,
+                         "diff": format_diff, "undo": format_undo}
+
+
+# --------------------------------------------------------------------------- #
+# Server: checkpoint  (WRITES — scoped to one workspace under ~/Workspaces)
+# --------------------------------------------------------------------------- #
+def build_checkpoint() -> Server:
+    s = Server("checkpoint",
+               "Snapshot, inspect and undo changes inside ONE agent workspace "
+               "under ~/Workspaces. snapshot() and undo() WRITE (a snapshot copy, "
+               "or a restore of the workspace); they touch only the named "
+               "workspace. Use snapshot() before letting an agent run, then undo() "
+               "to reverse everything it did.")
+    engine = CheckpointEngine()
 
     @s.tool("snapshot",
             "WRITES: take a restore point of the named workspace before an agent "
@@ -283,27 +457,14 @@ def build_checkpoint() -> Server:
                 "workspace": {"type": "string", "description": "workspace name under ~/Workspaces"},
                 "label": {"type": "string", "description": "optional human label"}}})
     def snapshot(args):
-        ws = _workspace(args["workspace"])
-        if not ws.is_dir():
-            raise _ToolError(f"workspace does not exist: {ws}")
-        meta = _snapshot(ws, args.get("label", "manual"))
-        return f"checkpoint {meta['id']} taken ({meta['method']}) for workspace '{ws.name}'."
+        return format_snapshot(engine.snapshot(args["workspace"], args.get("label", "manual")))
 
     @s.tool("list",
             "List checkpoints for a workspace (read-only).",
             {"type": "object", "required": ["workspace"], "properties": {
                 "workspace": {"type": "string"}}})
     def _list(args):
-        ws = _workspace(args["workspace"])
-        store = _ckpt_store(ws)
-        pts = sorted(p.stem for p in store.glob("*.json"))
-        if not pts:
-            return f"no checkpoints for '{ws.name}'."
-        rows = []
-        for cid in pts:
-            m = json.loads((store / f"{cid}.json").read_text())
-            rows.append(f"  {m['id']}  {m['method']:6}  {m.get('label','')}")
-        return f"checkpoints for '{ws.name}':\n" + "\n".join(rows)
+        return format_list(engine.list(args["workspace"]))
 
     @s.tool("diff",
             "Show which files changed in the workspace since a checkpoint "
@@ -311,19 +472,7 @@ def build_checkpoint() -> Server:
             {"type": "object", "required": ["workspace", "checkpoint"], "properties": {
                 "workspace": {"type": "string"}, "checkpoint": {"type": "string"}}})
     def diff(args):
-        ws = _workspace(args["workspace"])
-        store = _ckpt_store(ws)
-        cid = _safe_name(args["checkpoint"])
-        meta_p = store / f"{cid}.json"
-        if not meta_p.exists():
-            raise _ToolError(f"no such checkpoint: {cid}")
-        meta = json.loads(meta_p.read_text())
-        base = _restore_tree(store, meta)
-        changed = _tree_diff(base, ws)
-        _cleanup_tmp(base, meta)
-        if not changed:
-            return "no changes since checkpoint."
-        return "changed since checkpoint:\n" + "\n".join(f"  {c}" for c in changed[:500])
+        return format_diff(engine.diff(args["workspace"], args["checkpoint"]))
 
     @s.tool("undo",
             "WRITES: restore the workspace to a checkpoint, reversing everything "
@@ -333,33 +482,7 @@ def build_checkpoint() -> Server:
             {"type": "object", "required": ["workspace", "checkpoint"], "properties": {
                 "workspace": {"type": "string"}, "checkpoint": {"type": "string"}}})
     def undo(args):
-        ws = _workspace(args["workspace"])
-        store = _ckpt_store(ws)
-        cid = _safe_name(args["checkpoint"])
-        meta_p = store / f"{cid}.json"
-        if not meta_p.exists():
-            raise _ToolError(f"no such checkpoint: {cid}")
-        meta = json.loads(meta_p.read_text())
-        _snapshot(ws, f"pre-undo-of-{cid}")  # never lose current state silently
-        base = _restore_tree(store, meta)
-        # replace workspace contents (preserving the .sf-checkpoints store, which
-        # lives OUTSIDE ws) with the checkpoint tree
-        for child in ws.iterdir():
-            if child.is_dir() and not child.is_symlink():
-                shutil.rmtree(child)
-            else:
-                child.unlink()
-        for child in base.iterdir():
-            dst = ws / child.name
-            if child.is_symlink():
-                dst.symlink_to(os.readlink(child))
-            elif child.is_dir():
-                shutil.copytree(child, dst, symlinks=True)
-            else:
-                shutil.copy2(child, dst, follow_symlinks=False)
-        _cleanup_tmp(base, meta)
-        return (f"workspace '{ws.name}' restored to checkpoint {cid}. "
-                f"A safety checkpoint of the pre-undo state was taken first.")
+        return format_undo(engine.undo(args["workspace"], args["checkpoint"]))
 
     return s
 
@@ -430,7 +553,8 @@ def _cleanup_tmp(base: Path, meta: dict):
             shutil.rmtree(root, ignore_errors=True)
 
 
-def _tree_diff(a: Path, b: Path) -> list[str]:
+def _tree_changes(a: Path, b: Path) -> list[tuple[str, str]]:
+    """Compare two trees; return (status, path) pairs, not display strings."""
     import hashlib
 
     def _digest(p: Path) -> str:
@@ -453,12 +577,17 @@ def _tree_diff(a: Path, b: Path) -> list[str]:
     changed = []
     for k in sorted(set(ia) | set(ib)):
         if k not in ia:
-            changed.append(f"+ {k}")
+            changed.append(("added", k))
         elif k not in ib:
-            changed.append(f"- {k}")
+            changed.append(("removed", k))
         elif ia[k] != ib[k]:
-            changed.append(f"M {k}")
+            changed.append(("modified", k))
     return changed
+
+
+def _tree_diff(a: Path, b: Path) -> list[str]:
+    """Display form of _tree_changes ("+ path" / "- path" / "M path")."""
+    return [f"{_CHANGE_MARK[status]} {path}" for status, path in _tree_changes(a, b)]
 
 
 # --------------------------------------------------------------------------- #

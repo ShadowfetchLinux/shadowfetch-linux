@@ -7,21 +7,23 @@ the SAME restore points. Snapshots and undo touch only the named workspace
 under ~/Workspaces.
 """
 from __future__ import annotations
-import argparse, sys
+import argparse, json, sys
 from pathlib import Path
 
 sys.path.insert(0, "/usr/lib/shadowfetch/mcp")
+# A source tree wins over an installed copy: /usr/bin/shadowfetch-checkpoint has
+# no such ancestor directory, so an installed run is unaffected, while running
+# this file out of a checkout no longer silently drives the OLDER engine in
+# /usr/lib (which is how `make test` came to exercise the installed package
+# instead of the checkout). Same precedence sf_missions.checkpoint_module() uses.
+for _up in Path(__file__).resolve().parents:
+    _cand = _up / "data/usr/lib/shadowfetch/mcp"
+    if (_cand / "sf_mcp.py").exists():
+        sys.path.insert(0, str(_cand)); break
 try:
     import sf_mcp
 except ImportError:
-    # allow running from a source tree
-    here = Path(__file__).resolve()
-    for up in here.parents:
-        cand = up / "data/usr/lib/shadowfetch/mcp"
-        if (cand / "sf_mcp.py").exists():
-            sys.path.insert(0, str(cand)); import sf_mcp; break
-    else:
-        sys.stderr.write("sf_mcp not found\n"); raise SystemExit(3)
+    sys.stderr.write("sf_mcp not found\n"); raise SystemExit(3)
 
 
 def _call(srv, tool, **args):
@@ -36,20 +38,46 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="shadowfetch-checkpoint",
         description="Snapshot / diff / undo an agent workspace (~/Workspaces).")
     p.add_argument("--version", action="store_true")
+    p.add_argument("--json", action="store_true",
+                   help="print the structured result instead of the human sentence")
+    # SUPPRESS so that naming the flag after the subcommand does not reset the
+    # value argparse already stored for the flag named before it.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                        help="print the structured result instead of the human sentence")
     sub = p.add_subparsers(dest="cmd")
-    s = sub.add_parser("snapshot", help="take a restore point before an agent runs")
+    s = sub.add_parser("snapshot", parents=[common], help="take a restore point before an agent runs")
     s.add_argument("workspace"); s.add_argument("--label", default="manual")
-    l = sub.add_parser("list", help="list a workspace's checkpoints")
+    l = sub.add_parser("list", parents=[common], help="list a workspace's checkpoints")
     l.add_argument("workspace")
-    d = sub.add_parser("diff", help="show what changed since a checkpoint")
+    d = sub.add_parser("diff", parents=[common], help="show what changed since a checkpoint")
     d.add_argument("workspace"); d.add_argument("checkpoint")
-    u = sub.add_parser("undo", help="restore a workspace to a checkpoint")
+    u = sub.add_parser("undo", parents=[common], help="restore a workspace to a checkpoint")
     u.add_argument("workspace"); u.add_argument("checkpoint")
     a = p.parse_args(argv)
     if a.version:
         print(f"shadowfetch-checkpoint (Shadowfetch Linux) {sf_mcp.SERVER_VERSION}"); return 0
     if not a.cmd:
         p.print_help(); return 2
+    if a.cmd == "snapshot":
+        call = {"workspace": a.workspace, "label": a.label}
+    elif a.cmd == "list":
+        call = {"workspace": a.workspace}
+    else:
+        call = {"workspace": a.workspace, "checkpoint": a.checkpoint}
+    if a.json:
+        # Structured form: the id is a value, not a word in a sentence.
+        try:
+            result = sf_mcp.checkpoint_call(a.cmd, **call)
+        except sf_mcp._ToolError as exc:
+            # Machine-readable on stdout, the same sentence on stderr, so a
+            # caller that only reads stderr (Firebreak) gets the reason instead
+            # of the tail of a traceback.
+            print(json.dumps({"action": a.cmd, "error": str(exc)}, indent=2))
+            sys.stderr.write(str(exc) + "\n")
+            return 1
+        print(json.dumps(result, indent=2))
+        return 0
     srv = sf_mcp.build_checkpoint()
     if a.cmd == "snapshot":
         text, err = _call(srv, "snapshot", workspace=a.workspace, label=a.label)
