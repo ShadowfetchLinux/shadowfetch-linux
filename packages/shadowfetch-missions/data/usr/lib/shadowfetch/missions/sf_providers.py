@@ -103,6 +103,7 @@ class SandboxSpec:
     read_grants: tuple = ()
     masked_paths: tuple = ()
     credential_ids: tuple = ()
+    account_mount: str = ""
     memory_mb: int = 3072
     cpu_seconds: int = 900
     processes: int = 96
@@ -133,6 +134,8 @@ class SandboxSpec:
             raise ProviderError("An adapter may not add network access it did not declare")
         if not set(candidate.credential_ids) <= set(self.credential_ids):
             raise ProviderError("An adapter may not request undeclared credentials")
+        if candidate.account_mount and candidate.account_mount != self.account_mount:
+            raise ProviderError("An adapter may not mount a credential store it did not declare")
         if not set(candidate.egress_allowlist) <= set(self.egress_allowlist):
             raise ProviderError("An adapter may not add egress hosts it did not declare")
         if not set(candidate.read_grants) <= set(self.read_grants):
@@ -316,6 +319,20 @@ class AgentProvider:
         """
         raise NotImplementedError
 
+    def turn_succeeded(self, events) -> bool:
+        """Did the provider finish a complete turn? Default: it emitted a
+        completion and no error. Adapters override only if their native
+        protocol says something more specific."""
+        completed = any(e.type == AgentEvent.TURN_COMPLETE for e in events)
+        failed = any(e.type == AgentEvent.ERROR for e in events)
+        return completed and not failed
+
+    def usage(self, events):
+        for event in reversed(list(events)):
+            if event.type == AgentEvent.TURN_COMPLETE:
+                return event.data.get("usage")
+        return None
+
     def final_message(self, events) -> str:
         """The answer a person reads, extracted from normalized events."""
         messages = [e.text for e in events if e.type == AgentEvent.MESSAGE and e.text]
@@ -391,6 +408,7 @@ def sandbox_from_manifest(manifest: dict) -> SandboxSpec:
         read_grants=tuple(profile.get("read_grants") or ()),
         masked_paths=tuple(profile.get("masked_paths") or ()),
         credential_ids=tuple(manifest.get("credential_ids") or ()),
+        account_mount=profile.get("account_mount", ""),
         memory_mb=profile["memory_mb"],
         cpu_seconds=profile["cpu_seconds"],
         processes=profile["processes"],

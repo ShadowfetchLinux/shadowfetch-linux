@@ -107,8 +107,9 @@ class CodexCliProvider(AgentProvider):
             return base
         if (config or {}).get("network") != "allow":
             return Acceptance.no(
-                "Codex is a cloud agent and needs an explicitly approved connection "
-                "for this mission.")
+                "Codex is a cloud agent and requires explicit network approval for "
+                "this mission. Allow a connection for it, or choose a provider that "
+                "works offline.")
         if (config or {}).get("model"):
             return Acceptance.no(
                 "Mission model selection is unavailable; the Codex CLI default is used.")
@@ -188,15 +189,5 @@ class CodexCliProvider(AgentProvider):
         return events
 
     # -- turn outcome ------------------------------------------------------
-    @staticmethod
-    def turn_succeeded(events) -> bool:
-        completed = [e for e in events if e.type == AgentEvent.TURN_COMPLETE]
-        failed = [e for e in events if e.type == AgentEvent.ERROR]
-        return bool(completed) and not failed
-
-    @staticmethod
-    def usage(events):
-        for event in reversed(events):
-            if event.type == AgentEvent.TURN_COMPLETE:
-                return event.data.get("usage")
-        return None
+    # The base implementation already reads TURN_COMPLETE / ERROR, which is
+    # exactly Codex's turn.completed / turn.failed protocol after parsing.

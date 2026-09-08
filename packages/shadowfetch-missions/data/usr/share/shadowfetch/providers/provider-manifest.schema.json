@@ -97,6 +97,10 @@
           "uniqueItems": true,
           "items": { "type": "string", "pattern": "^/[^\\0]*$" }
         },
+        "account_mount": {
+          "description": "A named credential store the sandbox should mount for this provider. Declared as data so the orchestrator forwards it without knowing which provider asked: there is no provider name in the execution path.",
+          "enum": ["codex-account"]
+        },
         "masked_paths": {
           "description": "Paths that must NOT be visible even if some other grant would expose them.",
           "type": "array",

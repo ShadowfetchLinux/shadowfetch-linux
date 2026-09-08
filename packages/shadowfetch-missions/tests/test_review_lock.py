@@ -48,7 +48,7 @@ class ReviewLockTests(unittest.TestCase):
             inputs=["facts.md"], network="allow")["id"]
 
     def run_report(self):
-        with patch.object(m.Executor, "codex", return_value="Friday. [S1:L1]"):
+        with patch.object(m.Executor, "agent_turn", return_value="Friday. [S1:L1]"):
             result = m.run_mission(self.store, self.mid)
         self.assertEqual(result["state"], "waiting-review", result["error"])
         return result

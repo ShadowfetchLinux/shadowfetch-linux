@@ -15,7 +15,8 @@
     "cpu_seconds": 900,
     "processes": 96,
     "read_grants": [],
-    "masked_paths": []
+    "masked_paths": [],
+    "account_mount": "codex-account"
   },
   "executable": { "kind": "resolver", "resolver": "codex_executable" },
   "package": "shadowfetch-missions",
