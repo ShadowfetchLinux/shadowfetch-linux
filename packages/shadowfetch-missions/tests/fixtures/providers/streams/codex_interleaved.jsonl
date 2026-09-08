@@ -1,0 +1,7 @@
+codex: warning: ignoring user config as requested
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"Partial answer."}}
+{"type": "turn.completed", "usage": {"input_toke
+[]
+null
+{"type":"turn.completed","usage":null}
+-- firebreak session 4f2a closed; 0 denied syscalls --

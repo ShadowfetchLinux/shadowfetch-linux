@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"th_01HQ7F"}
+{"type":"item.started","item":{"id":"item_0","type":"reasoning"}}
+{"type":"item.completed","item":{"id":"item_0","type":"reasoning","text":"Reading facts.md"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"grep -n launch facts.md","exit_code":0}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"The launch is Friday and the release contains three workflows."}}
+{"type":"turn.completed","usage":{"input_tokens":1842,"cached_input_tokens":0,"output_tokens":96}}

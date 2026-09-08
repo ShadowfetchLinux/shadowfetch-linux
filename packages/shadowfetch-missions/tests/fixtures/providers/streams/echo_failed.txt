@@ -1,0 +1,4 @@
+# conformance-echo v1 starting
+step=1 scanning approved sources
+!! source unavailable: conformance.example.com
+== turn failed ==

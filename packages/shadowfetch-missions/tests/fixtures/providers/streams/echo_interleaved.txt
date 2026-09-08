@@ -1,0 +1,6 @@
+# conformance-echo v1 starting
+warning: unrecognised option --color, ignoring
+step=1 scanning approved sources
+say> Partial answer.
+== turn ok ==
+-- firebreak session 9ab1 closed; 0 denied syscalls --

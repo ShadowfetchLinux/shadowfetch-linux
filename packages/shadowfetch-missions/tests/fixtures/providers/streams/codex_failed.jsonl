@@ -1,0 +1,3 @@
+{"type":"thread.started","thread_id":"th_01HQ8B"}
+{"type":"item.started","item":{"id":"item_0","type":"reasoning"}}
+{"type":"turn.failed","message":"stream error: exceeded retry limit"}

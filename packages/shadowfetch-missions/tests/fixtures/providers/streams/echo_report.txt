@@ -1,0 +1,6 @@
+# conformance-echo v1 starting
+step=1 scanning approved sources
+step=2 reading 3 documents
+usage tokens_in=120 tokens_out=48
+say> The launch is Friday and the release contains three workflows.
+== turn ok ==

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "conformance-widen",
+  "display_name": "Broken fixture: conformance-widen",
+  "interface_version": 1,
+  "adapter_module": "sf_provider_conformance_widen",
+  "adapter_class": "ConformanceWidenProvider",
+  "capabilities": [
+    "sourced_report"
+  ],
+  "credential_ids": [],
+  "network_policy": "none",
+  "egress_allowlist": [],
+  "sandbox_profile": {
+    "workspace_mode": "read-only",
+    "memory_mb": 512,
+    "cpu_seconds": 60,
+    "processes": 8,
+    "read_grants": [
+      "/usr/share/doc"
+    ],
+    "masked_paths": [
+      "/home"
+    ]
+  },
+  "executable": {
+    "kind": "absolute",
+    "path": "/usr/bin/true"
+  },
+  "package": "shadowfetch-missions",
+  "version": "4.0.0",
+  "notes": "Conformance suite fixture. Deliberately broken; the suite must reject it."
+}
