@@ -317,7 +317,12 @@ def command_install(args: argparse.Namespace) -> int:
         if answer.strip().lower() not in {"y", "yes"}:
             print("Nothing changed.")
             return 0
-    helper = Path(os.environ.get("SHADOWFETCH_WORKBENCH_HELPER", DEFAULT_HELPER))
+    # The program handed to pkexec is fixed. It used to come from
+    # SHADOWFETCH_WORKBENCH_HELPER, so anything able to set a variable in the
+    # session -- ~/.profile, a desktop file, a systemd user unit -- chose what
+    # ran as root, and the user authenticated a familiar prompt for it. The
+    # is_file/X_OK checks did not help: an attacker-planted file passes both.
+    helper = DEFAULT_HELPER
     if not helper.is_file() or not os.access(helper, os.X_OK):
         raise SystemExit(f"The protected bundle installer is unavailable: {helper}")
     return subprocess.run(["pkexec", str(helper), "install", profile["catalog_id"]], check=False).returncode
