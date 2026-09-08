@@ -20,8 +20,9 @@ def check(desc, cond):
     passed+=cond; failed+= (not cond)
 
 # handshake protocolVersion
+Path("/tmp/sf-handshake").mkdir(exist_ok=True)
 for srv in ("passport","phoenix","checkpoint","fs"):
-    out=session(srv,[init])
+    out=session(srv,[init], {"SF_MCP_FS_ROOT":"/tmp/sf-handshake"} if srv=="fs" else None)
     check(f"{srv}: initialize returns protocolVersion", out and out[0]["result"].get("protocolVersion"))
 
 # checkpoint full: snapshot -> modify (same-size edit) -> diff shows M -> undo

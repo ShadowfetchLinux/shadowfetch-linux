@@ -9,7 +9,8 @@
 #   passport    read-only system self-check (privacy-scrubbed)
 #   phoenix     read-only list of Btrfs/snapper restore points
 #   checkpoint  snapshot / diff / undo ONE ~/Workspaces workspace (writes there)
-#   fs          scoped, read-only file access under one root
+#   fs          scoped, read-only file access under one root (SF_MCP_FS_ROOT,
+#               required -- the server refuses to start without it)
 #
 # Point any MCP-capable agent at:  shadowfetch-mcp <server>
 set -euo pipefail
@@ -37,19 +38,29 @@ EOF
     echo "  passport    read-only system self-check (privacy-scrubbed)"
     echo "  phoenix     read-only list of restore points"
     echo "  checkpoint  snapshot/diff/undo one ~/Workspaces workspace (writes there)"
-    echo "  fs          scoped read-only file access (set SF_MCP_FS_ROOT)"
+    echo "  fs          scoped read-only file access (SF_MCP_FS_ROOT required)"
     ;;
   config)
     fmt="${2:---json}"
     case "$fmt" in
       --claude)
         echo "# add each server, e.g.:  claude mcp add sf-passport -- shadowfetch-mcp passport"
-        for s in $servers; do echo "claude mcp add sf-$s -- shadowfetch-mcp $s"; done ;;
+        for s in $servers; do
+          if [ "$s" = fs ]; then
+            echo "claude mcp add sf-fs --env SF_MCP_FS_ROOT=${SF_MCP_FS_ROOT:-$PWD} -- shadowfetch-mcp fs"
+          else
+            echo "claude mcp add sf-$s -- shadowfetch-mcp $s"
+          fi
+        done ;;
       --codex|--json|*)
         printf '{\n  "mcpServers": {\n'
         i=0; for s in $servers; do
           i=$((i+1)); comma=,; [ $i -eq 4 ] && comma=""
-          printf '    "shadowfetch-%s": { "command": "shadowfetch-mcp", "args": ["%s"] }%s\n' "$s" "$s" "$comma"
+          if [ "$s" = fs ]; then
+            printf '    "shadowfetch-fs": { "command": "shadowfetch-mcp", "args": ["fs"], "env": { "SF_MCP_FS_ROOT": "%s" } }%s\n' "${SF_MCP_FS_ROOT:-$PWD}" "$comma"
+          else
+            printf '    "shadowfetch-%s": { "command": "shadowfetch-mcp", "args": ["%s"] }%s\n' "$s" "$s" "$comma"
+          fi
         done
         printf '  }\n}\n' ;;
     esac

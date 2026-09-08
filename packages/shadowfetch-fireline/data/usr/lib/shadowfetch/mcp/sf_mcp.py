@@ -462,11 +462,53 @@ def _tree_diff(a: Path, b: Path) -> list[str]:
 
 
 # --------------------------------------------------------------------------- #
-# Server: fs  (READ-ONLY, scoped to SF_MCP_FS_ROOT)
+# Server: fs  (READ-ONLY, scoped to SF_MCP_FS_ROOT -- required, no default)
 # --------------------------------------------------------------------------- #
+class _ScopeError(Exception):
+    """The operator did not name a usable scope for the fs server."""
+
+
+# Directories that can never be a meaningful "scope": pseudo-filesystems,
+# system configuration, and the well-known credential stores. Mirrors the
+# denylist shadowfetch-firebreak applies to --read grants.
+_SCOPE_RESERVED = (Path("/proc"), Path("/sys"), Path("/dev"), Path("/run"),
+                   Path("/boot"), Path("/etc"))
+_SCOPE_RESERVED_HOME = (".ssh", ".gnupg", ".aws", ".codex", ".config/gcloud")
+
+
+def _check_scope(root: Path) -> None:
+    if len(root.parts) < 3:
+        raise _ScopeError(
+            f"SF_MCP_FS_ROOT={root} is a filesystem root or top-level directory; "
+            "name the one project directory the agent may read")
+    home = Path.home().resolve()
+    if root == home:
+        raise _ScopeError(
+            "SF_MCP_FS_ROOT is the whole home directory, which exposes every "
+            "credential and private file on the account; name a project directory")
+    for item in _SCOPE_RESERVED:
+        if root == item or item in root.parents:
+            raise _ScopeError(f"SF_MCP_FS_ROOT={root} is inside {item}, which is never in scope")
+    for leaf in _SCOPE_RESERVED_HOME:
+        secret = home / leaf
+        if root == secret or secret in root.parents:
+            raise _ScopeError(f"SF_MCP_FS_ROOT={root} is a credential store and is never in scope")
+
+
 def build_fs() -> Server:
-    root_env = os.environ.get("SF_MCP_FS_ROOT", str(Path.cwd()))
-    root = Path(root_env).resolve()
+    root_env = os.environ.get("SF_MCP_FS_ROOT", "").strip()
+    if not root_env:
+        raise _ScopeError(
+            "SF_MCP_FS_ROOT is not set. The fs server refuses to start without an "
+            "explicit scope -- it will not silently fall back to the working "
+            "directory. Set SF_MCP_FS_ROOT to the one directory the agent may read.")
+    candidate = Path(root_env).expanduser()
+    if not candidate.is_absolute():
+        raise _ScopeError(f"SF_MCP_FS_ROOT={root_env} must be an absolute path")
+    root = candidate.resolve()
+    if not root.is_dir():
+        raise _ScopeError(f"SF_MCP_FS_ROOT={root} is not an existing directory")
+    _check_scope(root)
     s = Server("fs",
                f"Read-only file access scoped to {root}. Every path is resolved "
                "and refused if it escapes the root. No writes, ever.")
@@ -526,7 +568,12 @@ def main(argv):
     if name not in SERVERS:
         sys.stderr.write(f"unknown server: {name}\n")
         return 2
-    SERVERS[name]().serve()
+    try:
+        server = SERVERS[name]()
+    except _ScopeError as exc:
+        sys.stderr.write(f"{name}: {exc}\n")
+        return 2
+    server.serve()
     return 0
 
 
