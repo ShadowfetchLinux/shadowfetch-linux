@@ -479,6 +479,16 @@ class ProviderConformanceTests(unittest.TestCase):
             self.assertTrue(declared.startswith("/"))
             self.assertIn(declared, built,
                           f"manifest declares {declared} but no invocation used it: {sorted(built)}")
+        elif kind == "candidates":
+            declared = executable.get("candidates") or []
+            self.assertTrue(declared, "kind=candidates with no candidates")
+            for candidate in declared:
+                self.assertTrue(str(candidate).startswith(("/", "~/")),
+                                f"candidate {candidate!r} is not absolute; that is a "
+                                "PATH lookup wearing a manifest")
+            for used in built:
+                self.assertTrue(used.startswith("/"),
+                                f"invocation used a relative program: {used}")
         elif kind == "resolver":
             module = sys.modules[self.manifest["adapter_module"]]
             resolver = getattr(module, executable["resolver"], None)
@@ -693,9 +703,11 @@ class ProviderConformanceTests(unittest.TestCase):
         shipped sibling module, the sibling is part of the chain and the promise
         covers it too.
         """
-        executable = self.manifest.get("executable") or {"kind": "none"}
-        if executable.get("kind") != "resolver":
-            self.skipTest("this provider does not declare an executable resolver")
+        # This assertion caught the real defect once: codex declared a
+        # resolver whose chain ended at shutil.which. The resolver kind is
+        # retired, so skipping on it would leave the check permanently
+        # inert. It now runs for EVERY provider: no adapter, and nothing an
+        # adapter imports, may reach PATH resolution at all.
         module = sys.modules[self.manifest["adapter_module"]]
         adapter_source = Path(module.__file__).resolve()
         offenders = []

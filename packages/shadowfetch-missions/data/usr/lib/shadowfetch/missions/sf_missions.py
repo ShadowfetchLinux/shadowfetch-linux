@@ -35,6 +35,7 @@ FINAL = ("completed", "undone")
 MAX_TEXT = 200_000
 MAX_OUTPUT = 2_000_000
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sf_redact
 from sf_providers import (LEGACY_KIND_CAPABILITY, CAPABILITY_LEGACY_KIND,
                          CAPABILITIES, Capability, ProviderRegistry,
                          ProviderError, verify_invocation, trusted_executable)
@@ -667,7 +668,13 @@ class Executor:
                        "--net", spec.firebreak_network if spec else self.mission["config"]["network"],
                        "--no-checkpoint",
                        "--memory-mb", str(spec.memory_mb) if spec else "3072",
-                       "--cpu-seconds", str(self.mission["config"]["timeout"]),
+                       # The declared ceiling and the mission timeout are both
+                       # limits; take the tighter. Passing only the mission
+                       # timeout meant a provider declaring 60s got 900s while
+                       # verify_invocation() made the declaration look enforced.
+                       "--cpu-seconds", str(min(spec.cpu_seconds,
+                                                self.mission["config"]["timeout"])
+                                            if spec else self.mission["config"]["timeout"]),
                        "--processes", str(spec.processes) if spec else "96"]
             if codex_account or (spec is not None and spec.account_mount and not env):
                 wrapper.append("--" + (spec.account_mount if spec is not None and spec.account_mount else "codex-account"))
@@ -710,6 +717,13 @@ class Executor:
             if input_stream:
                 input_stream.close()
         size, tail = 0, bytearray()
+        # The retained log is provider output, which is where a credential
+        # would surface. Reads arrive in 65536-byte blocks, so a secret can
+        # straddle a boundary and be invisible to anything looking at one
+        # block at a time. StreamRedactor holds back the overlap and is the
+        # reason the shared redactor is stateful rather than a plain function.
+        redactor = sf_redact.StreamRedactor(
+            values=sf_redact.credential_values(process_env))
         selector = selectors.DefaultSelector()
         selector.register(proc.stdout, selectors.EVENT_READ)
         try:
@@ -724,16 +738,26 @@ class Executor:
                         tail.extend(block)
                         del tail[:-12000]
                         if size < MAX_OUTPUT:
-                            safe = clean(block.decode("utf-8", "replace")).encode()
+                            safe = redactor.feed_bytes(
+                                clean(block.decode("utf-8", "replace")).encode())
                             stream.write(safe[:MAX_OUTPUT - size])
                             size += len(safe)
                 code = proc.wait(timeout=3)
+                # Whatever is not flushed is never returned.
+                remainder = redactor.flush_bytes()
+                if remainder and size < MAX_OUTPUT:
+                    stream.write(remainder[:MAX_OUTPUT - size])
+                    size += len(remainder)
         finally:
             selector.close()
             kill_tree(proc)
             proc.stdout.close()
         self.event("process-finished", f"{label}: exit {code}; log={log}")
-        return code, clean(tail.decode("utf-8", "replace")), log
+        # The tail is quoted verbatim in MissionError messages and receipts,
+        # so it is redacted too -- one-shot here, since it is a whole string.
+        return code, sf_redact.redact(
+            clean(tail.decode("utf-8", "replace")),
+            values=sf_redact.credential_values(process_env)), log
 
     def credentials_for(self, provider):
         """Turn declared credential IDENTITIES into values, at the boundary.
@@ -1103,7 +1127,7 @@ class Executor:
             after = {}
             error = (error or "") + "; diff unavailable: " + clean(exc)
         records = [{"path": p, "sha256": digest(p), "bytes": Path(p).stat().st_size} for p in self.artifacts if Path(p).is_file()]
-        receipt = {"schema": 1, "mission": self.mid, "title": self.mission["title"], "kind": self.mission["kind"], "state": state, "workspace": str(self.ws), "checkpoint": self.store.get(self.mid)["checkpoint"], "started_at": self.mission["updated_at"], "finished_at": now(), "runtime": self.mission["config"]["runtime"], "network": self.mission["config"]["network"], "error": error, "artifacts": records, "tests": self.tests, "inferences": self.inferences, "diff": str(self.directory / "changes.diff"), "changes": str(self.directory / "changes.json"), "diff_truncated": bool(change and change.truncated), "review_required": state == "waiting-review", "recovery_index_preserved": self.preserve_recovery_index, "limits": {"timeout_seconds": self.mission["config"]["timeout"], "sandbox_rss_mb": 3072, "sandbox_address_space": "unlimited", "sandbox_processes": 96, "queue_concurrency": 1}, "recovery_scope": "Workspace files only; external network effects cannot be undone"}
+        receipt = {"schema": 1, "mission": self.mid, "title": self.mission["title"], "kind": self.mission["kind"], "capability": self.mission.get("capability"), "provider_id": self.mission.get("provider_id"), "provider_version": getattr(getattr(self, "_provider", None), "version", None), "state": state, "workspace": str(self.ws), "checkpoint": self.store.get(self.mid)["checkpoint"], "started_at": self.mission["updated_at"], "finished_at": now(), "runtime": self.mission["config"]["runtime"], "network": self.mission["config"]["network"], "error": error, "artifacts": records, "tests": self.tests, "inferences": self.inferences, "diff": str(self.directory / "changes.diff"), "changes": str(self.directory / "changes.json"), "diff_truncated": bool(change and change.truncated), "review_required": state == "waiting-review", "recovery_index_preserved": self.preserve_recovery_index, "limits": {"timeout_seconds": self.mission["config"]["timeout"], "sandbox_rss_mb": 3072, "sandbox_address_space": "unlimited", "sandbox_processes": 96, "queue_concurrency": 1}, "recovery_scope": "Workspace files only; external network effects cannot be undone"}
         path = self.directory / "receipt.json"
         atomic(path, json.dumps(receipt, indent=2) + "\n")
         self.store.update(self.mid, receipt=str(path), artifacts=json.dumps([r["path"] for r in records]))

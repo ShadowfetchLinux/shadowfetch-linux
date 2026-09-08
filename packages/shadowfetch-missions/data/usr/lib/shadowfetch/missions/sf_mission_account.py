@@ -1,4 +1,5 @@
 """Dedicated Codex account storage; never imports the user's general Codex home."""
+import sys
 import argparse
 import contextlib
 import fcntl
@@ -14,8 +15,20 @@ class AccountError(RuntimeError):
 
 
 def codex_executable():
-    """Find a first-run install before the desktop has refreshed its PATH."""
-    return shutil.which('codex') or shutil.which('codex', path=str(Path.home() / '.local/bin'))
+    """Locate the Codex CLI from the provider manifest's declared candidates.
+
+    Deliberately not shutil.which. Two reasons. The provider conformance
+    suite refuses any PATH resolution reachable from an adapter's import
+    chain, and this module is in it. More importantly, a person must log in
+    with the same binary a mission will run -- resolving them differently is
+    a way to authenticate one program and execute another.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        from sf_providers import ProviderRegistry, resolve_executable
+        return resolve_executable(ProviderRegistry().manifest('codex'))
+    except Exception:
+        return None
 
 
 def account_home(*, create=False):

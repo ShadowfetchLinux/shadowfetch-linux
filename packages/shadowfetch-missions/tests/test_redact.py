@@ -84,11 +84,11 @@ INNOCENT = {
 class PatternInventory(unittest.TestCase):
     def test_every_rule_has_a_sample(self):
         """A new rule without a fixture would ship untested."""
-        declared = {identifier for identifier, _ in r.rules()}
+        declared = {identifier for identifier, _, _ in r.rules()}
         self.assertEqual(declared, set(SAMPLES), "rules() and SAMPLES disagree")
 
     def test_every_rule_description_is_written(self):
-        for identifier, description in r.rules():
+        for identifier, description, _ in r.rules():
             self.assertTrue(description.strip(), identifier)
 
     def test_each_pattern_class_is_caught_in_context(self):
@@ -136,6 +136,88 @@ class PatternInventory(unittest.TestCase):
         """A credential-shaped name is all we have, so these lose their values."""
         self.assertEqual(r.redact("PRIMARY_KEY=id", values=()), "PRIMARY_KEY=" + P)
         self.assertEqual(r.redact("SORT_KEY: name", values=()), "SORT_KEY: " + P)
+
+
+class TriggerPrefilter(unittest.TestCase):
+    """The pre-filter skips the regex entirely; prove it can only skip safely.
+
+    The required implication is: a rule matches => a trigger is present.
+    A false "no trigger" would silently disable redaction for that block, so
+    this is the highest-consequence property in the module.
+    """
+
+    def triggers(self):
+        return r._compiled(())[2]
+
+    def pattern(self):
+        return r._compiled(())[0]
+
+    def test_each_rule_declares_a_trigger_its_own_sample_contains(self):
+        for identifier, _, rule_triggers in r.rules():
+            with self.subTest(rule=identifier):
+                self.assertTrue(rule_triggers, f"{identifier} declares no trigger")
+                lowered = SAMPLES[identifier].lower()
+                self.assertTrue(
+                    any(trigger.lower() in lowered for trigger in rule_triggers),
+                    f"{identifier}: sample contains none of {rule_triggers}")
+
+    def test_each_rule_actually_matches_its_own_sample(self):
+        """Otherwise the trigger test above proves nothing."""
+        for identifier, source, *_rest in r._RULES:
+            with self.subTest(rule=identifier):
+                probe = r.re.compile(source.replace("(?P<S>", "(?:"))
+                self.assertIsNotNone(probe.search(SAMPLES[identifier]), identifier)
+
+    def test_a_match_always_implies_a_trigger(self):
+        corpus = list(SAMPLES.values()) + list(INNOCENT.values()) + [
+            "Authorization: Bearer " + "2" * 44,
+            "PASSPHRASE = " + "5" * 20,
+            "credentials: '" + "6" * 20 + "'",
+            "APIKEY:" + "7" * 20,
+        ]
+        for text in corpus:
+            with self.subTest(text=text[:40]):
+                if self.pattern().search(text):
+                    self.assertTrue(r._has_trigger(text, self.triggers()),
+                                    f"regex matched but no trigger fired: {text[:60]!r}")
+
+    def test_fuzz_a_match_always_implies_a_trigger(self):
+        rng = random.Random(1337)
+        pieces = SlidingWindow.NOISE + ["TOKEN", "Secret", "PassPhrase", "CREDENTIALS",
+                                        "apikey", "://", "-----BEGIN", "xox", "AIza",
+                                        "dop_v1_", "glpat-", "hf_", "npm_", "cfut_"]
+        matched = 0
+        for _ in range(3000):
+            text = "".join(rng.choice(pieces) for _ in range(rng.randrange(2, 25)))
+            if self.pattern().search(text):
+                matched += 1
+                self.assertTrue(r._has_trigger(text, self.triggers()),
+                                f"regex matched but no trigger fired: {text!r}")
+        self.assertGreater(matched, 100, "fuzz produced too few matching samples")
+
+    def test_ascii_case_folding_keeps_the_implication_true(self):
+        """Unicode IGNORECASE would let a rule match text whose lower() has no
+        contiguous trigger. The table uses (?ai:) so that cannot happen."""
+        for text in ("KEY=" + "0" * 20,          # Kelvin sign instead of K
+                     "CREDENTİAL=" + "0" * 20):   # dotted capital I
+            with self.subTest(text=text[:20]):
+                self.assertIsNone(self.pattern().search(text),
+                                  "a non-ASCII letter matched a name word")
+                self.assertEqual(r.redact(text, values=()), text)
+
+    def test_the_prefilter_does_not_change_any_result(self):
+        """Fast path and slow path must agree on every corpus string."""
+        pattern, groups, _ = r._compiled(())
+        for text in list(SAMPLES.values()) + list(INNOCENT.values()):
+            with self.subTest(text=text[:40]):
+                slow = pattern.sub(lambda m: r._rewrite(m, groups, r.PLACEHOLDER), text)
+                self.assertEqual(r.redact(text, values=()), slow)
+
+    def test_an_exact_credential_value_is_its_own_trigger(self):
+        value = build("Zz", "-Mixed-Case-", "0" * 20)
+        _, _, triggers = r._compiled((value,))
+        self.assertIn(value.lower(), triggers)
+        self.assertNotIn(value, r.redact("saw " + value, values=(value,)))
 
 
 class Restraint(unittest.TestCase):
@@ -327,7 +409,7 @@ class SlidingWindow(unittest.TestCase):
         """
         self.assertGreater(r.DEFAULT_CARRY, r.MAX_MATCH)
         oversized = []
-        for identifier, source, _ in r._RULES:
+        for identifier, source, *_rest in r._RULES:
             probe = "\n" + ("Z" * 200000) + "\n"
             for match in r.re.compile(source.replace("(?P<S>", "(?:")).finditer(probe):
                 if match.end() - match.start() > r.MAX_MATCH:
@@ -541,7 +623,23 @@ class Cost(unittest.TestCase):
         self.assertEqual(out, text)
         print(f"\n  throughput: {len(text) / 1048576 / elapsed:.1f} MiB/s "
               f"({len(text)} bytes in {elapsed:.3f}s)")
+        # Deterministic companion to the wall clock, which is noisy on a shared
+        # machine: an ordinary log block must take the pre-filter's fast path.
+        self.assertFalse(r._has_trigger(text, r._compiled(())[2]),
+                         "a clean log block should not reach the regex at all")
         self.assertLess(elapsed, 10.0, "redaction must not dominate log writing")
+
+    def test_only_the_blocks_containing_a_trigger_pay_the_regex_cost(self):
+        line = "controller: scanned 12 files, no changes\n"
+        clean = line * 2000
+        secret = build("export CODEX_API_KEY=", "6" * 48, "\n")
+        triggers = r._compiled(())[2]
+        self.assertFalse(r._has_trigger(clean, triggers))
+        self.assertTrue(r._has_trigger(clean + secret, triggers))
+        red = r.StreamRedactor(values=())
+        out = red.feed(clean) + red.feed(secret + clean) + red.flush()
+        self.assertNotIn("6" * 12, out)
+        self.assertIn("CODEX_API_KEY=" + P, out)
 
 
 class DefaultEnvironment(unittest.TestCase):
@@ -567,6 +665,79 @@ class DefaultEnvironment(unittest.TestCase):
     def test_empty_input(self):
         self.assertEqual(r.redact("", values=()), "")
         self.assertEqual(r.redact(None, values=()), "None")
+
+
+class OneImplementation(unittest.TestCase):
+    """W-29 is "one shared implementation". Guard against a second one.
+
+    These read shipped source as text rather than importing it: the Control
+    Center needs PyQt6 and Firebreak is an extensionless executable, and the
+    point here is what the code says, not what it does at runtime.
+    """
+
+    PACKAGES = ("shadowfetch-missions", "shadowfetch-fireline",
+                "shadowfetch-control-center")
+    VENDOR_PREFIXES = ("sk-", "xai-", "ghp_", "AKIA", "github_pat_", "-----BEGIN")
+    REGEX_MARKERS = ("re.sub", "re.compile", "re.search", "re.match",
+                     "[A-Za-z0-9", "[A-Z0-9", "{12,", "{16,", "{20,")
+
+    # Files allowed to contain their own secret patterns.
+    #   sf_redact.py  -- is the shared implementation.
+    #   sf_missions.py -- HANDOFF: still carries the original clean() regex.
+    #      The lead is rewiring Store/Executor onto the provider seam; once
+    #      clean() delegates to sf_redact, delete this entry and this test
+    #      starts enforcing the rule there too.
+    ALLOWED = {"sf_redact.py", "sf_missions.py"}
+
+    def shipped_sources(self):
+        root = Path(__file__).resolve().parents[3]
+        for package in self.PACKAGES:
+            base = root / "packages" / package / "data"
+            if not base.is_dir():
+                continue
+            for path in sorted(base.rglob("*")):
+                if not path.is_file() or path.suffix not in ("", ".py"):
+                    continue
+                try:
+                    text = path.read_text()
+                except (UnicodeDecodeError, OSError):
+                    continue
+                if path.suffix != ".py" and not text.startswith("#!"):
+                    continue
+                yield path, text
+
+    def test_no_second_secret_pattern_ships_anywhere(self):
+        offenders = []
+        for path, text in self.shipped_sources():
+            if path.name in self.ALLOWED:
+                continue
+            for number, line in enumerate(text.splitlines(), 1):
+                if (any(prefix in line for prefix in self.VENDOR_PREFIXES)
+                        and any(marker in line for marker in self.REGEX_MARKERS)):
+                    offenders.append(f"{path.name}:{number}: {line.strip()[:90]}")
+        self.assertEqual(offenders, [], "a second secret-pattern implementation appeared")
+
+    def test_the_scan_would_actually_catch_one(self):
+        """A guard test that cannot fail is worthless; prove this one bites."""
+        planted = 're.sub(r"sk-[A-Za-z0-9]{12,}", "x", message)'
+        self.assertTrue(any(prefix in planted for prefix in self.VENDOR_PREFIXES))
+        self.assertTrue(any(marker in planted for marker in self.REGEX_MARKERS))
+        innocent = 'run_to("disk-space.txt", ["df", "-h"])'
+        self.assertFalse(any(marker in innocent for marker in self.REGEX_MARKERS))
+
+    def test_the_control_center_transport_calls_the_shared_redactor(self):
+        root = Path(__file__).resolve().parents[3]
+        source = (root / "packages/shadowfetch-control-center/data/usr/share"
+                  / "shadowfetch/control-center/sfcc/mission_client.py").read_text()
+        self.assertIn("from sf_redact import redact", source)
+        self.assertIn("redact(error) if error else error", source)
+
+    def test_the_firebreak_error_funnel_calls_a_redactor(self):
+        root = Path(__file__).resolve().parents[3]
+        source = (root / "packages/shadowfetch-fireline/data/usr/bin"
+                  / "shadowfetch-firebreak").read_text()
+        self.assertIn("from sf_redact import redact as shared", source)
+        self.assertIn('print("Firebreak: " + redact(exc)', source)
 
 
 if __name__ == "__main__":

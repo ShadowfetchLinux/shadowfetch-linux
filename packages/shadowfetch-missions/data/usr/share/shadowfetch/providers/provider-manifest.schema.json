@@ -116,7 +116,7 @@
       }
     },
     "executable": {
-      "description": "How the provider's program is located. 'absolute' names a fixed path. 'resolver' names a function in the adapter module that returns an absolute path. PATH resolution is not an option, deliberately: Phase 1 removed several PATH- and environment-selected privileged executables and this format does not allow the class back in.",
+      "description": "How the provider's program is located. PATH resolution is not an option, deliberately: Phase 1 removed several PATH- and environment-selected privileged executables and this format does not allow the class back in. See the kind field for the forms available.",
       "type": "object",
       "additionalProperties": false,
       "required": ["kind"],

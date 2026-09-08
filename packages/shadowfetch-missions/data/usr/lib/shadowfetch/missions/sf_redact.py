@@ -199,9 +199,17 @@ CREDENTIAL_NAMES = (
 
 # --------------------------------------------------------------------------- #
 # Pattern inventory. One table, so "what does Shadowfetch redact" has exactly
-# one answer. Each entry is (id, regex, description). A rule may mark the part
-# of its match that is the secret with (?P<S>...); everything else in the match
-# is preserved. A rule with no (?P<S>...) has its whole match replaced.
+# one answer. Each entry is (id, regex, description, triggers).
+#
+# A rule may mark the part of its match that is the secret with (?P<S>...);
+# everything else in the match is preserved. A rule with no (?P<S>...) has its
+# whole match replaced.
+#
+# "triggers" are literals the rule CANNOT match without -- at least one must be
+# present, case-insensitively, for the rule to fire. _has_trigger uses their
+# union to skip the regex on a block that contains none of them. Adding a rule
+# without an honest trigger list would silently disable it, so
+# test_redact.py asserts the implication for every rule and by fuzzing.
 # --------------------------------------------------------------------------- #
 
 # A value-shape rule may not start immediately after a base64 character.
@@ -226,6 +234,10 @@ _NAME_WORD = (r"(?:TOKEN|KEY|APIKEY|SECRET|PASSWORD|PASSWD|PASSPHRASE"
               r"|CREDENTIAL|CREDENTIALS|AUTHORIZATION)")
 _NAME = r"(?<![A-Za-z0-9+/])" + _NAME_WORD
 
+# The literals a name rule cannot match without. "pass" covers PASSWORD,
+# PASSWD and PASSPHRASE; "key" covers APIKEY. See _has_trigger below.
+_NAME_TRIGGERS = ("token", "key", "secret", "pass", "credential", "authorization")
+
 # Between a name and its value: an optional closing quote on the name, then
 # = or :, then whitespace. The opening quote of the value is handled per rule.
 _ASSIGN = r"[\"']?\s*[:=]\s*"
@@ -241,131 +253,155 @@ _RULES: tuple = (
         r"-----BEGIN[ A-Z]{0,40}PRIVATE KEY-----[\s\S]{0,16384}?"
         r"(?:-----END[ A-Z]{0,40}PRIVATE KEY-----|\Z)",
         "PEM private key block, including one truncated by the end of the stream",
+        ("-----BEGIN",),
     ),
     (
         "jwt",
         _EDGE + r"eyJ[A-Za-z0-9_-]{6,1024}\.[A-Za-z0-9_-]{4,1024}\.[A-Za-z0-9_-]{0,1024}",
         "JSON Web Token (base64url header.payload.signature)",
+        ("eyJ",),
     ),
     (
         "authorization_header",
-        r"(?<![A-Za-z0-9+/])(?i:authorization)" + _ASSIGN
-        + r"(?i:(?:Bearer|Basic|Digest|Token|ApiKey|Negotiate)\s+)?"
+        r"(?<![A-Za-z0-9+/])(?ai:authorization)" + _ASSIGN
+        + r"(?ai:(?:Bearer|Basic|Digest|Token|ApiKey|Negotiate)\s+)?"
         + r"(?P<S>[^\s\"'\r\n]{1,2048})",
         "Authorization header credential, keeping the auth scheme keyword",
+        ("authorization",),
     ),
     (
         "http_auth_scheme",
-        _EDGE + r"(?i:(?:Bearer|Basic|Token)\s+)(?P<S>[A-Za-z0-9._~+/=-]{8,2048})",
+        _EDGE + r"(?ai:(?:Bearer|Basic|Token)\s+)(?P<S>[A-Za-z0-9._~+/=-]{8,2048})",
         "Credential following a Bearer / Basic / Token auth scheme keyword",
+        ("bearer", "basic", "token"),
     ),
     (
         "named_value_quoted",
-        r"(?i:" + _NAME + r")" + _ASSIGN + r"\"(?P<S>[^\"\r\n]{1,2048})\"",
+        r"(?ai:" + _NAME + r")" + _ASSIGN + r"\"(?P<S>[^\"\r\n]{1,2048})\"",
         "Double-quoted value of a credential-shaped name (JSON)",
+        _NAME_TRIGGERS,
     ),
     (
         "named_value_single_quoted",
-        r"(?i:" + _NAME + r")" + _ASSIGN + r"'(?P<S>[^'\r\n]{1,2048})'",
+        r"(?ai:" + _NAME + r")" + _ASSIGN + r"'(?P<S>[^'\r\n]{1,2048})'",
         "Single-quoted value of a credential-shaped name",
+        _NAME_TRIGGERS,
     ),
     (
         "named_value_bare",
-        r"(?i:" + _NAME + r")" + _ASSIGN + r"(?P<S>" + _BARE_VALUE + r")",
+        r"(?ai:" + _NAME + r")" + _ASSIGN + r"(?P<S>" + _BARE_VALUE + r")",
         "Unquoted value of a credential-shaped name (env dumps, shell traces)",
+        _NAME_TRIGGERS,
     ),
     (
         "url_userinfo",
-        _EDGE + r"(?i:[a-z][a-z0-9+.-]{1,20}://[^\s/@:]{1,256}:)"
-        r"(?P<S>[^\s/@]{1,256})(?=@)",
+        r"://[^\s/@:]{1,256}:(?P<S>[^\s/@]{1,256})(?=@)",
         "Password field of a scheme://user:password@host URL",
+        ("://",),
     ),
     (
         "openai_family",
         _EDGE + r"sk-(?P<S>[A-Za-z0-9_-]{12,512})",
         "OpenAI / Anthropic / OpenRouter sk- key (covers sk-proj-, sk-ant-, sk-or-v1-)",
+        ("sk-",),
     ),
     (
         "stripe",
         _EDGE + r"sk_(?:live|test)_(?P<S>[A-Za-z0-9]{16,512})",
         "Stripe secret key",
+        ("sk_live_", "sk_test_"),
     ),
     (
         "xai",
         _EDGE + r"xai-(?P<S>[A-Za-z0-9_-]{12,512})",
         "xAI key",
+        ("xai-",),
     ),
     (
         "groq",
         _EDGE + r"gsk_(?P<S>[A-Za-z0-9]{20,512})",
         "Groq key",
+        ("gsk_",),
     ),
     (
         "github_token",
         _EDGE + r"gh[pousr]_(?P<S>[A-Za-z0-9]{16,512})",
         "GitHub personal / OAuth / user / server / refresh token",
+        ("ghp_", "gho_", "ghu_", "ghs_", "ghr_"),
     ),
     (
         "github_pat",
         _EDGE + r"github_pat_(?P<S>[A-Za-z0-9_]{20,512})",
         "GitHub fine-grained personal access token",
+        ("github_pat_",),
     ),
     (
         "gitlab_pat",
         _EDGE + r"glpat-(?P<S>[A-Za-z0-9_-]{16,512})",
         "GitLab personal access token",
+        ("glpat-",),
     ),
     (
         "huggingface",
         _EDGE + r"hf_(?P<S>[A-Za-z0-9]{20,512})",
         "Hugging Face token",
+        ("hf_",),
     ),
     (
         "cloudflare_user_token",
         _EDGE + r"cfut_(?P<S>[A-Za-z0-9_-]{16,512})",
         "Cloudflare user API token",
+        ("cfut_",),
     ),
     (
         "npm",
         _EDGE + r"npm_(?P<S>[A-Za-z0-9]{30,512})",
         "npm automation token",
+        ("npm_",),
     ),
     (
         "pypi",
         _EDGE + r"pypi-(?P<S>[A-Za-z0-9_-]{16,512})",
         "PyPI upload token",
+        ("pypi-",),
     ),
     (
         "digitalocean",
         _EDGE + r"dop_v1_(?P<S>[A-Fa-f0-9]{64})",
         "DigitalOcean personal access token",
+        ("dop_v1_",),
     ),
     (
         "slack_token",
         _EDGE + r"xox[abeprs]-(?P<S>[A-Za-z0-9-]{10,512})",
         "Slack bot / user / app / refresh token",
+        ("xox",),
     ),
     (
         "slack_app_token",
         _EDGE + r"xapp-(?P<S>[0-9A-Za-z-]{10,512})",
         "Slack app-level token",
+        ("xapp-",),
     ),
     (
         "aws_access_key_id",
         _EDGE + r"(?:AKIA|ASIA|ABIA|ACCA|A3T[A-Z0-9])[A-Z0-9]{16}",
         "AWS access key id",
+        ("akia", "asia", "abia", "acca", "a3t"),
     ),
     (
         "google_api_key",
         _EDGE + r"AIza[A-Za-z0-9_-]{35}",
         "Google API key",
+        ("aiza",),
     ),
 )
 
 
 def rules() -> tuple:
-    """The pattern inventory as ``(id, description)`` pairs, for docs and tests."""
-    return tuple((identifier, description) for identifier, _, description in _RULES)
+    """The pattern inventory as ``(id, description, triggers)``, for docs and tests."""
+    return tuple((identifier, description, triggers)
+                 for identifier, _, description, triggers in _RULES)
 
 
 # --------------------------------------------------------------------------- #
@@ -379,18 +415,48 @@ def _rule_source(index: int, source: str) -> str:
 
 @functools.lru_cache(maxsize=8)
 def _compiled(values: tuple):
-    """Build the combined pattern for this set of exact credential values.
+    """Build the combined pattern and its trigger set for these exact values.
 
     Cached because the executor calls this once per 64 KiB block. The cache
     retains the credential values in memory, which is no worse than the
     environment they were read from, and it is bounded to 8 entries.
+
+    Returns ``(pattern, secret_groups, triggers)``. ``triggers`` is the
+    lowercase literal alphabet described on :func:`_has_trigger`.
     """
     parts = ["(?:" + re.escape(value) + ")" for value in values]
     parts += [_rule_source(index, source)
-              for index, (_, source, _) in enumerate(_RULES)]
+              for index, (_, source, _, _) in enumerate(_RULES)]
     pattern = re.compile("|".join(parts))
     secret_groups = tuple(name for name in pattern.groupindex if name.startswith("s_"))
-    return pattern, secret_groups
+    triggers = {value.lower() for value in values}
+    for _, _, _, rule_triggers in _RULES:
+        triggers.update(trigger.lower() for trigger in rule_triggers)
+    return pattern, secret_groups, tuple(sorted(triggers))
+
+
+def _has_trigger(text: str, triggers: tuple) -> bool:
+    """Could any rule match ``text`` at all?
+
+    Every rule declares literals it cannot match without, and this is the union
+    of them. Combining 24 alternatives into one regex costs the SUM of their
+    individual scans -- CPython retries every branch at every position, so the
+    full pattern runs at a couple of MiB/s. Substring search is memchr-fast, so
+    checking the alphabet first lets an ordinary log block (which contains none
+    of these literals) skip the regex entirely.
+
+    The one-way direction is the whole safety argument: this may answer "yes"
+    when no rule actually matches, but it must never answer "no" when one does.
+    That is why every case-insensitive group in the table is ``(?ai:`` --
+    ASCII-only. Under plain Unicode IGNORECASE, ``(?i:key)`` also matches the
+    Kelvin sign and ``(?i:i)`` matches a dotted capital I, whose ``.lower()``
+    is "i" plus a combining dot -- which would break the contiguous substring
+    this check looks for, and the rule would be skipped. With ASCII folding a
+    rule can only match ASCII letters, and ASCII ``.lower()`` preserves them.
+    ``test_redact.py`` fuzzes the implication directly.
+    """
+    lowered = text.lower()
+    return any(trigger in lowered for trigger in triggers)
 
 
 def credential_values(env=None, names=None) -> tuple:
@@ -440,7 +506,9 @@ def redact(text, *, values=None, placeholder: str = PLACEHOLDER) -> str:
         text = str(text)
     if not text:
         return text
-    pattern, secret_groups = _compiled(_resolve(values))
+    pattern, secret_groups, triggers = _compiled(_resolve(values))
+    if not _has_trigger(text, triggers):
+        return text
     return pattern.sub(lambda m: _rewrite(m, secret_groups, placeholder), text)
 
 
@@ -484,7 +552,7 @@ class StreamRedactor:
         self.carry = carry
         self.max_hold = max_hold
         self.values = _resolve(values)
-        self._pattern, self._secret_groups = _compiled(self.values)
+        self._pattern, self._secret_groups, self._triggers = _compiled(self.values)
         self._left = ""
         self._tail = ""
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
@@ -552,6 +620,8 @@ class StreamRedactor:
         ends after ``limit`` the cut is pulled back to that match's start, so a
         partially-seen secret is held rather than emitted in fragments.
         """
+        if not _has_trigger(buf, self._triggers):
+            return buf[origin:limit], limit
         out = []
         pos = origin
         cut = limit
