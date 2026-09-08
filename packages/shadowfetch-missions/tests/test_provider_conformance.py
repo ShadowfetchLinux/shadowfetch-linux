@@ -27,6 +27,7 @@ import os
 import signal
 import subprocess
 import sys
+import ast
 import tempfile
 import time
 import unittest
@@ -761,6 +762,129 @@ class ReleaseGateTests(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 # The architectural claim of Phase 2
 # --------------------------------------------------------------------------- #
+
+class CapabilityProviderSeparationTests(unittest.TestCase):
+    """One capability, two providers, and the choice made in data.
+
+    The localmodel conformance fixture declares code_change and sourced_report,
+    the same pair Codex declares. That overlap is what makes these assertions
+    possible at all: with only the shipped two, every capability has exactly one
+    provider and "capability chose the runtime" is indistinguishable from
+    "capability IS the runtime".
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.registry = fixture_registry(
+            manifest_root(*shipped_manifest_files(),
+                          FIXTURE_MANIFESTS / "conformance-localmodel.json"),
+            module_root(*shipped_adapter_files(), *FIXTURE_ADAPTER_FILES))
+
+    def test_one_capability_is_served_by_more_than_one_provider(self):
+        serving = sorted(p.id for p in self.registry.for_capability(Capability.CODE_CHANGE))
+        self.assertIn("codex", serving)
+        self.assertIn("conformance-localmodel", serving)
+        self.assertGreaterEqual(len(serving), 2)
+
+    def test_a_capability_does_not_name_its_provider(self):
+        """CAPABILITIES is a list of things a person wants done. If any entry
+        were a provider id, the two concepts would have re-merged."""
+        known = set(self.registry.ids())
+        for capability in CAPABILITIES:
+            self.assertNotIn(capability, known,
+                             f"capability {capability!r} is also a provider id")
+
+    def test_choosing_the_provider_changes_the_program_not_the_capability(self):
+        """The same capability, asked of two providers, produces two different
+        programs and one unchanged request."""
+        temp = tempfile.TemporaryDirectory(prefix="sf-capability-")
+        self.addCleanup(temp.cleanup)
+        prompt = Path(temp.name) / "prompt.md"
+        prompt.write_text("conformance: same request, different provider\n",
+                          encoding="utf-8")
+        built = {}
+        for provider_id in ("codex", "conformance-localmodel"):
+            provider = self.registry.get(provider_id)
+            # ONE request object, handed to both. If a provider needed a shape
+            # of its own, the request would be provider-specific and the
+            # separation would already be broken.
+            request = {"prompt_path": str(prompt), "config": {}}
+            context = (codex_binary_present() if provider_id == "codex"
+                       else contextlib.nullcontext())
+            with context:
+                invocation = provider.build_invocation(Capability.CODE_CHANGE, request)
+            built[provider_id] = invocation
+        # An Invocation carries no capability field: the capability is what the
+        # ORCHESTRATOR asked for, and the invocation is what the PROVIDER
+        # answered. Keeping them in separate objects is the separation, stated
+        # in the data model rather than only in prose.
+        self.assertFalse(hasattr(built["codex"], "capability"))
+        self.assertNotEqual(built["codex"].executable,
+                            built["conformance-localmodel"].executable,
+                            "two providers resolved the same program")
+        self.assertNotEqual(built["codex"].argv, built["conformance-localmodel"].argv,
+                            "two providers built the same command line, so choosing "
+                            "the provider changed nothing")
+
+    def test_the_engine_branches_on_no_provider_id_anywhere(self):
+        """`if provider == "codex"` outside an adapter is the shape Phase 2 set
+        out to remove.
+
+        Asserted on the SYNTAX rather than on the text, because the two are not
+        the same claim. sf_missions.py legitimately contains the string "codex"
+        inside LEGACY_RUNTIME_PROVIDER, a migration map from the pre-Phase-2
+        `kind` values to provider ids; that is data a 4.0.0 database still needs
+        read, not a branch. What must not exist is a COMPARISON against a
+        provider id, which is how behaviour comes to depend on who the provider
+        is. Every provider the registry knows is checked, not a list written
+        here, so a provider is covered the day it is approved.
+        """
+        ids = set(self.registry.ids()) | {"codex", "offline-media"}
+        offenders = []
+        for relative in PROTECTED_FILES:
+            path = REPO_ROOT / relative
+            if not path.is_file():
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Compare):
+                    parts = [node.left, *node.comparators]
+                elif isinstance(node, ast.Match):
+                    parts = [node.subject]
+                else:
+                    continue
+                for part in parts:
+                    for leaf in ast.walk(part):
+                        if isinstance(leaf, ast.Constant) and leaf.value in ids:
+                            offenders.append(
+                                f"{path.name}:{node.lineno}: compares against "
+                                f"{leaf.value!r}")
+        self.assertEqual(offenders, [], "the engine branches on a provider id: "
+                                        + "; ".join(sorted(set(offenders))))
+
+    def test_the_default_for_a_contested_capability_is_refused_not_guessed(self):
+        """Two providers and no name given is an ORCHESTRATION decision, which
+        this phase deliberately does not make. Silently picking one would be a
+        policy invented in code."""
+        contested = self.registry.for_capability(Capability.CODE_CHANGE)
+        self.assertGreaterEqual(len(contested), 2)
+        available = [p for p in contested if p.readiness().available]
+        if len(available) == 1:
+            self.skipTest("only one of them is installed on this machine, so the "
+                          "single-available rule applies rather than the contest")
+        self.assertIsNone(self.registry.default_for(Capability.CODE_CHANGE),
+                          "the registry chose between two providers on its own")
+
+    def test_removing_one_provider_leaves_the_capability_and_the_other(self):
+        """A capability outlives any particular provider. If losing a provider
+        lost the capability, the two would still be the same concept."""
+        without = fixture_registry(manifest_root(*shipped_manifest_files()),
+                                   module_root(*shipped_adapter_files()))
+        self.assertIn(Capability.CODE_CHANGE, CAPABILITIES)
+        serving = [p.id for p in without.for_capability(Capability.CODE_CHANGE)]
+        self.assertEqual(serving, ["codex"])
+        self.assertNotIn("conformance-localmodel", without.ids())
+
 
 class ThirdProviderProofTests(unittest.TestCase):
     """A new provider is reachable from its manifest and nothing else."""
