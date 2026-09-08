@@ -2014,7 +2014,12 @@ class Executor:
             command = wrapper + ["--", *command]
         log = self.directory / (label + ".log")
         self.event("process-started", label)
-        process_env = {key: os.environ[key] for key in ("PATH", "HOME", "XDG_STATE_HOME", "SHADOWFETCH_AGENT_WORKSPACES", "LANG") if key in os.environ}
+        # SHADOWFETCH_FIREBREAK_STATE is forwarded because Firebreak reads it
+        # and nothing else does. Without it a caller that isolated state --
+        # every test in this tree -- silently wrote into the operator's real
+        # audit directory, which is exactly what happened when the variable was
+        # renamed and this line was not.
+        process_env = {key: os.environ[key] for key in ("PATH", "HOME", "XDG_STATE_HOME", "SHADOWFETCH_FIREBREAK_STATE", "SHADOWFETCH_AGENT_WORKSPACES", "LANG") if key in os.environ}
         process_env["PYTHONDONTWRITEBYTECODE"] = "1"
         process_env.update(env or {})
         input_stream = Path(input_path).open("rb") if input_path else None

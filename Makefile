@@ -127,6 +127,10 @@ test:
 	python3 packages/shadowfetch-fireline/tests/test_checkpoint_roundtrip.py
 	python3 packages/shadowfetch-fireline/tests/test_firebreak_4.py
 	python3 packages/shadowfetch-fireline/tests/test_fireline_privilege.py
+	python3 -m unittest discover -s packages/shadowfetch-fireline/tests \
+		-t packages/shadowfetch-fireline/tests -p 'test_firebreak_records.py' -v
+	python3 -m unittest discover -s packages/shadowfetch-fireline/tests \
+		-t packages/shadowfetch-fireline/tests -p 'test_mcp_audit.py' -v
 	SHADOWFETCH_FIREBREAK_TEST_BIN=$(CURDIR)/packages/shadowfetch-fireline/data/usr/bin/shadowfetch-firebreak \
 	SHADOWFETCH_CHECKPOINT_BIN=$(CURDIR)/packages/shadowfetch-fireline/data/usr/bin/shadowfetch-checkpoint \
 	bash packages/shadowfetch-fireline/tests/test_firebreak.sh

@@ -27,12 +27,14 @@ USAGE
   shadowfetch-mcp <passport|phoenix|checkpoint|fs>   run a server (stdio MCP)
   shadowfetch-mcp list                               list servers
   shadowfetch-mcp config [--claude|--codex|--json]   print agent config to add
+  shadowfetch-mcp audit [verify]                     read or verify the call log
   shadowfetch-mcp --version
 
 Read-only: passport, phoenix, fs.  Writes only its named workspace: checkpoint.
 EOF
     ;;
   --version) exec python3 "$IMPL" --version ;;
+  audit) shift; exec python3 "$IMPL" --audit "${1:-verify}" ;;
   list)
     echo "Shadowfetch MCP servers:"
     echo "  passport    read-only system self-check (privacy-scrubbed)"

@@ -933,6 +933,25 @@ def sandbox_enforcement(spec=None) -> dict:
             if value in (None, (), [], ""):
                 entry["status"] = "not_applicable"
                 entry["mechanism"] = "this session declared nothing for this field"
+        if spec is not None and field == "network":
+            # 'none' is fully enforced: the namespace has no route. 'allowlist'
+            # is NOT -- Firebreak has two postures and the second is the host
+            # network, so the on/off decision holds and the DESTINATION does
+            # not. Reporting a flat 'enforced' here made this row contradict
+            # Firebreak's own record of the same session.
+            if getattr(spec, "network", None) != "none":
+                entry["status"] = PARTIAL
+                entry["mechanism"] = (
+                    "bwrap --unshare-net enforces network on/off. This session is "
+                    "not 'none', so the sandbox has the host's network and the "
+                    "declared destinations are not filtered -- see egress_allowlist")
+        if spec is not None and field == "credential_ids" and not (
+                getattr(spec, "credential_ids", None) or ()):
+            # all([]) is True, which reported a control as working for a session
+            # that never asked for it. Consistent with the convention applied to
+            # every other unused field.
+            entry["status"] = "not_applicable"
+            entry["mechanism"] = "this session was granted no credential identity"
         result[field] = entry
     return result
 

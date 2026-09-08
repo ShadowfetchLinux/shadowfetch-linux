@@ -23,6 +23,10 @@ spec = importlib.util.spec_from_loader("sf_mcp", loader)
 sf_mcp = importlib.util.module_from_spec(spec)
 loader.exec_module(sf_mcp)
 
+# Step 17: the fs server records every call, so give this run its own state
+# directory rather than appending to the operator's real audit log.
+os.environ["XDG_STATE_HOME"] = tempfile.mkdtemp(prefix="sf-privilege-state-")
+
 passed = failed = 0
 
 

@@ -26,7 +26,7 @@ class ScopeTests(unittest.TestCase):
         self.ws = self.base / "Workspaces" / "project"
         self.ws.mkdir(parents=True)
         (self.ws / "seed.txt").write_text("original")
-        self.env = patch.dict(os.environ, {"SHADOWFETCH_AGENT_WORKSPACES":str(self.ws.parent), "XDG_STATE_HOME":str(self.base / "state"), "SHADOWFETCH_ELEMENT":"ice"})
+        self.env = patch.dict(os.environ, {"SHADOWFETCH_AGENT_WORKSPACES":str(self.ws.parent), "SHADOWFETCH_FIREBREAK_STATE":str(self.base / "state"), "SHADOWFETCH_ELEMENT":"ice"})
         self.env.start()
     def tearDown(self):
         self.env.stop()

@@ -10,6 +10,7 @@ import argparse
 import datetime
 import json
 import os
+import pwd
 import re
 from pathlib import Path
 import resource
@@ -63,14 +64,60 @@ def redact(text):
 def root():
     return Path(os.environ.get("SHADOWFETCH_AGENT_WORKSPACES", str(Path.home() / "Workspaces"))).expanduser().resolve()
 
+# The audit directory used to be chosen by $XDG_STATE_HOME. That variable is
+# ambient: a desktop session, a systemd user unit or a container image sets it
+# for reasons that have nothing to do with this program, and whatever launches
+# Firebreak inherits it. A caller that can move the audit directory can make a
+# session unrecorded, and with an ambient variable nobody has to have DECIDED
+# that for it to happen. The canonical location now comes from the passwd
+# entry, which this process cannot rewrite.
+#
+# One purpose-named variable still relocates it, because the test suite and a
+# desktop session with an isolated state tree need some way to say so, and
+# nothing sets this name by accident: a relocation is therefore always
+# deliberate, and every record written under one says it was relocated. That
+# makes relocation VISIBLE, not impossible -- anything running as this uid can
+# set the variable, and can equally unlink the file afterwards. Only a copy
+# that leaves this uid's trust domain closes that, which is the journald
+# mirror in ADR-0010.
+STATE_ENV = "SHADOWFETCH_FIREBREAK_STATE"
+
+
+def passwd_home():
+    """This user's home from the passwd database, never from $HOME."""
+    try:
+        entry = pwd.getpwuid(os.geteuid())
+    except KeyError as exc:
+        raise Error("This user has no passwd entry, so the audit directory cannot be resolved") from exc
+    home = (entry.pw_dir or "").strip()
+    if not home.startswith("/"):
+        raise Error("The passwd entry gives no absolute home directory, so the audit directory cannot be resolved")
+    return Path(home)
+
+
 def state():
-    path = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "shadowfetch/firebreak"
-    path = path.expanduser().resolve()
+    override = os.environ.get(STATE_ENV, "").strip()
+    if override:
+        path = Path(override).expanduser()
+        if not path.is_absolute():
+            raise Error(STATE_ENV + " must name an absolute directory")
+    else:
+        path = passwd_home() / ".local/state/shadowfetch/firebreak"
+    path = path.resolve()
     if path == root() or root() in path.parents:
         raise Error("Audit state must be outside the workspace root")
     path.mkdir(parents=True, mode=0o700, exist_ok=True)
+    # Somebody else's directory is not ours to write session records into,
+    # whoever pointed us at it.
+    if path.stat().st_uid != os.geteuid():
+        raise Error("The audit directory belongs to another user; session records were not written")
     path.chmod(0o700)
     return path
+
+
+def state_relocated():
+    """Whether records are going somewhere other than the canonical directory."""
+    return bool(os.environ.get(STATE_ENV, "").strip())
 
 def element():
     value = os.environ.get("SHADOWFETCH_ELEMENT", "")
@@ -151,6 +198,264 @@ def session_id(supplied):
     return supplied
 
 
+# --------------------------------------------------------------------------- #
+# Session records
+# --------------------------------------------------------------------------- #
+# One append-only JSON-lines file per session: a "started" record before the
+# sandbox runs and an "ended" record when it stops. The previous version wrote
+# a single object and REWROTE it at exit, so a running session could not be
+# inspected at all, and a crash between the two writes left neither the start
+# nor the end. Appending keeps the start whatever happens next, and a session
+# with no "ended" record is itself the evidence that it did not finish.
+RECORD_SCHEMA = 2
+
+# The PATH the sandbox is given. Named once because the record claims to
+# resolve the agent's program the way the sandbox will, and a second copy of
+# this string would quietly make that claim false.
+SANDBOX_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+ENFORCED = "enforced"
+PARTIAL = "partial"
+NOT_ENFORCED = "not_enforced"
+OBSERVED = "observed"
+NOT_APPLICABLE = "not_applicable"
+
+
+def append_record(path, record):
+    """Add one line. O_APPEND, so a second writer cannot land on top of it."""
+    line = json.dumps(record, sort_keys=True) + "\n"
+    handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        os.write(handle, line.encode())
+        # A record exists to survive the crash that ended the session it
+        # describes, so it reaches the disk before that session starts.
+        os.fsync(handle)
+    finally:
+        os.close(handle)
+    os.chmod(path, 0o600)
+
+
+def read_records(path):
+    """Every record in one session file, including an unreadable tail.
+
+    A truncated final line is what a crash mid-append looks like. It is
+    reported rather than dropped: a reader that silently discards the evidence
+    of a crash is worse than no reader.
+    """
+    text = path.read_text(errors="replace")
+    try:
+        legacy = json.loads(text)
+    except ValueError:
+        pass
+    else:
+        # Sessions recorded before this file became append-only are one
+        # pretty-printed object; read them rather than reporting every line of
+        # them as damage.
+        if isinstance(legacy, dict):
+            legacy.setdefault("record", "legacy")
+            return [legacy]
+    found = []
+    for number, line in enumerate(text.splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            found.append(json.loads(line))
+        except ValueError:
+            found.append({"record": "unreadable", "session": path.stem,
+                          "line": number, "characters": len(line)})
+    return found
+
+
+# Option names that are followed by a secret. An agent command is supplied by
+# the caller, so this cannot be exhaustive -- it is a floor, and the value-based
+# strike below is what catches the rest.
+SECRET_OPTIONS = ("--api-key", "--apikey", "--token", "--password", "--secret",
+                  "--auth", "--bearer", "--credential", "--key")
+
+
+def redacted_argv(argv, *, values=()):
+    """The argv with credential VALUES struck out.
+
+    Three passes, because each catches what the others cannot:
+
+    1. POSITION after `--setenv NAME` for a known credential identity. This is
+       how Firebreak itself injects a value, and it is exact.
+    2. POSITION after an option whose NAME says a secret follows. An agent
+       command is caller-supplied, so this list is a floor rather than a
+       guarantee.
+    3. VALUE. Any token equal to a credential value we actually resolved is
+       struck wherever it appears, including `--api-key=VALUE` and bare
+       positional forms.
+
+    Only then the text redactor, which recognises shapes like sk-... but cannot
+    recognise a short or arbitrary value -- and this record outlives the
+    process, so "probably not a secret" is not good enough.
+    """
+    parts = [str(item) for item in argv]
+    for index in range(len(parts) - 2):
+        if parts[index] == "--setenv" and parts[index + 1] in CREDENTIALS:
+            parts[index + 2] = "[REDACTED]"
+    for index in range(len(parts) - 1):
+        if parts[index].lower() in SECRET_OPTIONS:
+            parts[index + 1] = "[REDACTED]"
+    secrets = [str(v) for v in values if v and len(str(v)) >= 4]
+    if secrets:
+        cleaned = []
+        for part in parts:
+            for secret in secrets:
+                if secret in part:
+                    part = part.replace(secret, "[REDACTED]")
+            cleaned.append(part)
+        parts = cleaned
+    return [redact(part) for part in parts]
+
+
+def resolved_executable(program, ws):
+    """The file the sandbox will exec, resolved the way the sandbox will.
+
+    Against the sandbox's PATH and its working directory, not this process's:
+    the same directories are bound into the sandbox at the same paths, so the
+    lookup lands on the same file, while the host's PATH and cwd would not.
+    OBSERVED, never enforced -- bwrap performs its own lookup at exec time and
+    Firebreak does not pin argv[0] to this answer.
+    """
+    if not program:
+        return None, "none"
+    if "/" in program:
+        base = Path(program) if program.startswith("/") else ws / program
+        try:
+            candidate = base.resolve()
+        except OSError:
+            return None, "unresolved"
+        return (str(candidate), "literal-path") if candidate.exists() else (None, "unresolved")
+    found = shutil.which(program, path=SANDBOX_PATH)
+    if not found:
+        return None, "unresolved"
+    return str(Path(found).resolve()), "sandbox-path-lookup"
+
+
+def parent_command():
+    """The launching program's name.
+
+    comm, not the parent's command line: that line can carry material with no
+    business in an audit file, and the name answers what this field is for.
+    """
+    try:
+        return (Path("/proc") / str(os.getppid()) / "comm").read_text().strip()
+    except OSError:
+        return None
+
+
+def signal_name(number):
+    try:
+        return signal.Signals(number).name
+    except ValueError:
+        return str(number)
+
+
+def applied(argv, *tokens):
+    """Whether these tokens appear consecutively in the argv about to be spawned."""
+    width = len(tokens)
+    return any(tuple(argv[index:index + width]) == tokens
+               for index in range(len(argv) - width + 1))
+
+
+def _status(active, mechanism, missing):
+    return {"status": ENFORCED if active else NOT_ENFORCED,
+            "mechanism": mechanism if active else missing}
+
+
+def enforcement(argv, args, ws, grants, credentials, net):
+    """What the argv about to be spawned actually applies, field by field.
+
+    Read out of the BUILT argv rather than echoed back from the request. A
+    record that repeated the request would make a control merely asked for
+    indistinguishable from one the kernel is told to apply -- and two of these
+    fields, the egress allowlist and the masked paths, are asked for and
+    applied by nothing whatsoever.
+    """
+    egress = list(getattr(args, "egress_host", None) or [])
+    masks = list(getattr(args, "mask_path", None) or [])
+    binding = "--ro-bind" if args.workspace_mode == "read-only" else "--bind"
+    report = {
+        "workspace_mode": _status(
+            applied(argv, binding, str(ws), str(ws)),
+            "bwrap " + binding + " on the workspace",
+            "the workspace is not bound the way " + args.workspace_mode + " asks"),
+        "private_home": _status(
+            applied(argv, "--clearenv") and applied(argv, "--dir", "/home/agent"),
+            "bwrap --clearenv and a private /home/agent in a fresh mount namespace",
+            "the sandbox gets no private home, or an environment that was not cleared"),
+        "cpu_seconds": {
+            "status": PARTIAL,
+            "mechanism": "RLIMIT_CPU set on this process before exec. It is "
+                         "per-process, so a task that forks gets a fresh budget "
+                         "for each child"},
+        "executable_path": {
+            "status": OBSERVED,
+            "mechanism": "the resolved path is what Firebreak's own lookup found. "
+                         "bwrap resolves argv[0] itself at exec time and Firebreak "
+                         "does not pin it"},
+        "egress_allowlist": (
+            {"status": NOT_APPLICABLE, "mechanism": "no egress host was asked for"}
+            if not egress else
+            {"status": NOT_ENFORCED,
+             "mechanism": "there are two network postures, none and allow, and no "
+                          "destination filter anywhere. These hosts are recorded "
+                          "and reach nothing"}),
+        "masked_paths": (
+            {"status": NOT_APPLICABLE, "mechanism": "no masked path was asked for"}
+            if not masks else
+            {"status": NOT_ENFORCED,
+             "mechanism": "there is no masking flag. These paths are recorded and "
+                          "reach nothing; the sandbox reads them wherever they are "
+                          "otherwise visible to it"}),
+        "memory_mb": _status(
+            applied(argv, "--property=MemoryMax=" + str(args.memory_mb) + "M")
+            and applied(argv, "--property=MemorySwapMax=0"),
+            "systemd MemoryMax with MemorySwapMax=0, so the cap bounds the "
+            "workload rather than the resident set",
+            "the systemd scope does not carry this memory cap"),
+        "processes": _status(
+            applied(argv, "--property=TasksMax=" + str(args.processes)),
+            "systemd TasksMax on the session's own cgroup",
+            "the systemd scope does not carry this task cap"),
+    }
+    if net == "none":
+        report["network"] = _status(
+            applied(argv, "--unshare-net"),
+            "bwrap --unshare-net: the sandbox gets its own empty network namespace",
+            "posture 'none' was asked for and no network namespace was created")
+    else:
+        report["network"] = {
+            "status": NOT_ENFORCED,
+            "mechanism": "posture 'allow' creates no network namespace, so the "
+                         "sandbox keeps the host's network, its loopback services "
+                         "and its abstract sockets"}
+    report["read_grants"] = (
+        {"status": NOT_APPLICABLE, "mechanism": "no read grant was asked for"}
+        if not grants else
+        _status(all(applied(argv, "--ro-bind", str(grant), str(grant)) for grant in grants),
+                "bwrap --ro-bind per grant",
+                "a grant that was asked for is not bound into the sandbox"))
+    identities = [name for name in credentials if name in CREDENTIALS]
+    report["credentials"] = _status(
+        applied(argv, "--clearenv")
+        and all(any(argv[index] == "--setenv" and argv[index + 1] == name
+                    for index in range(len(argv) - 1))
+                for name in identities),
+        "bwrap --clearenv, then one --setenv per granted identity and nothing else",
+        "the environment is not cleared, or a granted identity did not reach the sandbox")
+    if getattr(args, "codex_account", False):
+        report["account_mount"] = _status(
+            any(argv[index] == "--bind" and argv[index + 2] == "/home/agent/.codex"
+                for index in range(len(argv) - 2)),
+            "bwrap --bind of the dedicated account home",
+            "an account grant was asked for and no account home is bound")
+    return report
+
+
 def arguments(args, ws, sid):
     net = args.net or ("none" if element() == "ice" else "allow")
     grants = read_grants(args.read, ws)
@@ -180,7 +485,7 @@ def arguments(args, ws, sid):
     command += [bind, str(ws), str(ws), "--chdir", str(ws)]
     if net == "none":
         command += ["--unshare-net"]
-    environment = {"HOME": "/home/agent", "USER": "agent", "LOGNAME": "agent", "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C.UTF-8", "XDG_CONFIG_HOME": "/home/agent/.config", "XDG_CACHE_HOME": "/home/agent/.cache", "XDG_STATE_HOME": "/home/agent/.local/state", "XDG_DATA_HOME": "/home/agent/.local/share", "SHADOWFETCH_FIREBREAK": sid, "SHADOWFETCH_FIREBREAK_WORKSPACE": ws.name, "TMPDIR": "/tmp", "PYTHONDONTWRITEBYTECODE": "1"}
+    environment = {"HOME": "/home/agent", "USER": "agent", "LOGNAME": "agent", "PATH": SANDBOX_PATH, "LANG": "C.UTF-8", "XDG_CONFIG_HOME": "/home/agent/.config", "XDG_CACHE_HOME": "/home/agent/.cache", "XDG_STATE_HOME": "/home/agent/.local/state", "XDG_DATA_HOME": "/home/agent/.local/share", "SHADOWFETCH_FIREBREAK": sid, "SHADOWFETCH_FIREBREAK_WORKSPACE": ws.name, "TMPDIR": "/tmp", "PYTHONDONTWRITEBYTECODE": "1"}
     if getattr(args, "codex_account", False):
         if net != "allow":
             raise Error("A Codex account grant requires explicit cloud network access")
@@ -249,6 +554,12 @@ def run(args):
     ws = workspace(args.workspace)
     sid = session_id(getattr(args, "session_id", None))
     cmd, net, grants, credentials = arguments(args, ws, sid)
+    # The values behind the granted identities, so the record can strike them
+    # from an argv by EQUALITY. Held only for the length of building the record
+    # and never written anywhere; arguments() read them from this same
+    # environment a moment ago.
+    granted_values = tuple(os.environ[name] for name in credentials
+                           if name in os.environ)
     if not shutil.which("systemd-run"):
         raise Error("systemd-run is required for per-session CPU, memory and process limits")
     # RLIMIT_NPROC counts all threads for the desktop UID, including unrelated
@@ -271,37 +582,111 @@ def run(args):
             raise Error("Checkpoint engine returned an invalid receipt; execution refused")
         print("checkpoint " + checkpoint + " taken", flush=True)
     started = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    manifest = {"session": sid,
+    # The session id belongs to the caller and may be reused between runs; the
+    # run id is minted here so a started record and an ended record still pair
+    # up unambiguously when it is.
+    run_id = uuid.uuid4().hex
+    program = args.agent_command[0] if args.agent_command else ""
+    resolved, resolution = resolved_executable(program, ws)
+    directory = state()
+    manifest = {"record": "started",
+                "schema": RECORD_SCHEMA,
+                "firebreak": VERSION,
+                "at": started,
+                "started": started,
+                "session": sid,
+                "run": run_id,
                 "session_id_source": ("orchestrator" if getattr(args, "session_id", None)
                                       else "firebreak"),
                 "mission": getattr(args, "mission", None),
                 "task": getattr(args, "task", None),
-                "workspace": str(ws), "network": net, "private_home": True, "read_grants": list(map(str, grants)), "credential_names": credentials, "checkpoint": checkpoint, "started": started, "limits": {"memory_mb": args.memory_mb, "cpu_seconds": args.cpu_seconds, "processes": args.processes}}
-    record = state() / (sid + ".session")
-    record.write_text(json.dumps(manifest, indent=2) + "\n")
-    record.chmod(0o600)
+                "scope_unit": sid + ".scope",
+                "pid": os.getpid(),
+                "parent_pid": os.getppid(),
+                "parent_command": parent_command(),
+                "audit_directory": str(directory),
+                "audit_directory_relocated": state_relocated(),
+                "workspace": str(ws),
+                "workspace_mode_requested": args.workspace_mode,
+                "executable": redact(program),
+                "executable_resolved": resolved,
+                "executable_resolution": resolution,
+                # The resolved values are handed in so a secret appearing in
+                # the caller's own argv -- mytool --api-key VALUE -- is struck by
+                # equality, not merely by shape. The text redactor cannot
+                # recognise a short or arbitrary value, and this file outlives
+                # the process.
+                "agent_command": redacted_argv(args.agent_command,
+                                               values=granted_values),
+                "sandbox_argv": redacted_argv(cmd, values=granted_values),
+                "network_requested": args.net,
+                "network_effective": net,
+                # Redacted like everything else: a host can carry credentials
+                # in its userinfo (user:PASSWORD@host) and a path can be under a
+                # directory whose name is a token.
+                "egress_allowlist_requested": [redact(str(host)) for host in
+                                               (getattr(args, "egress_host", None) or [])],
+                "masked_paths_requested": [redact(str(path)) for path in
+                                           (getattr(args, "mask_path", None) or [])],
+                "read_grants": [redact(str(grant)) for grant in grants],
+                # What was ASKED for, including the --keep-secrets expansion.
+                # Recording only the explicit flag showed "nothing requested"
+                # while identities were granted, which reads as a contradiction
+                # to anyone auditing the pair.
+                "credentials_requested": sorted(set(credentials)
+                                                | set(args.credential_env)),
+                # Identities. A credential VALUE has never reached this file and
+                # must not; see redacted_argv().
+                "credential_names": credentials,
+                "checkpoint": checkpoint,
+                "checkpoint_requested": not args.no_checkpoint,
+                "limits_requested": {"memory_mb": args.memory_mb,
+                                     "cpu_seconds": args.cpu_seconds,
+                                     "processes": args.processes},
+                "enforcement": enforcement(cmd, args, ws, grants, credentials, net)}
+    record = directory / (sid + ".session")
+    # Before the sandbox is spawned, not after: a session that cannot be
+    # recorded is not executed.
+    append_record(record, manifest)
     process = None
+    rc = None
+    reason = "not-started"
     def terminate(signum, frame):
         if process and process.poll() is None:
             process.terminate()
         raise KeyboardInterrupt
     previous = signal.signal(signal.SIGTERM, terminate)
     try:
-        process = subprocess.Popen(cmd, preexec_fn=limits(args), env=user_service_env())
-        rc = process.wait()
-    except KeyboardInterrupt:
-        rc = 130
-        if process and process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
+        try:
+            process = subprocess.Popen(cmd, preexec_fn=limits(args), env=user_service_env())
+            rc = process.wait()
+            reason = ("signal:" + signal_name(-rc) if rc < 0
+                      else "completed" if rc == 0 else "nonzero-exit")
+        except KeyboardInterrupt:
+            rc, reason = 130, "cancelled"
+            if process and process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
     finally:
         signal.signal(signal.SIGTERM, previous)
-    manifest.update(ended=datetime.datetime.now(datetime.timezone.utc).isoformat(), exit=rc)
-    record.write_text(json.dumps(manifest, indent=2) + "\n")
+        try:
+            append_record(record, {"record": "ended", "schema": RECORD_SCHEMA,
+                                   "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                                   "started": started,
+                                   "session": sid, "run": run_id,
+                                   "mission": getattr(args, "mission", None),
+                                   "task": getattr(args, "task", None),
+                                   "exit": rc, "exit_reason": reason,
+                                   "checkpoint": checkpoint})
+        except OSError as exc:
+            # Said out loud rather than swallowed, and never in place of the
+            # exception already on its way out of this block.
+            print("Firebreak: the end of session " + sid + " was not recorded: "
+                  + redact(exc), file=sys.stderr)
     print(f"Firebreak session {sid} ended (exit {rc})", file=sys.stderr)
     if checkpoint:
         print(f"Undo: shadowfetch-checkpoint undo {ws.name} {checkpoint}", file=sys.stderr)
@@ -327,6 +712,14 @@ def main(argv=None):
     execute.add_argument("--read", action="append", default=[], metavar="ABSOLUTE_PATH")
     execute.add_argument("--codex-account", action="store_true", help="Grant the dedicated Mission Control account for an approved cloud task")
     execute.add_argument("--credential-env", action="append", default=[], metavar="NAME")
+    execute.add_argument("--egress-host", action="append", default=[], metavar="HOST",
+                         help="Destination the caller intends to allow. RECORDED ONLY: "
+                              "there are two network postures and no destination filter, "
+                              "so this reaches nothing and the session record says so")
+    execute.add_argument("--mask-path", action="append", default=[], metavar="ABSOLUTE_PATH",
+                         help="Path the caller intends to hide. RECORDED ONLY: there is "
+                              "no masking flag, so this reaches nothing and the session "
+                              "record says so")
     execute.add_argument("--keep-secrets", action="store_true", help="Deprecated explicit provider credential pass-through")
     execute.add_argument("--no-checkpoint", action="store_true", help="For callers that already own a recovery checkpoint")
     execute.add_argument("--workspace-mode", choices=("workspace-write", "read-only"), default="workspace-write")
@@ -339,8 +732,12 @@ def main(argv=None):
         if args.command == "run":
             return run(args)
         if args.command == "log":
-            for file in sorted(state().glob("*.session"), key=lambda p:p.stat().st_mtime, reverse=True)[:max(0, min(args.count, 100))]:
-                print(file.read_text())
+            directory = state()
+            if state_relocated():
+                print("Firebreak: reading relocated audit state at " + str(directory), file=sys.stderr)
+            for file in sorted(directory.glob("*.session"), key=lambda p:p.stat().st_mtime, reverse=True)[:max(0, min(args.count, 100))]:
+                for entry in read_records(file):
+                    print(json.dumps(entry, indent=2, sort_keys=True))
             return 0
         if args.command == "check":
             bwrap = shutil.which("bwrap")

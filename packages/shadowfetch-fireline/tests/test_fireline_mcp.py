@@ -1,4 +1,4 @@
-import subprocess, json, os, re, shutil, sys
+import subprocess, json, os, re, shutil, sys, tempfile, atexit
 from pathlib import Path
 
 FL = Path(__file__).resolve().parents[1]
@@ -19,6 +19,32 @@ def check(desc, cond):
     cond=bool(cond); print(("  PASS " if cond else "  FAIL ")+desc)
     passed+=cond; failed+= (not cond)
 
+# Step 17: every MCP call is recorded. Give the run its own state directory so a
+# test never appends to the operator's real audit log, and so a stale log from a
+# previous run is never what a test reads back.
+# A private directory per run. The fixed path this used to have was rmtree'd
+# at import, so two concurrent runs -- or two users on one machine -- destroyed
+# each other's fixture. This is the only suite covering the destructive-tool
+# gate, and a collision there is a green that means nothing.
+STATE=tempfile.mkdtemp(prefix="sf-mcp-test-state-")
+atexit.register(shutil.rmtree, STATE, True)
+# The two purpose-named variables, not XDG_STATE_HOME: that one is ambient and
+# no longer moves either directory, so a fixture relying on it fabricates its
+# session record where nothing reads it and the gate correctly refuses.
+os.environ["XDG_STATE_HOME"]=STATE
+os.environ["SHADOWFETCH_MCP_STATE"]=STATE
+os.environ["SHADOWFETCH_FIREBREAK_STATE"]=str(Path(STATE)/"shadowfetch/firebreak")
+
+def recorded_session(sid):
+    """The Firebreak session record that makes a correlation OBSERVED."""
+    d=Path(STATE)/"shadowfetch/firebreak"; d.mkdir(parents=True, exist_ok=True)
+    (d/(sid+".session")).write_text("{}\n"); return sid
+
+# What an operator sets to hand an agent a destructive tool: the posture AND a
+# session id that names something real. Neither alone is enough.
+OPERATOR={"SHADOWFETCH_MCP_DESTRUCTIVE":"allow",
+          "SHADOWFETCH_MCP_SESSION":recorded_session("fb-20260908-wiretest")}
+
 # handshake protocolVersion
 Path("/tmp/sf-handshake").mkdir(exist_ok=True)
 for srv in ("passport","phoenix","checkpoint","fs"):
@@ -35,7 +61,20 @@ Path(root+"/proj/src/app.py").write_text("bbbbbbbb\n")  # SAME size, different c
 out=session("checkpoint",[init, call("diff",{"workspace":"proj","checkpoint":cid})],env)
 difftext=out[1]["result"]["content"][0]["text"]
 check("diff detects equal-size content edit (M)", "M src/app.py" in difftext)
+# undo is DESTRUCTIVE and the surface withholds it. Assert the refusal changed
+# NOTHING before enabling it the way an operator would, so the behaviour below
+# still proves the engine works rather than proving the gate is absent.
+frozen=Path(root+"/proj/src/app.py").read_text()
+store_before=sorted(p.name for p in Path(root+"/.sf-checkpoints/proj").glob("*"))
 out=session("checkpoint",[init, call("undo",{"workspace":"proj","checkpoint":cid})],env)
+check("undo is refused by default", out[1]["result"].get("isError"))
+check("a refused undo restored nothing", Path(root+"/proj/src/app.py").read_text()==frozen)
+check("a refused undo took no safety checkpoint",
+      sorted(p.name for p in Path(root+"/.sf-checkpoints/proj").glob("*"))==store_before)
+out=session("checkpoint",[init, {"jsonrpc":"2.0","id":9,"method":"tools/list"}],env)
+check("undo is not advertised by default",
+      "undo" not in [t["name"] for t in out[1]["result"]["tools"]])
+out=session("checkpoint",[init, call("undo",{"workspace":"proj","checkpoint":cid})],{**env, **OPERATOR})
 check("undo restores equal-size edit", Path(root+"/proj/src/app.py").read_text()=="aaaaaaaa\n")
 check("undo left a pre-undo safety checkpoint", len(list(Path(root+"/proj").parent.glob(".sf-checkpoints/proj/*.json")))>=2)
 
@@ -95,8 +134,8 @@ os.environ["SHADOWFETCH_AGENT_WORKSPACES"] = W
 env28 = {"SHADOWFETCH_AGENT_WORKSPACES": W}
 store = Path(W) / ".sf-checkpoints/proj"
 
-def mcp_text(tool, args):
-    out = session("checkpoint", [init, call(tool, args)], env28)
+def mcp_text(tool, args, extra=None):
+    out = session("checkpoint", [init, call(tool, args)], {**env28, **(extra or {})})
     return out[1]["result"]["content"][0]["text"]
 
 def cli(*argv):
@@ -156,8 +195,10 @@ check("format_diff renders the shipped listing", sf_mcp.format_diff(d) == gold_d
 check("MCP diff text is unchanged",
       mcp_text("diff", {"workspace": "proj", "checkpoint": snap["id"]}) == gold_diff)
 
+# The sentence is still the interface for the callers that read it; only WHO may
+# reach it over the protocol changed.
 check("MCP undo text is unchanged",
-      mcp_text("undo", {"workspace": "proj", "checkpoint": mcp_cid}) ==
+      mcp_text("undo", {"workspace": "proj", "checkpoint": mcp_cid}, OPERATOR) ==
       GOLD["undo"].format(ws="proj", id=mcp_cid))
 u = sf_mcp.checkpoint_call("undo", workspace="proj", checkpoint=snap["id"])
 check("format_undo renders the shipped sentence",

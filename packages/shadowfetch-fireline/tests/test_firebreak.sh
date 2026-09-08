@@ -6,7 +6,9 @@ CP=${SHADOWFETCH_CHECKPOINT_BIN:-shadowfetch-checkpoint}
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
 export SHADOWFETCH_AGENT_WORKSPACES="$fixture/Workspaces"
-export XDG_STATE_HOME="$fixture/controller-state"
+# The audit directory is no longer chosen by an ambient variable. This is the
+# one name that relocates it, and the sandbox must not be able to see it either.
+export SHADOWFETCH_FIREBREAK_STATE="$fixture/controller-state"
 mkdir -p "$SHADOWFETCH_AGENT_WORKSPACES/w"
 printf 'seed\n' > "$SHADOWFETCH_AGENT_WORKSPACES/w/keep.txt"
 printf 'private\n' > "$fixture/outside-secret"
@@ -20,7 +22,7 @@ run() { "$FB" run --workspace w --no-checkpoint "$@" 2>/dev/null; }
 run --net none -- sh -c 'echo written > wrote.txt'
 ck 'workspace writable' written "$(cat "$SHADOWFETCH_AGENT_WORKSPACES/w/wrote.txt")"
 ck 'outside home unreadable' hidden "$(run --net none -- sh -c 'test ! -r "$1" && echo hidden' sh "$fixture/outside-secret")"
-ck 'controller state hidden' hidden "$(run --net none -- sh -c 'test ! -e "$1" && echo hidden' sh "$XDG_STATE_HOME")"
+ck 'controller state hidden' hidden "$(run --net none -- sh -c 'test ! -e "$1" && echo hidden' sh "$SHADOWFETCH_FIREBREAK_STATE")"
 ck 'private home' /home/agent "$(run --net none -- sh -c 'printf %s "$HOME"')"
 ck 'arbitrary env scrubbed' absent "$(run --net none -- sh -c 'printf %s "${CUSTOM_PRIVATE_SECRET:-absent}"')"
 ck 'provider env scrubbed' absent "$(CODEX_API_KEY=test-provider-key run --net none -- sh -c 'printf %s "${CODEX_API_KEY:-absent}"')"
