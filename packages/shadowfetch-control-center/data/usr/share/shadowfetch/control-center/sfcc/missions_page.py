@@ -58,6 +58,13 @@ class NewMissionDialog(QDialog):
         for key, name in KINDS.items():
             self.kind.addItem(name, key)
         self.kind.setCurrentIndex(max(0, self.kind.findData(kind)))
+        self.capabilities = capabilities or {}
+        # Who performs it. Populated from the engine's provider registry, so a
+        # provider installed after this release still appears here without the
+        # Control Center being changed. Hidden while only one provider can do
+        # the job, which is today's experience.
+        self.provider_choice = QComboBox()
+        self.provider_choice.setAccessibleName("Which agent performs this mission")
         form.addRow("Workflow", self.kind)
         self.title = QLineEdit()
         self.title.setMaxLength(160)
@@ -90,6 +97,7 @@ class NewMissionDialog(QDialog):
         self.network.addItem("Ice · no external network", "none")
         self.network.addItem("Fire · allow network for this mission", "allow")
         self.network.setCurrentIndex(0 if theme.ELEMENT == "ice" else 1)
+        form.addRow("Performed by", self.provider_choice)
         form.addRow("Connection", self.network)
         self.inputs = QPlainTextEdit()
         self.inputs.setPlaceholderText("One relative path per line, e.g. notes/brief.md")
@@ -129,6 +137,20 @@ class NewMissionDialog(QDialog):
         if folder:
             self.workspace.setText(folder)
 
+    def providers_for(self, kind):
+        """(capability, [(provider_id, info)]) for a legacy mission kind.
+
+        The engine publishes capability_kinds and providers; this reads them.
+        There is no provider name in this file any more.
+        """
+        kinds = self.capabilities.get("capability_kinds") or {}
+        capability = next((c for c, k in kinds.items() if k == kind), None)
+        options = []
+        for provider_id, info in sorted((self.capabilities.get("providers") or {}).items()):
+            if capability and capability in (info.get("capabilities") or []):
+                options.append((provider_id, info))
+        return capability, options
+
     def _template(self):
         kind = self.kind.currentData()
         title, prompt = TEMPLATES[kind]
@@ -136,14 +158,36 @@ class NewMissionDialog(QDialog):
         self.prompt.setPlainText(prompt)
         is_code = kind == "code"
         is_media = kind == "media"
-        self.provider.setText("Offline FFmpeg export" if is_media else "Codex · cloud account required")
-        self.provider_setup.setText("" if is_media else "Sign in with your ChatGPT account for missions, or configure a private CODEX_API_KEY file at ~/.config/shadowfetch/missions/codex.env and restart the idle worker. Mission login is separate from your normal Codex profile; account access is granted only to approved cloud missions.")
-        self.network.setEnabled(not is_media and theme.ELEMENT != "ice")
-        self.network.setCurrentIndex(0 if is_media or theme.ELEMENT == "ice" else 1)
+        capability, options = self.providers_for(kind)
+        chosen = self.provider_choice.currentData()
+        self.provider_choice.blockSignals(True)
+        self.provider_choice.clear()
+        for provider_id, info in options:
+            suffix = "" if info.get("available") else " · needs setup"
+            self.provider_choice.addItem(info.get("display_name", provider_id) + suffix, provider_id)
+        if chosen:
+            self.provider_choice.setCurrentIndex(max(0, self.provider_choice.findData(chosen)))
+        self.provider_choice.blockSignals(False)
+        # One provider is the ordinary case; do not make a person choose.
+        self.form.setRowVisible(self.provider_choice, len(options) > 1)
+        info = dict(options).get(self.provider_choice.currentData(), {})
+        known = bool(options)
+        # If the engine has not described itself, the honest position is that
+        # we do not know who will perform this -- so leave the connection
+        # choice with the person and let Mission Control choose the provider.
+        needs_network = bool(info.get("requires_network_approval")) if known else True
+        self.provider.setText(
+            info.get("display_name") or ("Chosen by Mission Control" if not known
+                                         else "No installed agent performs this"))
+        self.provider_setup.setText("" if not known or info.get("available")
+                                    else (info.get("reason") or ""))
+        self.network.setEnabled(needs_network and theme.ELEMENT != "ice")
+        if known:
+            self.network.setCurrentIndex(0 if not needs_network or theme.ELEMENT == "ice" else 1)
         self.tests.setEnabled(is_code)
         self.form.setRowVisible(self.tests, is_code)
-        self.form.setRowVisible(self.provider_setup, not is_media)
-        self.form.setRowVisible(self.account_login, not is_media)
+        self.form.setRowVisible(self.provider_setup, bool(self.provider_setup.text()))
+        self.form.setRowVisible(self.account_login, needs_network)
         self.account_login.setEnabled(theme.ELEMENT != "ice")
         self.inputs.setPlaceholderText("One relative media path per line" if is_media else "One relative document path per line")
         self.workflow_note.setText({
@@ -163,10 +207,20 @@ class NewMissionDialog(QDialog):
             raise ValueError("Choose an existing project folder or enter its name.")
         workspace = workspace_path(self.workspace.text().strip())
         kind = self.kind.currentData()
-        runtime = "offline" if kind == "media" else "codex"
-        network = "none" if kind == "media" else self.network.currentData()
-        if runtime == "codex" and network == "none":
-            raise ValueError("Codex needs a cloud connection. Switch to Fire and allow a connection for this mission; media exports remain offline.")
+        capability, options = self.providers_for(kind)
+        provider = self.provider_choice.currentData() or (options[0][0] if options else None)
+        if capability and self.capabilities.get("providers") and not provider:
+            raise ValueError("No installed agent performs this kind of mission.")
+        info = dict(options).get(provider, {})
+        # Unknown provider -> keep the person's explicit connection choice and
+        # let the engine decide who performs it. Never widen network silently.
+        needs_network = bool(info.get("requires_network_approval")) if info else True
+        network = self.network.currentData() if needs_network else "none"
+        if needs_network and network == "none":
+            raise ValueError(
+                f"{info.get('display_name', provider)} needs a cloud connection. "
+                "Switch to Fire and allow a connection for this mission; offline "
+                "providers remain offline.")
         inputs = [line.strip() for line in self.inputs.toPlainText().splitlines() if line.strip()]
         for value in inputs:
             path = Path(value)
@@ -175,7 +229,9 @@ class NewMissionDialog(QDialog):
         if kind in ("report", "media") and not inputs:
             raise ValueError("Select at least one source file by its path inside the project.")
         args = ["create", "--kind", kind, "--workspace", str(workspace), "--title", title,
-                "--prompt", prompt, "--runtime", runtime, "--network", network]
+                "--prompt", prompt, "--network", network]
+        if provider:
+            args += ["--provider", provider]
         for value in inputs:
             args += ["--input", value]
         if kind == "code":

@@ -29,6 +29,22 @@ from sfcc.firewatch_page import FirewatchPage
 APP = QApplication.instance() or QApplication([])
 
 
+CAPABILITIES = {
+    "capability_kinds": {"code_change": "code", "sourced_report": "report",
+                         "media_export": "media"},
+    "providers": {
+        "codex": {"display_name": "Codex CLI (cloud)",
+                  "capabilities": ["code_change", "sourced_report"],
+                  "requires_network_approval": True, "available": True,
+                  "installed": True, "authenticated": True, "reason": ""},
+        "offline-media": {"display_name": "Offline media export (ffmpeg)",
+                          "capabilities": ["media_export"],
+                          "requires_network_approval": False, "available": True,
+                          "installed": True, "authenticated": True, "reason": ""},
+    },
+}
+
+
 class FakeClient:
     def __init__(self, *_):
         self.calls = []
@@ -38,7 +54,7 @@ class FakeClient:
         if args[0] == "list":
             callback([], None)
         elif args[0] == "capabilities":
-            callback({}, None)
+            callback(CAPABILITIES, None)
         else:
             callback(None, "Test operation must provide a response explicitly.")
 
@@ -53,7 +69,8 @@ class MissionDialogTests(unittest.TestCase):
         self.env.start()
         (Path(self.tmp.name) / "demo").mkdir()
         self.client = FakeClient()
-        self.dialog = NewMissionDialog(None, self.client, lambda _: None)
+        self.dialog = NewMissionDialog(None, self.client, lambda _: None,
+                                       capabilities=CAPABILITIES)
         self.dialog.workspace.setText("demo")
         self.dialog.tests.setText('python3 -m unittest discover -s "tests with spaces"')
 
@@ -68,7 +85,7 @@ class MissionDialogTests(unittest.TestCase):
         self.assertEqual(str(Path(self.tmp.name).resolve() / "demo"), args[args.index("--workspace") + 1])
         self.assertEqual(["python3", "-m", "unittest", "discover", "-s", "tests with spaces"], json.loads(args[args.index("--test-json") + 1]))
         self.assertIn("--network", args)
-        self.assertIn("--runtime", args)
+        self.assertIn("--kind", args)
 
     def test_rejects_outside_or_nested_project(self):
         for path in ("../escape", "/etc", "demo/nested"):
@@ -88,19 +105,31 @@ class MissionDialogTests(unittest.TestCase):
             self.dialog.arguments()
         self.dialog.network.setCurrentIndex(self.dialog.network.findData("allow"))
         args = self.dialog.arguments()
-        self.assertEqual("codex", args[args.index("--runtime") + 1])
+        self.assertEqual("codex", args[args.index("--provider") + 1])
         self.assertNotIn("--model", args)
 
-    def test_code_and_report_use_codex_and_have_no_model_controls(self):
+    def test_code_and_report_name_no_provider_and_have_no_model_controls(self):
+        """With no capabilities document the UI must not invent a provider.
+
+        This replaces an assertion that argv carried --runtime codex, which
+        pinned the coupling Phase 2 removed. The safety property it was really
+        protecting -- that a cloud mission still demands explicit network
+        consent -- is asserted here and enforced by the provider itself.
+        """
         self.assertFalse(hasattr(self.dialog, "model"))
         self.assertFalse(hasattr(self.dialog, "refresh_models"))
+        dialog = NewMissionDialog(None, self.client, lambda _: None, capabilities=None)
+        dialog.workspace.setText("demo")
+        dialog.tests.setText("true")
         for kind in ("code", "report"):
-            self.dialog.kind.setCurrentIndex(self.dialog.kind.findData(kind))
-            self.dialog.inputs.setPlainText("brief.md")
-            args = self.dialog.arguments()
-            self.assertEqual("codex", args[args.index("--runtime") + 1])
+            dialog.kind.setCurrentIndex(dialog.kind.findData(kind))
+            dialog.inputs.setPlainText("brief.md")
+            args = dialog.arguments()
+            self.assertNotIn("--provider", args)
+            self.assertNotIn("--runtime", args)
             self.assertEqual("allow", args[args.index("--network") + 1])
             self.assertNotIn("--model", args)
+        self.assertFalse(hasattr(dialog, "model"))
 
     def test_report_requires_relative_inputs(self):
         self.dialog.kind.setCurrentIndex(self.dialog.kind.findData("report"))
@@ -119,7 +148,7 @@ class MissionDialogTests(unittest.TestCase):
         self.dialog.inputs.setPlainText("input.mp4")
         args = self.dialog.arguments()
         self.assertNotIn("--model", args)
-        self.assertEqual("offline", args[args.index("--runtime") + 1])
+        self.assertEqual("offline-media", args[args.index("--provider") + 1])
         self.assertEqual("none", args[args.index("--network") + 1])
         self.assertFalse(self.dialog.network.isEnabled())
 
