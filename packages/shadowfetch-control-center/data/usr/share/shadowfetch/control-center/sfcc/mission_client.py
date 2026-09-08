@@ -9,8 +9,15 @@ from pathlib import Path
 
 from PyQt6.QtCore import QObject, QProcess, QTimer
 
-MISSION_COMMAND = os.environ.get("SHADOWFETCH_MISSIONS_COMMAND", "shadowfetch-missions")
-GROK_COMMAND = os.environ.get("SHADOWFETCH_GROK_BOT_COMMAND", "shadowfetch-grok-bot")
+# Resolved against system directories only, and NOT overridable from the
+# environment: SHADOWFETCH_MISSIONS_COMMAND / SHADOWFETCH_GROK_BOT_COMMAND
+# previously let anything that could set a variable in the session choose
+# which binary the Control Center executed on the user's behalf.
+_TRUSTED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+MISSION_COMMAND = (shutil.which("shadowfetch-missions", path=_TRUSTED_PATH)
+                   or "/usr/bin/shadowfetch-missions")
+GROK_COMMAND = (shutil.which("shadowfetch-grok-bot", path=_TRUSTED_PATH)
+                or "/usr/bin/shadowfetch-grok-bot")
 
 
 def workspaces_root() -> Path:

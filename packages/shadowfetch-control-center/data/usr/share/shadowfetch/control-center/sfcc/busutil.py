@@ -656,18 +656,54 @@ def rfkill_devices() -> list[dict]:
 
 # ---- shared shell helpers --------------------------------------------------
 
+# System directories only. These buttons launch tools that then ask for an
+# administrator password, so a user-writable directory must never be able to
+# decide which binary the user is about to authenticate.
+TRUSTED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+def resolve_tool(command: str) -> str:
+    """Resolve a command's program name against the trusted system PATH.
+
+    Returns the command with an absolute program name, or unchanged if the
+    tool is not installed there (the terminal then reports it plainly).
+    """
+    head, sep, tail = command.partition(" ")
+    found = shutil.which(head, path=TRUSTED_PATH)
+    return (found + sep + tail) if found else command
+
+
+def trusted_env() -> dict:
+    """The environment for a Control Center tool: a fixed system PATH and
+    no shell-startup hooks."""
+    env = dict(os.environ)
+    env["PATH"] = TRUSTED_PATH
+    for hook in ("BASH_ENV", "ENV", "SHELLOPTS", "LD_PRELOAD",
+                 "LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONSTARTUP"):
+        env.pop(hook, None)
+    return env
+
+
 def terminal_command(command: str) -> None:
-    """Run a command in a visible terminal — the pattern the 2.1.1 Control
-    Center established for the text-mode tools."""
-    wrapped = (f"{command}; rc=$?; echo; "
+    """Run a Control Center tool in a visible terminal.
+
+    The shell is deliberately NOT a login shell. `bash -lc` sources
+    /etc/profile and then ~/.bash_profile or ~/.profile, every one of which
+    the unprivileged user can write, and the tools started here go on to ask
+    for an administrator password. A non-login `sh -c` with a fixed system
+    PATH and no BASH_ENV means the button runs the packaged tool.
+    """
+    resolved = resolve_tool(command)
+    wrapped = (f"{resolved}; rc=$?; echo; "
                f"printf 'Finished (status %s). Press Enter to close...' \"$rc\"; "
                f"read -r _; exit $rc")
-    if shutil.which("konsole"):
-        subprocess.Popen(["konsole", "-e", "bash", "-lc", wrapped])
-    elif shutil.which("x-terminal-emulator"):
-        subprocess.Popen(["x-terminal-emulator", "-e", "bash", "-lc", wrapped])
+    env = trusted_env()
+    terminal = shutil.which("konsole", path=TRUSTED_PATH) or \
+        shutil.which("x-terminal-emulator", path=TRUSTED_PATH)
+    if terminal:
+        subprocess.Popen([terminal, "-e", "sh", "-c", wrapped], env=env)
     else:
-        subprocess.Popen(["bash", "-lc", command])
+        subprocess.Popen(["/bin/sh", "-c", wrapped], env=env)
 
 
 def start_detached(argv: list[str]) -> bool:
