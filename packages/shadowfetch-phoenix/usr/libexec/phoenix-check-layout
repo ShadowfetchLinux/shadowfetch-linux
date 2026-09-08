@@ -1,0 +1,142 @@
+#!/bin/sh
+# phoenix-check-layout - verify the Phoenix Btrfs layout is fully initialised.
+# Part of Shadowfetch Linux 4.0.0 "Umbra".
+#
+# Read-only. Mutates nothing, ever. Run as ExecStartPost= of
+# phoenix-firstboot.service so a half-initialised layout is visible in the
+# journal and in `systemctl --failed` (and therefore in the recovery report)
+# instead of only surfacing years later, when a restore needs it.
+#
+# WHY: through 3.5 the snapper/grub-btrfs block in firstboot.sh (package
+# shadowfetch-defaults) raced phoenix-firstboot. Whichever unit won decided the
+# layout, and when firstboot.sh won, snapper's NESTED /.snapshots subvolume
+# survived and the top-level @snapshots subvolume was never mounted over it -
+# so Point history silently did not survive a root-subvolume swap. The racing
+# initialiser is gone in 4.0.0; this checks that the surviving one did its job.
+#
+# FAIL (exit 1) is reserved for states that are unambiguously broken:
+#   * no /etc/snapper/configs/root         - Points cannot be taken at all
+#   * no /.snapshots                       - Points have nowhere to live
+#   * /.snapshots is a nested subvolume of @ rather than the @snapshots mount
+#                                          - the race artifact: history is lost
+#                                            on the first restore
+#   * `snapper list` cannot read the config - config present but unusable
+# Everything else is a WARN and exits 0: degraded but working layouts (a
+# hand-rolled install without the @snapshots fstab entry, for example) must not
+# turn a healthy first boot into a failed unit.
+
+set -u
+
+QUIET=0
+case "${1:-}" in
+  -h|--help)
+    cat <<'SFHELP'
+phoenix-check-layout - verify the Phoenix Btrfs subvolume/snapshot layout.
+
+USAGE
+  phoenix-check-layout            report every check
+  phoenix-check-layout --quiet    report only WARN/FAIL lines
+
+Exit status: 0 layout usable (warnings may be printed), 1 layout broken.
+Reads only; it never changes the system.
+
+Part of Shadowfetch Linux. https://www.shadowfetchlinux.org/
+SFHELP
+    exit 0 ;;
+  --version)
+    echo "phoenix-check-layout (Shadowfetch Linux) $(cat /usr/share/shadowfetch/version 2>/dev/null || echo unknown)"; exit 0 ;;
+  --quiet|-q) QUIET=1 ;;
+  '') : ;;
+  *) echo "phoenix-check-layout: unknown option '$1' (try --help)" >&2; exit 2 ;;
+esac
+
+ROOTDIR=${PHOENIX_CHECK_ROOT:-}   # test hook: prefix for /etc and /.snapshots
+FAILURES=0
+
+ok()   { [ "$QUIET" = 1 ] || echo "phoenix-check-layout: OK   $*"; }
+warn() { echo "phoenix-check-layout: WARN $*" >&2; }
+fail() { echo "phoenix-check-layout: FAIL $*" >&2; FAILURES=$((FAILURES + 1)); }
+
+# Same guards as phoenix-firstboot: nothing to verify on live media or while
+# riding a read-only Point.
+if [ -e /run/live/medium ] || [ -e /run/live/rootfs ] || [ -f /run/phoenix-overlay ]; then
+    ok "live or overlay session - no installed layout to verify"
+    exit 0
+fi
+
+if [ -z "$ROOTDIR" ]; then
+    if [ "$(stat -f -c %T / 2>/dev/null)" != "btrfs" ]; then
+        ok "/ is not Btrfs - Phoenix Points are unavailable by design"
+        exit 0
+    fi
+    if ! command -v snapper >/dev/null 2>&1; then
+        ok "snapper is not installed - Phoenix Points are unavailable by design"
+        exit 0
+    fi
+fi
+
+# --- 1. The snapper root config phoenix-firstboot creates -------------------
+if [ -f "$ROOTDIR/etc/snapper/configs/root" ]; then
+    ok "snapper root config present"
+    if [ -z "$ROOTDIR" ]; then
+        if snapper --no-dbus -c root list >/dev/null 2>&1; then
+            points=$(snapper --no-dbus -c root list 2>/dev/null \
+                | awk 'NR > 2 && $1 ~ /^[0-9]+$/ && $1 != "0" { n++ } END { print n + 0 }')
+            if [ "${points:-0}" -gt 0 ]; then
+                ok "$points Phoenix Point(s) recorded"
+            else
+                warn "no Phoenix Point exists yet (Point #1 'Fresh install' was not created)"
+            fi
+        else
+            fail "snapper cannot read the root config (config present but unusable)"
+        fi
+    fi
+else
+    fail "no snapper root config - Phoenix Points cannot be taken"
+fi
+
+# --- 2. /.snapshots: the @snapshots mount, not snapper's nested subvolume ---
+if [ ! -d "$ROOTDIR/.snapshots" ]; then
+    fail "/.snapshots is missing - Phoenix Points have nowhere to live"
+elif mountpoint -q "$ROOTDIR/.snapshots" 2>/dev/null; then
+    ok "/.snapshots is a separate mount (Point history survives a root swap)"
+elif btrfs subvolume show "$ROOTDIR/.snapshots" >/dev/null 2>&1; then
+    fail "/.snapshots is a nested subvolume inside the root subvolume, not the" \
+         "@snapshots mount - Point history would be lost on the first restore"
+else
+    warn "/.snapshots is a plain directory inside the root subvolume:" \
+         "Points work, but the history does not survive a root-subvolume swap"
+fi
+
+# --- 3. The root subvolume phoenix-restore exchanges ------------------------
+if [ -z "$ROOTDIR" ]; then
+    rootsrc=$(findmnt -n -o SOURCE / 2>/dev/null || true)
+    case "$rootsrc" in
+      *'[/@]') ok "root subvolume is @" ;;
+      '')      warn "cannot determine the root subvolume" ;;
+      *)       warn "root is mounted from '$rootsrc', not the @ subvolume -" \
+                    "phoenix-restore refuses to exchange an unexpected layout" ;;
+    esac
+
+    # --- 4. Boot-menu regeneration -----------------------------------------
+    if command -v grub-btrfsd >/dev/null 2>&1; then
+        if systemctl is-enabled grub-btrfsd.service >/dev/null 2>&1; then
+            ok "grub-btrfsd is enabled (Points appear in the GRUB menu)"
+        else
+            warn "grub-btrfsd is installed but not enabled - Points will not" \
+                 "appear in the 'Last Known Good Flame' GRUB submenu"
+        fi
+    fi
+    if systemctl is-enabled snapper-cleanup.timer >/dev/null 2>&1; then
+        ok "snapper-cleanup.timer is enabled"
+    else
+        warn "snapper-cleanup.timer is not enabled - old Points are never pruned"
+    fi
+fi
+
+if [ "$FAILURES" -gt 0 ]; then
+    echo "phoenix-check-layout: $FAILURES layout check(s) FAILED - Phoenix" \
+         "Recovery is not fully armed" >&2
+    exit 1
+fi
+exit 0

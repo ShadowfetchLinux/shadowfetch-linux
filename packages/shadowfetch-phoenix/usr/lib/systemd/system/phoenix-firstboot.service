@@ -16,6 +16,12 @@ After=local-fs.target
 [Service]
 Type=oneshot
 ExecStart=/usr/libexec/phoenix-firstboot
+# 4.0.0: verify what we just armed. Read-only; it fails the unit only for an
+# unambiguously broken layout (no snapper config, no /.snapshots, or snapper's
+# nested .snapshots subvolume left in place of the @snapshots mount), so a
+# half-initialised Btrfs layout is visible in `systemctl --failed` and in the
+# recovery report instead of being discovered by a restore that needs it.
+ExecStartPost=/usr/libexec/phoenix-check-layout
 RemainAfterExit=yes
 
 [Install]

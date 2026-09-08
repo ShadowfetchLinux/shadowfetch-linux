@@ -1,4 +1,5 @@
 usr/libexec/phoenix-firstboot                                usr/libexec/
+usr/libexec/phoenix-check-layout                             usr/libexec/
 usr/libexec/phoenix-restore                                  usr/libexec/
 usr/libexec/phoenix-apt-repair                               usr/libexec/
 usr/libexec/phoenix-postboot                                 usr/libexec/

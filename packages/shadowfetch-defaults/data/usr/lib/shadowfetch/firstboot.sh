@@ -52,26 +52,21 @@ for s in nvidia-suspend nvidia-resume nvidia-hibernate; do
     fi
 done
 
-# --- Snapshots & rollback (1.2.9): configure snapper + grub-btrfs when root is Btrfs ---
-if command -v snapper >/dev/null 2>&1 && [ "$(stat -f -c %T / 2>/dev/null)" = "btrfs" ]; then
-    if [ ! -f /etc/snapper/configs/root ]; then
-        snapper -c root create-config / 2>/dev/null
-        if [ -f /etc/snapper/configs/root ]; then
-            snapper -c root set-config TIMELINE_CREATE=yes TIMELINE_CLEANUP=yes NUMBER_CLEANUP=yes NUMBER_MIN_AGE=1800 NUMBER_LIMIT=12 NUMBER_LIMIT_IMPORTANT=6 TIMELINE_LIMIT_HOURLY=6 TIMELINE_LIMIT_DAILY=5 TIMELINE_LIMIT_WEEKLY=2 TIMELINE_LIMIT_MONTHLY=0 TIMELINE_LIMIT_YEARLY=0 2>/dev/null
-            primary=$(getent passwd 1000 | cut -d: -f1)
-            [ -n "$primary" ] && snapper -c root set-config ALLOW_USERS="$primary" SYNC_ACL=yes 2>/dev/null
-        fi
-    fi
-    systemctl enable --now snapper-timeline.timer snapper-cleanup.timer 2>/dev/null
-    # 2.0.0 Bedrock: boot-to-snapshot. grub-btrfsd watches .snapshots and
-    # regenerates the GRUB submenu so any snapshot is bootable from the menu.
-    if command -v grub-btrfsd >/dev/null 2>&1; then
-        systemctl enable --now grub-btrfsd 2>/dev/null || systemctl enable --now grub-btrfsd.service 2>/dev/null || true
-    fi
-    if command -v update-grub >/dev/null 2>&1; then update-grub 2>/dev/null || true; fi
-
-fi
-
+# --- Snapshots & rollback: owned by Phoenix, deliberately NOT done here -----
+#
+# 4.0.0: the snapper/grub-btrfs block that used to live here raced
+# phoenix-firstboot (shadowfetch-phoenix). Both units are WantedBy
+# multi-user.target and nothing ordered them, so whichever won decided the
+# Btrfs layout: when this script won, snapper create-config left its NESTED
+# /.snapshots subvolume in place and the top-level @snapshots subvolume was
+# never mounted over it, so Point history did not survive a root-subvolume
+# swap by phoenix-restore - a half-initialised layout.
+#
+# phoenix-firstboot does all of it (create + tune the root config, replace the
+# nested .snapshots with the @snapshots mount, snapper-cleanup.timer,
+# grub-btrfsd, update-grub, Point #1) and phoenix-check-layout verifies the
+# result. shadowfetch-firstboot.service is ordered After=phoenix-firstboot.service
+# so nothing here can run before Phoenix has established the layout.
 
 # Debian ships these under renamed binaries; add the names users expect (bat, fd)
 mkdir -p /usr/local/bin

@@ -11,6 +11,12 @@ ConditionPathExists=!/var/lib/shadowfetch/firstboot.done
 ConditionPathExists=!/run/live/medium
 ConditionPathExists=!/run/live/rootfs
 After=local-fs.target
+# 4.0.0: Phoenix owns the Btrfs snapshot layout. The snapper block that used to
+# live in firstboot.sh raced phoenix-firstboot and could leave /.snapshots half
+# initialised, so it was removed; this ordering keeps any future first-boot step
+# behind Phoenix. Ordering only - NOT Requires=: a Phoenix failure must never
+# stop the Flathub remote, the firewall or the RTC/timesync setup below.
+After=phoenix-firstboot.service
 
 [Service]
 Type=oneshot
