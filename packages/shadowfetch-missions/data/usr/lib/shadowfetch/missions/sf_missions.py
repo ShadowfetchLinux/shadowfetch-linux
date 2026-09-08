@@ -947,6 +947,8 @@ class Executor:
         self.publish("validation.json", json.dumps({"tests": self.tests, "runtime": config["runtime"], "inferences": self.inferences}, indent=2) + "\n")
 
     def media(self):
+        provider = self.provider
+        capability = Capability.MEDIA_EXPORT
         outputs = []
         for index, rel in enumerate(self.mission["config"]["inputs"], 1):
             self.check()
@@ -957,20 +959,27 @@ class Executor:
                 self.artifacts.append(step["output"])
                 self.event("step-resumed", "Verified media export " + rel)
                 continue
-            probe_cmd = [executable("ffprobe"), "-v", "error", "-show_streams", "-show_format", "-of", "json", str(source)]
-            code, tail, _ = self.run_process(probe_cmd, f"probe-input-{index}")
+            # ffprobe writes its report to a FILE. The old path searched the
+            # process log for the literal '{"streams"' because Firebreak appends
+            # a session trailer to the same stream -- one component recovering
+            # another's structured output by string search. There is no prose to
+            # parse now.
+            report = scoped(self.ws, str(Path("mission-output") / self.mid / f".probe-{index}.json"), exists=False)
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.unlink(missing_ok=True)
+            probe = provider.build_invocation(capability, {
+                "stage": "probe", "source": str(source), "report_path": str(report),
+                "label": f"probe-input-{index}", "config": self.mission["config"]})
+            code, tail, _ = self.run_invocation(probe)
             if code:
                 raise MissionError(f"Cannot inspect media: {rel}")
-            # Firebreak writes its session trailer; extract ffprobe JSON from log.
-            start = tail.find('{\n    "streams"')
-            if start < 0:
-                start = tail.find('{"streams"')
             try:
-                meta, _ = json.JSONDecoder().raw_decode(tail[start:])
-            except ValueError:
-                raise MissionError(f"Invalid media metadata: {rel}")
-            video = any(s.get("codec_type") == "video" and not s.get("disposition", {}).get("attached_pic") for s in meta.get("streams", []))
-            audio = any(s.get("codec_type") == "audio" for s in meta.get("streams", []))
+                meta = provider.read_probe(report)
+            except ProviderError as exc:
+                raise MissionError(f"Invalid media metadata: {rel}: {exc}") from exc
+            finally:
+                report.unlink(missing_ok=True)
+            video, audio = provider.classify(meta)
             if not (video or audio):
                 raise MissionError(f"No supported audio or video stream: {rel}")
             suffix = ".mp4" if video else ".wav"
@@ -978,17 +987,17 @@ class Executor:
             output = scoped(self.ws, str(Path("mission-output") / self.mid / name), exists=False)
             output.parent.mkdir(parents=True, exist_ok=True)
             temporary = output.with_name(output.stem + ".partial" + suffix)
-            command = [executable("ffmpeg"), "-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source), "-map_metadata", "-1", "-map_chapters", "-1", "-threads", "2"]
-            if video:
-                command += ["-map", "0:v:0", "-map", "0:a:0?", "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart"]
-            else:
-                command += ["-map", "0:a:0", "-c:a", "pcm_s16le", "-ar", "48000"]
-            command.append(str(temporary))
+            encode = provider.build_invocation(capability, {
+                "stage": "encode", "source": str(source), "target": str(temporary),
+                "video": video, "label": f"export-{index}", "config": self.mission["config"]})
             try:
-                code, tail, _ = self.run_process(command, f"export-{index}")
+                code, tail, _ = self.run_invocation(encode)
                 if code or not temporary.is_file() or not temporary.stat().st_size:
                     raise MissionError(f"Export failed for {rel}: {tail[-1000:]}")
-                code, tail, _ = self.run_process([executable("ffmpeg"), "-nostdin", "-v", "error", "-i", str(temporary), "-f", "null", "-"], f"verify-export-{index}")
+                verify = provider.build_invocation(capability, {
+                    "stage": "verify", "source": str(temporary),
+                    "label": f"verify-export-{index}", "config": self.mission["config"]})
+                code, tail, _ = self.run_invocation(verify)
                 if code:
                     raise MissionError(f"Export decode verification failed: {rel}")
                 temporary.replace(output)
