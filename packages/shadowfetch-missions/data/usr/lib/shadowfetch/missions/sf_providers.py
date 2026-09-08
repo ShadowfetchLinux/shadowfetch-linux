@@ -53,6 +53,8 @@ __all__ = [
     "SandboxSpec", "Invocation", "AgentEvent", "Readiness", "Acceptance",
     "AgentProvider", "ProviderRegistry", "load_manifest", "manifest_schema",
     "trusted_executable", "TRUSTED_EXEC_PREFIXES", "verify_invocation",
+    "sandbox_enforcement", "unenforced_fields", "SANDBOX_ENFORCEMENT",
+    "ENFORCED", "PARTIAL", "NOT_ENFORCED", "NOT_REPRESENTABLE",
     "ApprovedPolicy", "PolicyError", "load_policy", "manifest_digest",
     "resolve_executable",
 ]
@@ -871,6 +873,76 @@ def sandbox_from_manifest(manifest: dict) -> SandboxSpec:
 # --------------------------------------------------------------------------- #
 # Registry
 # --------------------------------------------------------------------------- #
+
+
+# --------------------------------------------------------------------------- #
+# What each sandbox field actually reaches
+# --------------------------------------------------------------------------- #
+ENFORCED = "enforced"
+PARTIAL = "partial"
+NOT_ENFORCED = "not_enforced"
+NOT_REPRESENTABLE = "not_representable"
+
+# field -> (status, mechanism). Mirrors the machine-readable table in
+# packages/shadowfetch-missions/tests/test_sandbox_spec_audit.py, which fails a
+# build if a field's status drifts in either direction. If you change one,
+# change both -- that test is the reason this cannot quietly rot.
+SANDBOX_ENFORCEMENT = {
+    "workspace_mode": (ENFORCED,
+                       "bwrap --ro-bind for read-only, --bind otherwise"),
+    "network": (ENFORCED,
+                "bwrap --unshare-net for 'none'; 'allowlist' collapses to the "
+                "host network, see egress_allowlist"),
+    "read_grants": (ENFORCED, "bwrap --ro-bind per grant"),
+    "credential_ids": (ENFORCED,
+                       "bwrap --clearenv plus one --setenv per declared identity"),
+    "account_mount": (ENFORCED, "bwrap --bind of the dedicated account home"),
+    "memory_mb": (ENFORCED,
+                  "systemd MemoryMax with MemorySwapMax=0, so the cap bounds the "
+                  "workload rather than the resident set"),
+    "processes": (ENFORCED, "systemd TasksMax"),
+    "cpu_seconds": (PARTIAL,
+                    "RLIMIT_CPU at the tighter of the declaration and the mission "
+                    "timeout. Per-PROCESS, so a provider that forks gets a fresh "
+                    "budget for each child"),
+    "egress_allowlist": (NOT_ENFORCED,
+                         "Firebreak has two network postures, none and allow. "
+                         "'allowlist' collapses to allow, so the hosts are recorded "
+                         "for audit and reach no filter. Phase 4"),
+    "masked_paths": (NOT_ENFORCED,
+                     "Firebreak has no masking flag; the paths are checked on "
+                     "widening and reach nothing. Phase 4"),
+    "syscall_profile": (NOT_REPRESENTABLE,
+                        "no schema property and no bwrap --seccomp anywhere"),
+}
+
+
+def sandbox_enforcement(spec=None) -> dict:
+    """Per-field enforcement status for a SandboxSpec, as a plain dict.
+
+    Callable with no spec to get the static table -- a UI explaining what the
+    system can do has no particular sandbox in hand. With a spec, fields the
+    sandbox does not actually use are marked not_applicable, so a receipt does
+    not warn about an egress allowlist that is empty anyway.
+    """
+    result = {}
+    for field, (status, mechanism) in SANDBOX_ENFORCEMENT.items():
+        entry = {"status": status, "mechanism": mechanism}
+        if spec is not None and status in (NOT_ENFORCED, PARTIAL):
+            value = getattr(spec, field, None)
+            if value in (None, (), [], ""):
+                entry["status"] = "not_applicable"
+                entry["mechanism"] = "this session declared nothing for this field"
+        result[field] = entry
+    return result
+
+
+def unenforced_fields(spec=None) -> list:
+    """The fields a caller must not describe as protection. One list, so a UI,
+    a receipt and a review cannot each decide differently."""
+    status = sandbox_enforcement(spec)
+    return sorted(name for name, entry in status.items()
+                  if entry["status"] in (NOT_ENFORCED, NOT_REPRESENTABLE))
 
 def verify_invocation(invocation, manifest):
     """Check a built Invocation against the ceiling its manifest declares.

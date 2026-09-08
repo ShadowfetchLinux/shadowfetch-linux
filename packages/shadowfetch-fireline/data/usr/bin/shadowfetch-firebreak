@@ -10,6 +10,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 from pathlib import Path
 import resource
 import shutil
@@ -124,6 +125,32 @@ def read_grants(values, ws):
         grants.append(resolved)
     return grants
 
+# A session id becomes a systemd unit name (--unit=), a filename, and an
+# environment variable inside the sandbox. All three are injection surfaces, so
+# the shape is checked rather than trusted: the orchestrator is not hostile, but
+# "the caller is trusted" is the assumption this codebase keeps finding was
+# wrong somewhere else.
+SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+def session_id(supplied):
+    """The orchestrator's id if it gave one, otherwise mint our own.
+
+    Mission Control mints the id BEFORE execution so that a crash between
+    launching and recording still leaves a correlatable identity. When it does,
+    Firebreak adopts it: one identity, not two that have to be joined later.
+    """
+    if supplied is None or supplied == "":
+        return ("fb-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+                + "-" + uuid.uuid4().hex[:8])
+    if not SESSION_ID.match(supplied):
+        raise Error(
+            "A session id must be 1-64 characters of letters, digits, hyphen or "
+            "underscore, starting with a letter or digit. It names a systemd "
+            "unit and a file, so its shape is not negotiable.")
+    return supplied
+
+
 def arguments(args, ws, sid):
     net = args.net or ("none" if element() == "ice" else "allow")
     grants = read_grants(args.read, ws)
@@ -220,7 +247,7 @@ def run(args):
     if not 256 <= args.memory_mb <= 65536 or not 1 <= args.cpu_seconds <= 86400 or not 8 <= args.processes <= 1024:
         raise Error("Invalid memory, CPU time or process limit")
     ws = workspace(args.workspace)
-    sid = "fb-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:8]
+    sid = session_id(getattr(args, "session_id", None))
     cmd, net, grants, credentials = arguments(args, ws, sid)
     if not shutil.which("systemd-run"):
         raise Error("systemd-run is required for per-session CPU, memory and process limits")
@@ -244,7 +271,12 @@ def run(args):
             raise Error("Checkpoint engine returned an invalid receipt; execution refused")
         print("checkpoint " + checkpoint + " taken", flush=True)
     started = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    manifest = {"session": sid, "workspace": str(ws), "network": net, "private_home": True, "read_grants": list(map(str, grants)), "credential_names": credentials, "checkpoint": checkpoint, "started": started, "limits": {"memory_mb": args.memory_mb, "cpu_seconds": args.cpu_seconds, "processes": args.processes}}
+    manifest = {"session": sid,
+                "session_id_source": ("orchestrator" if getattr(args, "session_id", None)
+                                      else "firebreak"),
+                "mission": getattr(args, "mission", None),
+                "task": getattr(args, "task", None),
+                "workspace": str(ws), "network": net, "private_home": True, "read_grants": list(map(str, grants)), "credential_names": credentials, "checkpoint": checkpoint, "started": started, "limits": {"memory_mb": args.memory_mb, "cpu_seconds": args.cpu_seconds, "processes": args.processes}}
     record = state() / (sid + ".session")
     record.write_text(json.dumps(manifest, indent=2) + "\n")
     record.chmod(0o600)
@@ -283,6 +315,13 @@ def main(argv=None):
     log = sub.add_parser("log")
     log.add_argument("count", nargs="?", type=int, default=10)
     execute = sub.add_parser("run")
+    execute.add_argument("--session-id", default=None,
+                         help="Correlation id issued by the orchestrator; one identity "
+                              "across Mission Control, this sandbox and the audit log")
+    execute.add_argument("--mission", default=None,
+                         help="Mission this session belongs to, recorded for audit")
+    execute.add_argument("--task", default=None,
+                         help="Task within the mission, recorded for audit")
     execute.add_argument("--workspace", default="")
     execute.add_argument("--net", choices=("none", "allow"))
     execute.add_argument("--read", action="append", default=[], metavar="ABSOLUTE_PATH")

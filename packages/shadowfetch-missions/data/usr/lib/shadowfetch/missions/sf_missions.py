@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import codecs
 import contextlib
+import dataclasses
 import datetime as dt
 import difflib
 import fcntl
@@ -117,6 +118,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sf_audit
 import sf_redact
 from sf_providers import (LEGACY_KIND_CAPABILITY, CAPABILITY_LEGACY_KIND,
+                         sandbox_enforcement, unenforced_fields,
+                         classify_executable, sandbox_from_manifest,
                          CAPABILITIES, Capability, ProviderRegistry,
                          ProviderError, verify_invocation, trusted_executable)
 
@@ -131,6 +134,67 @@ CHANGE_ADDED, CHANGE_REMOVED, CHANGE_MODIFIED = "added", "removed", "modified"
 
 class MissionError(Exception):
     pass
+
+# ------------------------------------------------------------ task states ---
+# Tasks are modelled separately from missions on purpose: a task is a step the
+# engine performs, a mission is a thing a person asked for, and they fail for
+# different reasons and at different granularities.
+class TaskState:
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    CANCELLED = "cancelled"
+
+
+TASK_STATES = (TaskState.PENDING, TaskState.RUNNING, TaskState.SUCCEEDED,
+               TaskState.FAILED, TaskState.SKIPPED, TaskState.CANCELLED)
+
+TASK_TRANSITIONS = {
+    (None, TaskState.PENDING): ("task-created", "the mission planned this step"),
+    (TaskState.PENDING, TaskState.RUNNING): ("task-started", "the step began"),
+    (TaskState.PENDING, TaskState.SKIPPED):
+        ("task-skipped", "an earlier attempt already completed this step"),
+    (TaskState.PENDING, TaskState.CANCELLED):
+        ("task-cancelled", "the mission was cancelled before this step ran"),
+    (TaskState.RUNNING, TaskState.SUCCEEDED): ("task-succeeded", "the step finished"),
+    (TaskState.RUNNING, TaskState.FAILED): ("task-failed", "the step raised"),
+    (TaskState.RUNNING, TaskState.CANCELLED):
+        ("task-cancelled", "the step was cancelled while running"),
+}
+
+# Task kinds. Named for what they DO, so a reader of an audit trail can tell
+# what happened without knowing which provider was involved.
+class TaskKind:
+    CHECKPOINT = "checkpoint"
+    INFERENCE = "inference"
+    MEDIA = "media"
+    VALIDATION = "validation"
+    PUBLISH = "publish"
+    REVIEW_PREP = "review-prep"
+
+
+# Which task kind a capability's work is. Data, not a branch: a new
+# capability adds a row here rather than an if.
+CAPABILITY_TASK_KIND = {
+    "code_change": TaskKind.INFERENCE,
+    "sourced_report": TaskKind.INFERENCE,
+    "media_export": TaskKind.MEDIA,
+}
+
+
+def task_transition_allowed(current, target):
+    edge = TASK_TRANSITIONS.get((current, target))
+    if edge is not None:
+        return True, edge[0], edge[1]
+    if target not in TASK_STATES:
+        return False, None, f"{target!r} is not a task state"
+    return False, None, (
+        f"a {current} task cannot become {target}. From {current} a task may become: "
+        + (", ".join(sorted(to for (frm, to) in TASK_TRANSITIONS if frm == current))
+           or "nothing"))
+
 
 class TransitionError(MissionError):
     """A refused state change. Its own class so callers can tell a rejected
@@ -724,6 +788,189 @@ class Store:
         """The name every existing call site uses. Now chained."""
         return self.append_event(mid, event, detail, **correlation)
 
+    # ---------------------------------------------------------- tasks ---
+    def create_task(self, mission_id, *, kind, seq, depends_on=(), sandbox_spec=None):
+        """Plan one step. Returns the row.
+
+        The id is minted here, before anything runs, so every record the step
+        later produces can point at it.
+        """
+        tid = "task-" + uuid.uuid4().hex[:16]
+        at = now()
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT INTO tasks(id,mission_id,seq,kind,state,depends_on,sandbox_spec) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (tid, mission_id, seq, kind, TaskState.PENDING,
+                 json.dumps(list(depends_on)),
+                 json.dumps(sandbox_spec) if sandbox_spec is not None else None))
+            event = TASK_TRANSITIONS[(None, TaskState.PENDING)][0]
+            row = self._append(db, mission=mission_id, event=event, task_id=tid,
+                               at=at, detail=f"{kind} (step {seq})")
+        self.mirror(row)
+        return self.task(tid)
+
+    def task(self, tid):
+        with self.db() as db:
+            row = db.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+        if not row:
+            raise MissionError("Task does not exist")
+        result = dict(row)
+        result["depends_on"] = json.loads(result["depends_on"] or "[]")
+        return result
+
+    def tasks(self, mission_id):
+        with self.db() as db:
+            rows = db.execute("SELECT * FROM tasks WHERE mission_id=? ORDER BY seq",
+                              (mission_id,)).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            item["depends_on"] = json.loads(item["depends_on"] or "[]")
+            out.append(item)
+        return out
+
+    def task_transition(self, tid, target, *, detail=None, actor=ACTOR_ORCHESTRATOR,
+                        **fields):
+        """Move a task, or refuse and change nothing. Same contract as a
+        mission transition, including the shared transaction with its event."""
+        bad = set(fields) - {"exit_code", "error", "result", "sandbox_spec"}
+        if bad:
+            raise MissionError("Invalid task update")
+        at = now()
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT mission_id,state FROM tasks WHERE id=?",
+                             (tid,)).fetchone()
+            if row is None:
+                raise MissionError("Task does not exist")
+            allowed, event, reason = task_transition_allowed(row["state"], target)
+            if not allowed:
+                raise TransitionError(f"Refused task {row['state']} -> {target}: {reason}")
+            assignments = dict(fields)
+            assignments["state"] = target
+            if target == TaskState.RUNNING:
+                assignments["started_at"] = at
+            elif target in (TaskState.SUCCEEDED, TaskState.FAILED,
+                            TaskState.CANCELLED, TaskState.SKIPPED):
+                assignments["finished_at"] = at
+            if "result" in assignments and assignments["result"] is not None:
+                assignments["result"] = json.dumps(assignments["result"])
+            db.execute("UPDATE tasks SET " + ",".join(k + "=?" for k in assignments)
+                       + " WHERE id=?", [*assignments.values(), tid])
+            appended = self._append(db, mission=row["mission_id"], event=event,
+                                    task_id=tid, actor=actor, at=at,
+                                    detail=detail if detail is not None else reason)
+        self.mirror(appended)
+        return self.task(tid)
+
+    # ------------------------------------------------------- sessions ---
+    def open_session(self, mission_id, *, task_id, provider_id, provider_version,
+                     provider_trust, attempt, requested_sandbox, effective_sandbox,
+                     enforcement, credentials_requested=(), credentials_granted=(),
+                     read_grants=(), network_requested=None, egress_requested=(),
+                     network_effective=None, executable=None, executable_trust=None,
+                     command=None):
+        """Record an agent session BEFORE the process starts.
+
+        The id is minted here and handed to Firebreak as --session-id, so the
+        sandbox and the orchestrator share one identity rather than each having
+        its own and neither being able to name the other. If the process dies
+        between this row and its first output, the row still exists and still
+        says what was requested -- which is exactly the case the baseline could
+        not reconstruct.
+
+        requested_ and effective_ are kept SEPARATE, and `enforcement` records
+        what each field actually reaches. A single "sandbox" column would make a
+        declared control indistinguishable from an enforced one.
+        """
+        sid = "sess-" + uuid.uuid4().hex[:16]
+        at = now()
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT INTO agent_sessions(id,mission_id,task_id,provider_id,"
+                "provider_version,provider_trust,attempt,requested_sandbox,"
+                "effective_sandbox,enforcement,credentials_requested,"
+                "credentials_granted,read_grants,network_requested,egress_requested,"
+                "network_effective,executable,executable_trust,command,started_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (sid, mission_id, task_id, provider_id, provider_version or "",
+                 provider_trust or "unknown", attempt,
+                 json.dumps(requested_sandbox), json.dumps(effective_sandbox),
+                 json.dumps(enforcement), json.dumps(list(credentials_requested)),
+                 json.dumps(list(credentials_granted)), json.dumps(list(read_grants)),
+                 network_requested, json.dumps(list(egress_requested)),
+                 network_effective, executable, executable_trust, command, at))
+            row = self._append(db, mission=mission_id, event="session-opened",
+                               task_id=task_id, session_id=sid, at=at,
+                               detail=f"{provider_id} {provider_version or ''} "
+                                      f"attempt {attempt}".strip())
+        self.mirror(row)
+        return sid
+
+    def close_session(self, session_id, *, exit_code=None, outcome=None, usage=None,
+                      firebreak_session=None):
+        at = now()
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT mission_id,task_id FROM agent_sessions WHERE id=?",
+                             (session_id,)).fetchone()
+            if row is None:
+                raise MissionError("Session does not exist")
+            db.execute(
+                "UPDATE agent_sessions SET ended_at=?,exit_code=?,outcome=?,usage=?,"
+                "firebreak_session=COALESCE(?,firebreak_session) WHERE id=?",
+                (at, exit_code, outcome,
+                 json.dumps(usage) if usage is not None else None,
+                 firebreak_session, session_id))
+            appended = self._append(db, mission=row["mission_id"], event="session-closed",
+                                    task_id=row["task_id"], session_id=session_id, at=at,
+                                    detail=f"exit {exit_code}; {outcome or 'no outcome recorded'}")
+        self.mirror(appended)
+
+    def session(self, session_id):
+        with self.db() as db:
+            row = db.execute("SELECT * FROM agent_sessions WHERE id=?",
+                             (session_id,)).fetchone()
+        if not row:
+            raise MissionError("Session does not exist")
+        return self._unpack_session(row)
+
+    def sessions(self, mission_id):
+        with self.db() as db:
+            rows = db.execute(
+                "SELECT * FROM agent_sessions WHERE mission_id=? ORDER BY started_at",
+                (mission_id,)).fetchall()
+        return [self._unpack_session(row) for row in rows]
+
+    def session_for_firebreak(self, firebreak_session):
+        """Given a sandbox session id, name the mission and task.
+
+        The reverse direction matters as much as the forward one: somebody
+        looking at a Firebreak record, or at a systemd scope, has to be able to
+        get back to the mission without grepping.
+        """
+        with self.db() as db:
+            row = db.execute(
+                "SELECT * FROM agent_sessions WHERE firebreak_session=? OR id=?",
+                (firebreak_session, firebreak_session)).fetchone()
+        return self._unpack_session(row) if row else None
+
+    @staticmethod
+    def _unpack_session(row):
+        result = dict(row)
+        for field in ("requested_sandbox", "effective_sandbox", "enforcement",
+                      "credentials_requested", "credentials_granted", "read_grants",
+                      "egress_requested", "usage"):
+            if result.get(field):
+                try:
+                    result[field] = json.loads(result[field])
+                except (ValueError, TypeError):
+                    pass
+        return result
+
     def chain_id(self):
         """This database's chain id, minted once at genesis and read from it.
 
@@ -1221,6 +1468,11 @@ class Executor:
         self.tests = []
         self.inferences = []
         self.preserve_recovery_index = False
+        # The correlation currently in scope. Every event, process and record
+        # produced from here carries whichever of these is set, so a reader who
+        # starts at a mission id can reach everything that happened.
+        self.task_id = None
+        self.session_id = None
 
     @property
     def provider(self):
@@ -1249,8 +1501,39 @@ class Executor:
         if time.monotonic() >= self.deadline:
             raise MissionError("Mission exceeded its execution time budget")
 
+    @contextlib.contextmanager
+    def task(self, kind, *, sandbox_spec=None, depends_on=()):
+        """Run a block as a recorded Task.
+
+        The row is created PENDING before the work, moved to RUNNING, and
+        settled on the way out -- including on the cancel and failure paths, so
+        a task that did not finish says so rather than staying RUNNING forever
+        the way missions used to.
+        """
+        seq = len(self.store.tasks(self.mid)) + 1
+        row = self.store.create_task(self.mid, kind=kind, seq=seq,
+                                     depends_on=depends_on, sandbox_spec=sandbox_spec)
+        tid = row["id"]
+        previous = self.task_id
+        self.task_id = tid
+        self.store.task_transition(tid, TaskState.RUNNING)
+        try:
+            yield tid
+        except Cancelled:
+            self.store.task_transition(tid, TaskState.CANCELLED,
+                                       detail="the mission was cancelled")
+            raise
+        except Exception as exc:                                   # noqa: BLE001
+            self.store.task_transition(tid, TaskState.FAILED, error=clean(exc)[:500])
+            raise
+        else:
+            self.store.task_transition(tid, TaskState.SUCCEEDED)
+        finally:
+            self.task_id = previous
+
     def event(self, name, detail=""):
-        self.store.event(self.mid, name, detail)
+        self.store.event(self.mid, name, detail,
+                         task_id=self.task_id, session_id=self.session_id)
 
     def run_process(self, command, label, *, sandbox=True, env=None, input_path=None, codex_account=False, invocation=None):
         """Run one command in Firebreak.
@@ -1277,6 +1560,14 @@ class Executor:
                        "--processes", str(spec.processes) if spec else "96",
                        "--workspace-mode",
                        spec.workspace_mode if spec else "workspace-write"]
+            # One identity across the orchestrator and the sandbox. Firebreak
+            # adopts this rather than minting its own, so a person holding a
+            # systemd scope name or a .session file can get back to the mission.
+            if self.session_id:
+                wrapper.extend(["--session-id", self.session_id,
+                                "--mission", self.mid])
+                if self.task_id:
+                    wrapper.extend(["--task", self.task_id])
             if codex_account or (spec is not None and spec.account_mount and not env):
                 wrapper.append("--" + (spec.account_mount if spec is not None and spec.account_mount else "codex-account"))
             # Intersected with the spec, not taken from the resolved secrets
@@ -1496,9 +1787,12 @@ class Executor:
         return answer
 
     def run_invocation(self, invocation, secrets=None):
-        """Execute one provider Invocation. The sandbox is built by run_process
-        from the Invocation's own SandboxSpec, so there is exactly one place in
-        the engine that constructs a Firebreak command line."""
+        """Execute one provider Invocation, inside a recorded AgentSession.
+
+        Every provider execution goes through here, so opening the session here
+        means there is no path that runs a provider without a record. That is
+        the invariant; putting it in the callers would make it a convention.
+        """
         # The ceiling is re-derived from the manifest and enforced here, in the
         # orchestrator. An adapter that never calls narrow(), or that builds a
         # SandboxSpec from scratch, is still bounded by what it declared.
@@ -1506,9 +1800,75 @@ class Executor:
             verify_invocation(invocation, self.provider.manifest)
         except ProviderError as exc:
             raise MissionError(str(exc)) from exc
-        return self.run_process(invocation.command, invocation.label, sandbox=True,
-                                env=dict(secrets or {}), input_path=invocation.stdin_path,
-                                invocation=invocation)
+
+        session_id = self.open_session(invocation, secrets)
+        previous = self.session_id
+        self.session_id = session_id
+        code, tail, log = None, "", None
+        try:
+            code, tail, log = self.run_process(
+                invocation.command, invocation.label, sandbox=True,
+                env=dict(secrets or {}), input_path=invocation.stdin_path,
+                invocation=invocation)
+        except Cancelled:
+            self.store.close_session(session_id, exit_code=code, outcome="cancelled")
+            raise
+        except Exception as exc:                                   # noqa: BLE001
+            self.store.close_session(session_id, exit_code=code,
+                                     outcome="failed: " + clean(exc)[:200])
+            raise
+        else:
+            # Deliberately NOT `return` inside the try: a return there skips the
+            # else clause, which is how the first version of this closed no
+            # session at all on the success path.
+            self.store.close_session(
+                session_id, exit_code=code,
+                outcome="completed" if code == 0 else f"provider exited {code}",
+                firebreak_session=session_id)
+        finally:
+            self.session_id = previous
+        return code, tail, log
+
+    def open_session(self, invocation, secrets):
+        """Record what this execution WAS ALLOWED TO DO before it does it.
+
+        requested and effective are stored separately, and `enforcement` records
+        what each field actually reaches, because a session row that said only
+        "sandbox: {...}" would make a declared control indistinguishable from an
+        enforced one. egress_allowlist is recorded as requested and marked
+        not_enforced; it is not described as a restriction.
+        """
+        manifest = self.provider.manifest
+        declared = sandbox_from_manifest(manifest)
+        effective = invocation.sandbox or declared
+        program = invocation.executable or ""
+        trust = "unknown"
+        if program:
+            try:
+                trust = classify_executable(program)[0]
+            except Exception:                                      # noqa: BLE001
+                trust = "unknown"
+        return self.store.open_session(
+            self.mid,
+            task_id=self.task_id,
+            provider_id=self.provider.id,
+            provider_version=str(manifest.get("version") or ""),
+            provider_trust=str((manifest.get("_policy") or {}).get("trust") or "unknown"),
+            attempt=self.mission["attempt"],
+            requested_sandbox=dataclasses.asdict(declared),
+            effective_sandbox=dataclasses.asdict(effective),
+            enforcement=sandbox_enforcement(effective),
+            credentials_requested=tuple(manifest.get("credential_ids") or ()),
+            # Identities only. A value has never reached this row and must not.
+            credentials_granted=tuple(sorted(secrets or {})),
+            read_grants=tuple(str(p) for p in effective.read_grants),
+            network_requested=effective.network,
+            egress_requested=tuple(effective.egress_allowlist),
+            # What Firebreak is actually told, which is not the same thing.
+            network_effective=effective.firebreak_network,
+            executable=program,
+            executable_trust=trust,
+            command=" ".join(str(part) for part in invocation.command)[:4000])
 
     def input_text(self, *, code=False):
         inputs = self.mission["config"]["inputs"]
@@ -1746,15 +2106,20 @@ class Executor:
             raise MissionError(acceptance.reason)
         before_path = self.directory / "before.json"
         if not self.mission["checkpoint"]:
-            self.event("checkpoint-started", "Taking workspace recovery point")
-            atomic(before_path, json.dumps(tree_index(self.ws)))
-            result = checkpoint_call("snapshot", self.ws, label="mission:" + self.mid)
-            recovery_id = (result or {}).get("id")
-            if not recovery_id:
-                raise MissionError("Checkpoint engine returned no recovery id")
-            self.store.update(self.mid, checkpoint=recovery_id)
-            self.event("checkpoint-created", recovery_id)
-        getattr(self, self.CAPABILITY_METHOD[capability])()
+            with self.task(TaskKind.CHECKPOINT):
+                self.event("checkpoint-started", "Taking workspace recovery point")
+                atomic(before_path, json.dumps(tree_index(self.ws)))
+                result = checkpoint_call("snapshot", self.ws, label="mission:" + self.mid)
+                recovery_id = (result or {}).get("id")
+                if not recovery_id:
+                    raise MissionError("Checkpoint engine returned no recovery id")
+                self.store.update(self.mid, checkpoint=recovery_id)
+                self.event("checkpoint-created", recovery_id)
+        # The capability's own work is one task. Splitting it further is a
+        # provider-shaped decision and would put per-provider knowledge back in
+        # the orchestrator, which is the thing Phase 2 removed.
+        with self.task(CAPABILITY_TASK_KIND.get(capability, TaskKind.INFERENCE)):
+            getattr(self, self.CAPABILITY_METHOD[capability])()
         self.check()
 
     def receipt(self, state, error=None):

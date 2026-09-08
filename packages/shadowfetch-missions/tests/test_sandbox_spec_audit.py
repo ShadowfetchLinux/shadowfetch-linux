@@ -278,8 +278,8 @@ AUDIT = (
         "narrowed": True,
         "passed": True,
         "firebreak_flag": "--cpu-seconds",
-        "enforced": "yes",
-        "status": "ENFORCED (per process; a fork restarts the accounting)",
+        "enforced": "partial",
+        "status": "ENFORCED per process; a fork restarts the accounting",
         "looks_enforced_but_is_not": False,
         "mechanism": "RLIMIT_CPU set in the preexec_fn of the systemd-run child, inherited "
                      "through the scope into bwrap and the agent command; the kernel sends "
