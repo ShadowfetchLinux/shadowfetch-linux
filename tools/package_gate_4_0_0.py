@@ -19,7 +19,7 @@ import sys
 import tarfile
 import tempfile
 
-from mission_provider_contract import validate_provider_payload
+from providers.validate_manifest import validate_provider_payload
 
 from drkonqi_pickup_contract import (
     DROPIN, HELPER, PACKAGE as PICKUP_PACKAGE, validate_dropin, validate_package_paths,
@@ -236,7 +236,13 @@ def payload_gate(package_paths: dict[str, Path], extracted: Path) -> None:
     for path, owner in release_payload.items():
         if owners.get(path) != [owner]:
             raise RuntimeError(f"4.0 package payload missing or wrong owner: {path}")
-    validate_provider_payload(owners, (extracted / "usr/lib/shadowfetch/missions/sf_missions.py").read_text())
+    def _read(relative):
+        try:
+            return (extracted / relative).read_text(encoding="utf-8")
+        except OSError:
+            return None
+    result = validate_provider_payload(owners, (extracted / "usr/lib/shadowfetch/missions/sf_missions.py").read_text(), read=_read)
+    print("PASS: provider manifests validated: " + ", ".join(result["providers"]))
     print("PASS: Mission Control/Grok payload ownership; local AI stack absent")
 
     required_guide_payload = {

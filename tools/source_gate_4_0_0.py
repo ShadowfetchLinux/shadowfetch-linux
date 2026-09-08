@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from mission_provider_contract import validate_provider_payload
+from providers.validate_manifest import validate_provider_payload
 
 import argparse
 import ast
@@ -313,7 +313,14 @@ def secret_gates(candidates: list[Path], *, scan_history: bool = True) -> None:
 
 def retired_runtime_gate() -> None:
     payload_paths = [p.relative_to(data).as_posix() for data in (ROOT / "packages").glob("*/data") for p in data.rglob("*") if p.is_file() or p.is_symlink()]
-    validate_provider_payload(payload_paths, (ROOT / "packages/shadowfetch-missions/data/usr/lib/shadowfetch/missions/sf_missions.py").read_text())
+    missions_data = ROOT / "packages/shadowfetch-missions/data"
+    def _read(relative):
+        try:
+            return (missions_data / relative).read_text(encoding="utf-8")
+        except OSError:
+            return None
+    result = validate_provider_payload(payload_paths, (missions_data / "usr/lib/shadowfetch/missions/sf_missions.py").read_text(), read=_read)
+    print("PASS: provider manifests validated: " + ", ".join(result["providers"]))
     findings: list[str] = []
     for value in ACTIVE_IMAGE_ROOTS:
         root = ROOT / value

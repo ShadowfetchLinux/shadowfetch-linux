@@ -18,7 +18,7 @@ from typing import Iterator
 
 import yaml
 
-from mission_provider_contract import validate_provider_payload
+from providers.validate_manifest import validate_provider_payload
 
 from drkonqi_pickup_contract import (
     DROPIN, HELPER, UPSTREAM_UNITS, UPSTREAM_VERSION,
@@ -771,7 +771,13 @@ def payload_gate(squashfs: Path, inventory: dict[str, str]) -> None:
         raise RuntimeError("private credentials or keys were embedded: " + ", ".join(secrets))
 
     mission_source = squash_cat(squashfs, "usr/lib/shadowfetch/missions/sf_missions.py")
-    validate_provider_payload(inventory, mission_source)
+    def _read(relative):
+        try:
+            return squash_cat(squashfs, relative)
+        except Exception:
+            return None
+    result = validate_provider_payload(inventory, mission_source, read=_read)
+    print("PASS: provider manifests validated: " + ", ".join(result["providers"]))
     print("PASS: local AI stack absent; Codex cloud and offline media capabilities")
     passport = squash_cat(squashfs, "usr/bin/shadowfetch-passport")
     recovery_sources = squash_cat(
