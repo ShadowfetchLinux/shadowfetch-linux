@@ -11,7 +11,10 @@ Grok Bot launches separately and has no supported Mission Control adapter.
   the boundary; cloud access requires explicit permission. Codex runs through
   Firebreak with a private home and no copied user login/configuration folders.
   Code uses the existing workspace-write adapter and runs the exact supplied test
-  command afterward. Changing pre-existing tests or their runner refuses success.
+  command afterward. Changing pre-existing tests or their runner refuses success,
+  and so does adding a new test or validation-configuration file. Retries compare
+  against the guard baseline recorded with the first attempt's checkpoint, never
+  against the workspace an earlier attempt left behind.
   Report uses the same CLI in read-only mode, receives selected UTF-8 documents
   through stdin, validates every returned source-line citation, and publishes
   Markdown plus a source register containing SHA-256 hashes. Citation validation
@@ -79,6 +82,12 @@ revalidates state afterward. Busy refusal applies no review mutation. Publicatio
 commits final state and event together after persisting the receipt. Recovery
 covers workspace files; external network effects cannot be undone.
 
+`list` prints a JSON array of at most 1,000 records per page. A short page is
+announced on stderr with the offset to continue from; `--limit 0` returns the
+complete queue. Every attempt writes `changes.diff` beside a structured
+`changes.json` of typed change rows with escaped paths, and a rendering cut at
+its byte budget ends with an explicit truncation trailer instead of stopping.
+
 ```sh
 shadowfetch-missions --json capabilities
 shadowfetch-missions --json create --kind report --workspace research \
@@ -90,6 +99,8 @@ shadowfetch-missions --json create --kind code --workspace app \
 shadowfetch-missions --json create --kind media --workspace studio \
   --title 'Audio export' --prompt 'Export the selected audio' \
   --runtime offline --network none --input source.wav
+shadowfetch-missions --json list
+shadowfetch-missions --json list --limit 200 --offset 200
 shadowfetch-missions --json show ID
 shadowfetch-missions --json review ID --decision accept
 shadowfetch-missions --json review ID --decision undo

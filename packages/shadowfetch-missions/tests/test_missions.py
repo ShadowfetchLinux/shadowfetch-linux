@@ -309,5 +309,146 @@ class MissionTests(unittest.TestCase):
         with patch.dict(os.environ, {"CODEX_API_KEY": "private-test-credential"}):
             self.assertNotIn("private-test-credential", m.clean("key private-test-credential"))
 
+    # W-15: a page limit must be an explicit, reportable boundary, never a silent cut.
+    def bulk_missions(self, count, *, state="queued", year=2000):
+        config = json.dumps({"runtime": "codex", "model": "", "inputs": ["facts.md"], "test": None, "network": "allow", "timeout": 900})
+        rows = [(f"mission-{year}{index:06d}", f"Bulk {index}", "report", state, str(self.ws), "prompt", config,
+                 f"{year}-01-01T{index // 3600 % 24:02d}:{index // 60 % 60:02d}:{index % 60:02d}+00:00", m.now()) for index in range(count)]
+        with self.store.db() as db:
+            db.executemany("INSERT INTO missions(id,title,kind,state,workspace,prompt,config,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)", rows)
+        return rows
+
+    def test_records_past_the_page_limit_are_reported_not_dropped(self):
+        self.bulk_missions(m.LIST_PAGE_LIMIT + 1)
+        with self.store.db() as db:
+            legacy = db.execute("SELECT * FROM missions ORDER BY created_at DESC,rowid DESC LIMIT 1000").fetchall()
+        self.assertEqual(len(legacy), m.LIST_PAGE_LIMIT)
+        self.assertEqual(len(self.store.list()), m.LIST_PAGE_LIMIT + 1)
+        page = self.store.page()
+        self.assertEqual(len(page["missions"]), m.LIST_PAGE_LIMIT)
+        self.assertEqual((page["total"], page["truncated"], page["next_offset"]), (m.LIST_PAGE_LIMIT + 1, True, m.LIST_PAGE_LIMIT))
+        rest = self.store.page(offset=page["next_offset"])
+        self.assertEqual((len(rest["missions"]), rest["truncated"], rest["next_offset"]), (1, False, None))
+        self.assertEqual([item["id"] for item in self.store.list()], [item["id"] for item in page["missions"] + rest["missions"]])
+        self.assertEqual(self.store.page(states=("queued",))["total"], m.LIST_PAGE_LIMIT + 1)
+        self.assertEqual(self.store.page(states=())["missions"], [])
+        for invalid in ({"limit": 0}, {"limit": -5}, {"offset": -1}):
+            with self.subTest(invalid=invalid), self.assertRaises(m.MissionError):
+                self.store.page(**invalid)
+
+    def test_pending_review_beyond_one_page_still_blocks_new_work(self):
+        first = self.create()
+        with patch.object(m.Executor, "codex", return_value="Friday. [S1:L1]"):
+            self.assertEqual(m.run_mission(self.store, first["id"])["state"], "waiting-review")
+        self.bulk_missions(m.LIST_PAGE_LIMIT, year=2099)
+        second = self.create()
+        with patch.object(m.Executor, "codex", side_effect=AssertionError("must not run beside an unreviewed result")):
+            with self.assertRaisesRegex(m.MissionError, "Review the previous"):
+                m.run_mission(self.store, second["id"])
+        self.assertEqual(self.store.get(second["id"])["state"], "queued")
+
+    def test_undo_finds_its_place_in_a_queue_larger_than_one_page(self):
+        mission = self.create()
+        with patch.object(m.Executor, "codex", return_value="Friday. [S1:L1]"):
+            m.run_mission(self.store, mission["id"])
+        self.bulk_missions(m.LIST_PAGE_LIMIT, year=2099)
+        self.assertEqual(m.review(self.store, mission["id"], "undo")["state"], "undone")
+        self.assertFalse((self.ws / "mission-output").exists())
+
+    def test_undo_reports_a_missing_queue_row_instead_of_crashing(self):
+        mission = self.create()
+        with patch.object(m.Executor, "codex", return_value="Friday. [S1:L1]"):
+            m.run_mission(self.store, mission["id"])
+        with patch.object(m.Store, "list", return_value=[]):
+            with self.assertRaisesRegex(m.MissionError, "no longer listed"):
+                m.review(self.store, mission["id"], "undo")
+        self.assertEqual(self.store.get(mission["id"])["state"], "waiting-review")
+
+    # W-16: the guard covers new validation files, measured against a pristine baseline.
+    def test_code_refuses_newly_added_validation_files(self):
+        (self.ws / "app.py").write_text("def add(a, b): return a - b\n")
+        mission = self.create(kind="code", inputs=["app.py"], test=[sys.executable, "-c", "import app"])
+        def sneak(executor, prompt):
+            (executor.ws / "app.py").write_text("def add(a, b): return a + b\n")
+            (executor.ws / "conftest.py").write_text("collect_ignore_glob = ['*']\n")
+            (executor.ws / "test_added.py").write_text("def test_ok():\n    assert True\n")
+        with patch.object(m.Executor, "codex", sneak), patch.object(m.Executor, "run_process", side_effect=AssertionError("validation must not run")):
+            result = m.run_mission(self.store, mission["id"])
+        self.assertEqual(result["state"], "failed")
+        self.assertIn("added unreviewed test/validation files", result["error"])
+        self.assertIn("conftest.py", result["error"])
+        self.assertIn("test_added.py", result["error"])
+
+    def test_validation_guard_baseline_stays_pristine_across_retries(self):
+        (self.ws / "app.py").write_text("value = 1\n")
+        (self.ws / "test_app.py").write_text("raise AssertionError('required behavior')\n")
+        mission = self.create(kind="code", inputs=["app.py"], test=[sys.executable, "test_app.py"])
+        with patch.object(m.Executor, "codex", lambda executor, prompt: (executor.ws / "test_app.py").write_text("pass\n")):
+            first = m.run_mission(self.store, mission["id"])
+        self.assertEqual(first["state"], "failed")
+        self.assertIn("changed or removed a pre-existing test", first["error"])
+        self.assertEqual((self.ws / "test_app.py").read_text(), "pass\n")
+        self.store.retry(mission["id"])
+        with patch.object(m.Executor, "codex", lambda executor, prompt: None), patch.object(m.Executor, "run_process", side_effect=AssertionError("validation must not run")):
+            second = m.run_mission(self.store, mission["id"])
+        self.assertEqual(second["state"], "failed")
+        self.assertIn("changed or removed a pre-existing test", second["error"])
+
+    def test_legitimate_code_mission_still_passes_the_guard(self):
+        (self.ws / "app.py").write_text("def add(a, b): return a - b\n")
+        (self.ws / "tests").mkdir()
+        (self.ws / "tests" / "test_add.py").write_text("import app\nassert app.add(2, 3) == 5\n")
+        mission = self.create(kind="code", inputs=["app.py"], test=[sys.executable, "tests/test_add.py"])
+        original = m.Executor.run_process
+        with patch.object(m.Executor, "codex", lambda executor, prompt: (executor.ws / "app.py").write_text("def add(a, b): return a + b\n")), \
+             patch.object(m.Executor, "run_process", lambda executor, command, label, **kwargs: original(executor, command, label, sandbox=False, env={"PYTHONPATH": str(executor.ws)})):
+            result = m.run_mission(self.store, mission["id"])
+        self.assertEqual(result["state"], "waiting-review", result["error"])
+
+    # W-17: structured change rows, escaped paths and an explicit truncation trailer.
+    def test_change_rows_are_typed_and_paths_cannot_forge_diff_structure(self):
+        forged = "evil\n+++ after/etc/shadow\n"
+        before = {"kept.txt": {"sha256": "a" * 64, "bytes": 4, "text": "one\n"}}
+        after = {"kept.txt": {"sha256": "b" * 64, "bytes": 4, "text": "two\n"}, forged: {"sha256": "c" * 64, "bytes": 1}}
+        change = m.git_change(before, after)
+        rows = {row["path"]: row for row in change.rows}
+        self.assertEqual(set(rows), {"kept.txt", json.dumps(forged)})
+        self.assertEqual((rows["kept.txt"]["change"], rows["kept.txt"]["kind"]), ("modified", "text"))
+        self.assertEqual((rows[json.dumps(forged)]["change"], rows[json.dumps(forged)]["kind"]), ("added", "binary"))
+        self.assertEqual(rows["kept.txt"]["before"], {"sha256": "a" * 64, "bytes": 4})
+        rendered = m.difference(before, after)
+        self.assertNotIn("\n+++ after/etc/shadow", rendered)
+        self.assertEqual(sum(1 for line in rendered.splitlines() if line.startswith("+++ ")), 1)
+        self.assertEqual(sum(1 for line in rendered.splitlines() if line.startswith("--- ")), 1)
+        self.assertEqual(sum(1 for line in rendered.splitlines() if line.startswith("+ ")), 1)
+        self.assertFalse(change.truncated)
+        self.assertEqual(change.counts(), {"added": 1, "removed": 0, "modified": 1})
+
+    def test_change_summary_ends_with_an_explicit_truncation_trailer(self):
+        block = "".join(f"line {number:04d}\n" for number in range(200))
+        after = {f"file-{index:04d}.txt": {"sha256": str(index).zfill(64), "bytes": len(block), "text": block} for index in range(1000)}
+        change = m.git_change({}, after)
+        self.assertTrue(change.truncated)
+        self.assertGreater(change.omitted_rows, 0)
+        self.assertEqual(len(change.rows), 1000)
+        rendered = m.difference({}, after)
+        self.assertTrue(rendered.endswith("The complete typed record is in changes.json.\n"), rendered[-200:])
+        self.assertIn(f"{change.omitted_rows} of 1000 change rows omitted", rendered)
+        body = rendered[:rendered.index("... change summary truncated")]
+        self.assertTrue(body.endswith("\n"))
+        self.assertLessEqual(len(body.encode()), m.MAX_OUTPUT)
+
+    def test_receipt_records_a_structured_change_summary(self):
+        mission = self.create()
+        with patch.object(m.Executor, "codex", return_value="Friday. [S1:L1]"):
+            result = m.run_mission(self.store, mission["id"])
+        receipt = json.loads(Path(result["receipt"]).read_text())
+        self.assertFalse(receipt["diff_truncated"])
+        record = json.loads(Path(receipt["changes"]).read_text())
+        self.assertEqual(record["schema"], 1)
+        self.assertEqual(record["counts"], {"added": 2, "removed": 0, "modified": 0})
+        self.assertTrue(any(row["path"].endswith("report.md") and row["change"] == "added" for row in record["rows"]))
+        self.assertTrue(all(row["after"]["sha256"] for row in record["rows"]))
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

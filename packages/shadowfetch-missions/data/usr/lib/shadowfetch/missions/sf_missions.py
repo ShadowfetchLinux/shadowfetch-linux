@@ -36,8 +36,12 @@ MAX_TEXT = 200_000
 MAX_OUTPUT = 2_000_000
 MAX_FILES = 40
 REVIEW_LOCK_WAIT_SECONDS = 10
+LIST_PAGE_LIMIT = 1000
 TEXT_TYPES = {".txt", ".md", ".rst", ".csv", ".json", ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".go", ".rs", ".c", ".h", ".sh", ".toml", ".yaml", ".yml"}
 PRIVATE_NAMES = {".git", ".env", ".ssh", ".aws", ".config", ".local", "node_modules", ".venv", "venv", "__pycache__", "mission-output"}
+VALIDATION_CONFIG_NAMES = {"conftest.py", "pytest.ini", "tox.ini", "karma.conf.js", ".mocharc.json", ".mocharc.yml", ".mocharc.yaml", ".mocharc.js", ".mocharc.cjs"}
+VALIDATION_CONFIG_STEMS = {"jest.config", "vitest.config", "playwright.config", "cypress.config"}
+CHANGE_ADDED, CHANGE_REMOVED, CHANGE_MODIFIED = "added", "removed", "modified"
 
 class MissionError(Exception):
     pass
@@ -145,17 +149,98 @@ def recovery_index(ws):
     return result
 
 
-def difference(before, after):
-    rows = []
+def escape_path(value):
+    """One printable line per path, so a crafted file name cannot forge diff structure."""
+    text = str(value)
+    if any(ord(char) < 32 or ord(char) == 127 for char in text) or '"' in text or "\\" in text or text[:1] in ("+", "-", "@"):
+        return json.dumps(text)
+    return text
+
+
+def change_row(name, old, new):
+    row = {"path": escape_path(name), "change": CHANGE_ADDED if not old else CHANGE_REMOVED if not new else CHANGE_MODIFIED}
+    row["kind"] = "symlink" if "symlink" in old or "symlink" in new else "text" if "text" in old or "text" in new else "binary"
+    for side, meta in (("before", old), ("after", new)):
+        if meta:
+            row[side] = {key: meta[key] for key in ("sha256", "bytes", "symlink") if key in meta}
+    return row
+
+
+class GitChange:
+    """Structured workspace change summary with typed rows and explicit truncation.
+
+    `text` keeps the historical unified-diff rendering that existing consumers read;
+    `rows` carries the same change set as records with escaped paths, and a cut
+    rendering always ends with a trailer that names what was left out.
+    """
+
+    def __init__(self, rows, text, *, truncated=False, omitted_rows=0, partial_row=False, byte_limit=MAX_OUTPUT):
+        self.rows = rows
+        self.text = text
+        self.truncated = truncated
+        self.omitted_rows = omitted_rows
+        self.partial_row = partial_row
+        self.byte_limit = byte_limit
+
+    def __str__(self):
+        return self.text
+
+    def counts(self):
+        return {name: sum(1 for row in self.rows if row["change"] == name) for name in (CHANGE_ADDED, CHANGE_REMOVED, CHANGE_MODIFIED)}
+
+    def as_dict(self):
+        return {"schema": 1, "rows": self.rows, "counts": self.counts(), "truncated": self.truncated, "omitted_rows": self.omitted_rows, "partial_row": self.partial_row, "byte_limit": self.byte_limit, "rendered_bytes": len(self.text.encode())}
+
+
+def git_change(before, after, *, byte_limit=MAX_OUTPUT):
+    """Typed change rows plus their rendering; never a silent mid-line cut."""
+    rows, blocks = [], []
     for name in sorted(set(before) | set(after)):
         old, new = before.get(name, {}), after.get(name, {})
         if old == new:
             continue
-        if "text" in old or "text" in new:
-            rows.extend(difflib.unified_diff(old.get("text", "").splitlines(True), new.get("text", "").splitlines(True), fromfile="before/" + name, tofile="after/" + name))
+        row = change_row(name, old, new)
+        if row["kind"] == "text":
+            lines = list(difflib.unified_diff(old.get("text", "").splitlines(True), new.get("text", "").splitlines(True), fromfile="before/" + row["path"], tofile="after/" + row["path"]))
         else:
-            rows.append(("+ " if not old else "- " if not new else "M ") + name + "\n")
-    return "".join(rows)[:MAX_OUTPUT] or "No workspace file changes.\n"
+            lines = []
+        if not lines:
+            lines = [{CHANGE_ADDED: "+ ", CHANGE_REMOVED: "- ", CHANGE_MODIFIED: "M "}[row["change"]] + row["path"] + "\n"]
+        row["lines"] = len(lines)
+        rows.append(row)
+        blocks.append("".join(lines))
+    parts, used, omitted, partial = [], 0, 0, False
+    for block in blocks:
+        if omitted or partial:
+            omitted += 1
+            continue
+        size = len(block.encode())
+        if used + size <= byte_limit:
+            parts.append(block)
+            used += size
+            continue
+        # Keep whole lines only: a half-written diff line is not evidence.
+        room = byte_limit - used
+        for line in block.splitlines(True):
+            length = len(line.encode())
+            if length > room:
+                break
+            parts.append(line)
+            room -= length
+            used += length
+        partial = True
+    rendered = "".join(parts)
+    if rendered and not rendered.endswith("\n"):
+        rendered += "\n"
+    if omitted or partial:
+        rendered += f"... change summary truncated at {byte_limit} bytes: {omitted} of {len(rows)} change rows omitted"
+        rendered += ("; the last shown row is incomplete" if partial else "") + ". The complete typed record is in changes.json.\n"
+    return GitChange(rows, rendered or "No workspace file changes.\n", truncated=bool(omitted or partial), omitted_rows=omitted, partial_row=partial, byte_limit=byte_limit)
+
+
+def difference(before, after):
+    """Historical text rendering of a workspace change set; see git_change for structure."""
+    return git_change(before, after).text
 
 class Store:
     def __init__(self, path=None):
@@ -232,9 +317,32 @@ class Store:
             raise MissionError("Mission does not exist")
         return self.unpack(row)
 
-    def list(self):
+    def page(self, *, limit=LIST_PAGE_LIMIT, offset=0, states=None):
+        """One explicit page of the queue and the signal that further records exist.
+
+        `limit=None` returns every remaining record. A short page is never silent:
+        callers read `truncated`/`next_offset` and can page to the end.
+        """
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1):
+            raise MissionError("List limit must be a positive whole number")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise MissionError("List offset must be zero or a positive whole number")
+        states = None if states is None else tuple(states)
+        where, params = "", []
+        if states is not None:
+            if not states:
+                return {"missions": [], "total": 0, "offset": offset, "limit": limit, "truncated": False, "next_offset": None}
+            where = " WHERE state IN (" + ",".join("?" for _ in states) + ")"
+            params = list(states)
         with self.db() as db:
-            return [self.unpack(row) for row in db.execute("SELECT * FROM missions ORDER BY created_at DESC,rowid DESC LIMIT 1000")]
+            total = db.execute("SELECT COUNT(*) FROM missions" + where, params).fetchone()[0]
+            rows = [self.unpack(row) for row in db.execute("SELECT * FROM missions" + where + " ORDER BY created_at DESC,rowid DESC LIMIT ? OFFSET ?", [*params, -1 if limit is None else limit, offset])]
+        seen = offset + len(rows)
+        return {"missions": rows, "total": total, "offset": offset, "limit": limit, "truncated": seen < total, "next_offset": seen if seen < total else None}
+
+    def list(self, *, limit=None, offset=0, states=None):
+        """Complete ordered queue by default; Store.page serves bounded pages."""
+        return self.page(limit=limit, offset=offset, states=states)["missions"]
 
     def events(self, mid):
         self.get(mid)
@@ -326,10 +434,9 @@ class Store:
 
     def recover(self):
         # Caller owns execution lock, so no live mission process owns these rows.
-        for mission in self.list():
-            if mission["state"] == "running":
-                self.update(mission["id"], state="failed", error="Execution was interrupted. Inspect changes, then Retry or Undo; no automatic replay.")
-                self.event(mission["id"], "interrupted", "Worker restarted with no execution lock owner")
+        for mission in self.list(states=("running",)):
+            self.update(mission["id"], state="failed", error="Execution was interrupted. Inspect changes, then Retry or Undo; no automatic replay.")
+            self.event(mission["id"], "interrupted", "Worker restarted with no execution lock owner")
 
     def step(self, mid, name, result=None):
         with self.db() as db:
@@ -602,23 +709,41 @@ class Executor:
         self.store.step(self.mid, "report-published", {path: digest(path) for path in self.artifacts})
         self.event("report-published", f"{len(sources)} sources; {len(citations)} citation ranges validated")
 
+    def guards_validation(self, rel):
+        """Files that decide whether validation means anything: tests, runners, their configuration."""
+        test = self.mission["config"]["test"] or []
+        path = Path(rel)
+        name = path.name.lower()
+        if any(part in ("tests", "test", "__tests__") for part in path.parts) or name.startswith("test_") or name.endswith(("_test.py", "_test.go", ".test.js", ".test.ts", ".spec.js", ".spec.ts")):
+            return True
+        if name in VALIDATION_CONFIG_NAMES or path.stem.lower() in VALIDATION_CONFIG_STEMS:
+            return True
+        if rel in {arg for arg in test if not arg.startswith("-")}:
+            return True
+        return bool(test) and name == "package.json" and Path(test[0]).name in ("npm", "pnpm", "yarn")
+
     def validation_guard(self):
-        test = self.mission["config"]["test"]
-        named = {arg for arg in test if not arg.startswith("-")}
-        protected = {}
-        for rel, meta in recovery_index(self.ws).items():
-            path = Path(rel)
-            name = path.name.lower()
-            is_test = any(part in ("tests", "test", "__tests__") for part in path.parts) or name.startswith("test_") or name.endswith(("_test.py", "_test.go", ".test.js", ".test.ts", ".spec.js", ".spec.ts"))
-            is_runner = rel in named or (name == "package.json" and Path(test[0]).name in ("npm", "pnpm", "yarn"))
-            if is_test or is_runner:
-                protected[rel] = meta
+        """Pristine baseline: recorded once from the checkpoint state, reused on every retry.
+
+        A later attempt must not treat an earlier attempt's edits as the baseline.
+        """
+        recorded = self.store.step(self.mid, "validation-guard")
+        if isinstance(recorded, dict) and isinstance(recorded.get("protected"), dict):
+            self.event("validation-guard-reused", f"Compared against the pristine baseline recorded on attempt {recorded.get('attempt')}")
+            return recorded["protected"]
+        protected = {rel: meta for rel, meta in recovery_index(self.ws).items() if self.guards_validation(rel)}
+        self.store.step(self.mid, "validation-guard", {"schema": 1, "recorded_at": now(), "attempt": self.mission["attempt"], "protected": protected})
         return protected
 
     def verify_validation_guard(self, original):
         current = recovery_index(self.ws)
-        if any(current.get(path) != value for path, value in original.items()):
-            raise MissionError("The agent changed or removed a pre-existing test/validation runner. Validation refused; inspect changes or Undo")
+        changed = sorted(path for path, value in original.items() if current.get(path) != value)
+        # A new test or validation config file is unreviewed validation, not evidence.
+        added = sorted(rel for rel, meta in current.items() if rel not in original and not meta.get("directory") and not is_private(rel) and self.guards_validation(rel))
+        if changed:
+            raise MissionError("The agent changed or removed a pre-existing test/validation runner: " + ", ".join(map(escape_path, changed[:5])) + ". Validation refused; inspect changes or Undo")
+        if added:
+            raise MissionError("The agent added unreviewed test/validation files: " + ", ".join(map(escape_path, added[:5])) + ". Validation refused; inspect changes or Undo")
 
     def code(self):
         config = self.mission["config"]
@@ -709,17 +834,19 @@ class Executor:
     def receipt(self, state, error=None):
         before_path = self.directory / "before.json"
         before = json.loads(before_path.read_text()) if before_path.exists() else {}
+        change = None
         try:
             after = tree_index(self.ws)
-            diff = difference(before, after) if before_path.exists() else "No recorded execution baseline; workspace changes cannot be attributed to this attempt.\n"
-            atomic(self.directory / "changes.diff", diff)
+            change = git_change(before, after) if before_path.exists() else GitChange([], "No recorded execution baseline; workspace changes cannot be attributed to this attempt.\n")
+            atomic(self.directory / "changes.diff", change.text)
+            atomic(self.directory / "changes.json", json.dumps(change.as_dict(), indent=2) + "\n")
             if not self.preserve_recovery_index:
                 atomic(self.directory / "after-index.json", json.dumps(recovery_index(self.ws)))
         except OSError as exc:
             after = {}
             error = (error or "") + "; diff unavailable: " + clean(exc)
         records = [{"path": p, "sha256": digest(p), "bytes": Path(p).stat().st_size} for p in self.artifacts if Path(p).is_file()]
-        receipt = {"schema": 1, "mission": self.mid, "title": self.mission["title"], "kind": self.mission["kind"], "state": state, "workspace": str(self.ws), "checkpoint": self.store.get(self.mid)["checkpoint"], "started_at": self.mission["updated_at"], "finished_at": now(), "runtime": self.mission["config"]["runtime"], "network": self.mission["config"]["network"], "error": error, "artifacts": records, "tests": self.tests, "inferences": self.inferences, "diff": str(self.directory / "changes.diff"), "review_required": state == "waiting-review", "recovery_index_preserved": self.preserve_recovery_index, "limits": {"timeout_seconds": self.mission["config"]["timeout"], "sandbox_rss_mb": 3072, "sandbox_address_space": "unlimited", "sandbox_processes": 96, "queue_concurrency": 1}, "recovery_scope": "Workspace files only; external network effects cannot be undone"}
+        receipt = {"schema": 1, "mission": self.mid, "title": self.mission["title"], "kind": self.mission["kind"], "state": state, "workspace": str(self.ws), "checkpoint": self.store.get(self.mid)["checkpoint"], "started_at": self.mission["updated_at"], "finished_at": now(), "runtime": self.mission["config"]["runtime"], "network": self.mission["config"]["network"], "error": error, "artifacts": records, "tests": self.tests, "inferences": self.inferences, "diff": str(self.directory / "changes.diff"), "changes": str(self.directory / "changes.json"), "diff_truncated": bool(change and change.truncated), "review_required": state == "waiting-review", "recovery_index_preserved": self.preserve_recovery_index, "limits": {"timeout_seconds": self.mission["config"]["timeout"], "sandbox_rss_mb": 3072, "sandbox_address_space": "unlimited", "sandbox_processes": 96, "queue_concurrency": 1}, "recovery_scope": "Workspace files only; external network effects cannot be undone"}
         path = self.directory / "receipt.json"
         atomic(path, json.dumps(receipt, indent=2) + "\n")
         self.store.update(self.mid, receipt=str(path), artifacts=json.dumps([r["path"] for r in records]))
@@ -733,7 +860,7 @@ def run_mission(store, mid):
             raise MissionError("Only queued missions can run")
         # Two missions may target the same workspace, but a result must be reviewed
         # before another can mutate it, preserving a meaningful Undo boundary.
-        if any(m["id"] != mid and m["workspace"] == mission["workspace"] and m["state"] == "waiting-review" for m in store.list()):
+        if any(m["id"] != mid and m["workspace"] == mission["workspace"] for m in store.list(states=("waiting-review",))):
             raise MissionError("Review the previous mission for this workspace before running another")
         store.update(mid, state="running", attempt=mission["attempt"] + 1, error=None)
         store.event(mid, "running", "Exclusive execution slot acquired")
@@ -771,7 +898,10 @@ def review(store, mid, decision):
                 raise MissionError("This mission has no workspace checkpoint")
             # A later mission can overwrite the same files. Do not silently undo it.
             ordered = store.list()
-            newer = [m for m in ordered[:next(i for i, item in enumerate(ordered) if item["id"] == mid)] if m["workspace"] == mission["workspace"] and m["checkpoint"] and m["state"] != "undone"]
+            position = next((index for index, item in enumerate(ordered) if item["id"] == mid), None)
+            if position is None:
+                raise MissionError("This mission is no longer listed in the queue; refresh Mission Control and review its receipt before restoring")
+            newer = [m for m in ordered[:position] if m["workspace"] == mission["workspace"] and m["checkpoint"] and m["state"] != "undone"]
             if newer:
                 raise MissionError("A newer mission has changed this workspace. Undo newer missions first")
             ws = workspace(mission["workspace"])
@@ -809,16 +939,15 @@ def worker(store, once=False):
         def stop(signum, frame):
             nonlocal stopping
             stopping = True
-            for item in store.list():
-                if item["state"] == "running":
-                    store.cancel(item["id"])
+            for item in store.list(states=("running",)):
+                store.cancel(item["id"])
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         while not stopping:
             try:
                 with store.lock():
                     store.recover()
-                queue = sorted((m for m in store.list() if m["state"] == "queued"), key=lambda m: (m["created_at"], m["id"]))
+                queue = sorted(store.list(states=("queued",)), key=lambda m: (m["created_at"], m["id"]))
                 for mission in queue:
                     if stopping:
                         break
@@ -839,7 +968,9 @@ def main(argv=None):
     parser.add_argument("--json", action="store_true", help="Machine-readable JSON output")
     parser.add_argument("--version", action="version", version="shadowfetch-missions " + VERSION)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("list")
+    listing = sub.add_parser("list")
+    listing.add_argument("--limit", type=int, default=LIST_PAGE_LIMIT, help=f"Records per page (default {LIST_PAGE_LIMIT}); 0 returns every record")
+    listing.add_argument("--offset", type=int, default=0, help="Skip this many of the newest records")
     sub.add_parser("capabilities")
     create = sub.add_parser("create")
     create.add_argument("--kind", required=True, choices=("code", "report", "media"))
@@ -866,7 +997,11 @@ def main(argv=None):
         else:
             store = Store()
             if args.command == "list":
-                result = store.list()
+                # stdout stays a plain JSON array; a short page is announced, never silent.
+                listed = store.page(limit=args.limit or None, offset=args.offset)
+                result = listed["missions"]
+                if listed["truncated"]:
+                    print(f"Showing {len(result)} of {listed['total']} missions from offset {listed['offset']}. More records exist: re-run with --offset {listed['next_offset']}, or --limit 0 for the complete queue.", file=sys.stderr)
             elif args.command == "create":
                 result = store.create(kind=args.kind, workspace_value=args.workspace, title=args.title, prompt=args.prompt, runtime=args.runtime, model=args.model, inputs=args.input, test=json.loads(args.test_json), network=args.network, timeout=args.timeout)
             elif args.command == "show":
