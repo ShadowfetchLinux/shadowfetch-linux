@@ -116,8 +116,9 @@
         },
         "memory_mb": {
           "type": "integer",
-          "minimum": 64,
-          "maximum": 32768
+          "minimum": 256,
+          "maximum": 32768,
+          "description": "The floor matches Firebreak's own bound (Firebreak refuses anything under 256); a lower one would let a manifest pass every check and then fail at run time."
         },
         "cpu_seconds": {
           "type": "integer",
@@ -126,8 +127,9 @@
         },
         "processes": {
           "type": "integer",
-          "minimum": 1,
-          "maximum": 512
+          "minimum": 8,
+          "maximum": 512,
+          "description": "The floor matches Firebreak's own bound (Firebreak refuses anything under 8); a lower one would let a manifest pass every check and then fail at run time."
         },
         "read_grants": {
           "description": "Absolute paths the provider may read outside its workspace. Each is passed to Firebreak as an explicit --read grant. The firebreak denylist still applies on top: no filesystem root, no whole home directory, no credential store.",

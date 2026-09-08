@@ -142,7 +142,15 @@ def arguments(args, ws, sid):
     command += ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", "/run", "--dir", "/home", "--dir", "/home/agent", "--dir", "/home/agent/.config", "--dir", "/home/agent/.cache", "--dir", "/home/agent/.local", "--dir", "/home/agent/.local/state", "--dir", "/home/agent/.local/share"]
     for grant in grants:
         command += ["--ro-bind", str(grant), str(grant)]
-    command += ["--bind", str(ws), str(ws), "--chdir", str(ws)]
+    # A read-only workspace is bound --ro-bind. Until this existed, a
+    # provider declaring "workspace_mode": "read-only" got a fully
+    # writable workspace and the restriction held only because the Codex
+    # adapter volunteered --sandbox read-only in its own argv -- provider
+    # code choosing its own restraint, which is what a sandbox boundary
+    # exists in order not to depend on. /tmp stays a writable tmpfs, so a
+    # read-only task still has scratch space.
+    bind = "--ro-bind" if args.workspace_mode == "read-only" else "--bind"
+    command += [bind, str(ws), str(ws), "--chdir", str(ws)]
     if net == "none":
         command += ["--unshare-net"]
     environment = {"HOME": "/home/agent", "USER": "agent", "LOGNAME": "agent", "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C.UTF-8", "XDG_CONFIG_HOME": "/home/agent/.config", "XDG_CACHE_HOME": "/home/agent/.cache", "XDG_STATE_HOME": "/home/agent/.local/state", "XDG_DATA_HOME": "/home/agent/.local/share", "SHADOWFETCH_FIREBREAK": sid, "SHADOWFETCH_FIREBREAK_WORKSPACE": ws.name, "TMPDIR": "/tmp", "PYTHONDONTWRITEBYTECODE": "1"}
@@ -218,7 +226,7 @@ def run(args):
         raise Error("systemd-run is required for per-session CPU, memory and process limits")
     # RLIMIT_NPROC counts all threads for the desktop UID, including unrelated
     # applications. A dedicated cgroup enforces this session's actual task cap.
-    cmd = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--unit=" + sid, "--description=Shadowfetch Firebreak isolated task", "--property=TasksMax=" + str(args.processes), "--property=MemoryMax=" + str(args.memory_mb) + "M", "--property=CPUQuota=200%", "--", *cmd]
+    cmd = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--unit=" + sid, "--description=Shadowfetch Firebreak isolated task", "--property=TasksMax=" + str(args.processes), "--property=MemoryMax=" + str(args.memory_mb) + "M", "--property=MemorySwapMax=0", "--property=CPUQuota=200%", "--", *cmd]
     checkpoint = None
     if not args.no_checkpoint:
         # --json: the recovery id comes back as a value. Splitting the human
@@ -282,6 +290,7 @@ def main(argv=None):
     execute.add_argument("--credential-env", action="append", default=[], metavar="NAME")
     execute.add_argument("--keep-secrets", action="store_true", help="Deprecated explicit provider credential pass-through")
     execute.add_argument("--no-checkpoint", action="store_true", help="For callers that already own a recovery checkpoint")
+    execute.add_argument("--workspace-mode", choices=("workspace-write", "read-only"), default="workspace-write")
     execute.add_argument("--memory-mb", type=int, default=4096)
     execute.add_argument("--cpu-seconds", type=int, default=900)
     execute.add_argument("--processes", type=int, default=128)

@@ -32,9 +32,23 @@ class ScopeTests(unittest.TestCase):
         self.env.stop()
         self.temp.cleanup()
     def args(self, **values):
-        defaults = dict(net=None, read=[], credential_env=[], keep_secrets=False, agent_command=["true"])
+        defaults = dict(net=None, read=[], credential_env=[], keep_secrets=False, workspace_mode="workspace-write", agent_command=["true"])
         defaults.update(values)
         return argparse.Namespace(**defaults)
+    def test_read_only_workspace_mode_binds_the_workspace_read_only(self):
+        """The posture reaches bwrap. Before --workspace-mode existed, a provider
+        declaring read-only got --bind and could write the tree it was given."""
+        command, *_ = fb.arguments(self.args(workspace_mode="read-only"), self.ws, "test")
+        joined = " ".join(command)
+        self.assertIn("--ro-bind " + str(self.ws) + " " + str(self.ws), joined)
+        self.assertNotIn("--bind " + str(self.ws) + " " + str(self.ws), joined)
+
+    def test_the_default_workspace_mode_still_binds_writable(self):
+        command, *_ = fb.arguments(self.args(), self.ws, "test")
+        joined = " ".join(command)
+        self.assertIn("--bind " + str(self.ws) + " " + str(self.ws), joined)
+        self.assertNotIn("--ro-bind " + str(self.ws) + " " + str(self.ws), joined)
+
     def test_private_root_clean_environment_network_off(self):
         with patch.dict(os.environ, {"SECRET_CUSTOM":"must-not-pass", "OPENAI_API_KEY":"test-not-for-sandbox"}):
             command, net, grants, names = fb.arguments(self.args(), self.ws, "test")

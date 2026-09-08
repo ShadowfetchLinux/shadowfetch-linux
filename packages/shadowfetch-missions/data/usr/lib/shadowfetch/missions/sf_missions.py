@@ -675,10 +675,20 @@ class Executor:
                        "--cpu-seconds", str(min(spec.cpu_seconds,
                                                 self.mission["config"]["timeout"])
                                             if spec else self.mission["config"]["timeout"]),
-                       "--processes", str(spec.processes) if spec else "96"]
+                       "--processes", str(spec.processes) if spec else "96",
+                       "--workspace-mode",
+                       spec.workspace_mode if spec else "workspace-write"]
             if codex_account or (spec is not None and spec.account_mount and not env):
                 wrapper.append("--" + (spec.account_mount if spec is not None and spec.account_mount else "codex-account"))
-            for name in sorted(env or {}):
+            # Intersected with the spec, not taken from the resolved secrets
+            # alone: an adapter is allowed to narrow credential_ids, and
+            # before this the narrowing was ignored -- fail-safe, since the
+            # manifest still bounded it, but decorative, which is worse than
+            # absent because it reads as a control.
+            granted = sorted(env or {})
+            if spec is not None:
+                granted = [n for n in granted if n in spec.credential_ids]
+            for name in granted:
                 # Only declared identities reach here; the value is handed to
                 # Firebreak, never written into an argv.
                 wrapper.extend(["--credential-env", name])

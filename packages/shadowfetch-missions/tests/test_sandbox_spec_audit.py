@@ -85,27 +85,29 @@ AUDIT = (
         "declared": True,
         "validated": True,
         "narrowed": True,
-        "passed": False,
-        "firebreak_flag": None,
-        "enforced": "no",
-        "status": NOT_ENFORCED_PHASE_4,
-        "looks_enforced_but_is_not": True,
-        "mechanism": "none. Firebreak binds the workspace with --bind (read-write) "
-                     "unconditionally and has no read-only workspace posture at all.",
+        "passed": True,
+        "firebreak_flag": "--workspace-mode",
+        "enforced": "yes",
+        "status": "ENFORCED",
+        "looks_enforced_but_is_not": False,
+        "mechanism": "bwrap --ro-bind of the workspace when the mode is read-only, "
+                     "--bind otherwise. /tmp remains a writable tmpfs, so a read-only "
+                     "task still has scratch space.",
         "evidence": {
             "declared": "source", "validated": "executed", "narrowed": "executed",
             "passed": "executed", "enforced": "executed",
         },
-        "notes": "THE cpu_seconds-SHAPED DEFECT OF THIS AUDIT. A manifest declaring "
-                 "workspace_mode 'read-only' is bounded by the schema, refused on "
-                 "upgrade by narrow() AND by verify_invocation() -- and then gets a "
-                 "fully writable workspace, because run_process() never translates it "
-                 "and shadowfetch-firebreak has no flag to receive it. Today only the "
-                 "Codex ADAPTER honours it, by voluntarily putting '--sandbox read-only' "
-                 "in its own argv; that is provider-supplied code enforcing its own "
-                 "restraint, which is exactly the property the sandbox boundary exists "
-                 "to not depend on. §6.6 of docs/AGENT_ARCHITECTURE.md omits the field "
-                 "entirely, so it is not even recorded as a known gap.",
+        "notes": "THE cpu_seconds-SHAPED DEFECT THIS AUDIT WAS WRITTEN TO FIND, now "
+                 "closed. It was bounded by the schema and refused on upgrade by both "
+                 "narrow() and verify_invocation(), and then reached nothing: "
+                 "run_process() never translated it and shadowfetch-firebreak had no "
+                 "flag to receive it, so a manifest declaring 'read-only' got a fully "
+                 "writable workspace. The restriction held only because the Codex "
+                 "ADAPTER volunteered '--sandbox read-only' in its own argv -- "
+                 "provider-supplied code enforcing its own restraint, which is exactly "
+                 "what the sandbox boundary exists in order not to depend on. Firebreak "
+                 "now takes --workspace-mode and binds the workspace --ro-bind, so the "
+                 "guarantee holds whatever the adapter does or omits.",
     },
     {
         "field": "network",
@@ -470,9 +472,13 @@ class TableShapeTests(unittest.TestCase):
                 for stage, mark in row["evidence"].items():
                     self.assertIn(mark, ("executed", "source"), stage)
 
-    def test_phase_4_backlog_is_exactly_these_three_fields(self):
+    def test_phase_4_backlog_is_exactly_these_two_fields(self):
+        """workspace_mode left this list by being enforced, which is the only way
+        a field may leave it. Both survivors need egress filtering Firebreak does
+        not have, so they stay declared-but-unenforced until Phase 4 and must not
+        be described to users as controls."""
         unenforced = sorted(r["field"] for r in AUDIT if r["status"] == NOT_ENFORCED_PHASE_4)
-        self.assertEqual(unenforced, ["egress_allowlist", "masked_paths", "workspace_mode"])
+        self.assertEqual(unenforced, ["egress_allowlist", "masked_paths"])
 
 
 # --------------------------------------------------------------------------- #
@@ -687,7 +693,12 @@ class PassedTests(unittest.TestCase):
                     self.assertIsNone(row["firebreak_flag"])
                     self.assertNotIn(row["field"].replace("_", "-"), joined)
         # NOT PASSED must mean the VALUES are absent too, not merely the flag.
-        self.assertNotIn("read-only", joined, "workspace_mode leaked into the argv")
+        # workspace_mode moved to PASSED, so its value is now expected: the
+        # opposite assertion, that a declared read-only spec actually reaches
+        # Firebreak, is what the row is worth checking for.
+        self.assertIn("--workspace-mode", joined)
+        self.assertIn("read-only", joined,
+                      "a read-only spec did not reach Firebreak")
         self.assertNotIn("workspace-write", joined)
         for host in ("api.openai.com", "chatgpt.com"):
             self.assertNotIn(host, joined, "egress_allowlist leaked into the argv")
@@ -722,14 +733,25 @@ class PassedTests(unittest.TestCase):
                          self.argv(self.spec(account_mount="codex-account"),
                                    env={"OPENAI_API_KEY": "unit-only-placeholder"}))
 
-    def test_credential_narrowing_by_an_adapter_does_not_change_the_argv(self):
-        """The finding: --credential-env comes from the resolved secrets, not the spec."""
+    def test_credential_narrowing_by_an_adapter_is_honoured(self):
+        """The finding, now fixed: --credential-env used to be built from the
+        resolved secrets alone, so an adapter narrowing credential_ids to ()
+        was ignored. Fail-safe, because the manifest still bounded it, but
+        decorative -- which is worse than absent, because it reads as a control.
+        """
         narrowed = self.spec(credential_ids=())
         argv = self.argv(narrowed, env={"OPENAI_API_KEY": "unit-only-placeholder"})
-        self.assertIn("--credential-env", argv,
-                      "an adapter narrowing credential_ids to () is not honoured; if this "
-                      "now fails, run_process() started reading spec.credential_ids and "
-                      "the audit row for credential_ids must be updated")
+        self.assertNotIn("--credential-env", argv,
+                         "an adapter narrowed credential_ids to () and the secret was "
+                         "handed to Firebreak anyway")
+        self.assertNotIn("OPENAI_API_KEY", argv)
+
+    def test_credential_narrowing_keeps_what_was_not_narrowed_away(self):
+        """The intersection must not become a blanket refusal."""
+        kept = self.spec(credential_ids=("OPENAI_API_KEY",))
+        argv = self.argv(kept, env={"OPENAI_API_KEY": "unit-only-placeholder"})
+        self.assertIn("--credential-env", argv)
+        self.assertIn("OPENAI_API_KEY", argv)
 
 
 # --------------------------------------------------------------------------- #
@@ -743,7 +765,7 @@ class FirebreakSurfaceTests(unittest.TestCase):
                 if row["passed"]:
                     self.assertIn(row["firebreak_flag"], options)
         for absent in ("--mask", "--masked-path", "--egress", "--egress-allowlist",
-                       "--allow-host", "--read-only", "--workspace-mode", "--seccomp"):
+                       "--allow-host", "--read-only", "--seccomp"):
             self.assertNotIn(absent, options,
                              f"Firebreak grew {absent}; re-audit the affected field")
 
@@ -758,7 +780,7 @@ class FirebreakSurfaceTests(unittest.TestCase):
                     workspace="probe", net="none", read=[str(grant)],
                     codex_account=False, credential_env=["OPENAI_API_KEY"],
                     keep_secrets=False, memory_mb=1024, cpu_seconds=77, processes=32,
-                    agent_command=["/usr/bin/true"])
+                    workspace_mode="workspace-write", agent_command=["/usr/bin/true"])
                 resolved_ws = FB.workspace("probe")
                 with patch.dict(os.environ, {"OPENAI_API_KEY": "unit-only-placeholder"}):
                     command, net, grants, credentials = FB.arguments(args, resolved_ws, "fb-audit")
@@ -785,9 +807,14 @@ class FirebreakSurfaceTests(unittest.TestCase):
     def test_firebreak_refuses_limits_the_manifest_schema_would_accept(self):
         """A range mismatch between the two validators, recorded so it cannot drift."""
         schema = P.manifest_schema(SHIPPED_MANIFESTS)["properties"]["sandbox_profile"]["properties"]
-        self.assertEqual(schema["memory_mb"]["minimum"], 64)
-        self.assertEqual(schema["processes"]["minimum"], 1)
         source = FIREBREAK_BIN.read_text()
+        # The two validators agree, so a schema-valid manifest cannot describe a
+        # sandbox Firebreak will refuse at run time. Before this they did not:
+        # the schema admitted memory_mb 64 and processes 1, and Firebreak
+        # rejected both with "Invalid memory, CPU time or process limit" after
+        # every static check had passed.
+        self.assertEqual(schema["memory_mb"]["minimum"], 256)
+        self.assertEqual(schema["processes"]["minimum"], 8)
         self.assertIn("256 <= args.memory_mb <= 65536", source)
         self.assertIn("8 <= args.processes <= 1024", source)
 
@@ -929,28 +956,47 @@ class EnforcedEmpiricallyTests(unittest.TestCase):
         peak = int(done.stdout.split("peak RSS MiB")[1].split()[0])
         self.assertLess(peak, 400, "MemoryMax did not bound the resident set")
 
-    def test_a_read_only_workspace_mode_still_gets_a_writable_workspace(self):
-        """The cpu_seconds-shaped defect, demonstrated end to end.
+    def test_a_read_only_workspace_mode_refuses_the_write(self):
+        """The cpu_seconds-shaped defect, now closed, demonstrated end to end.
 
-        A SandboxSpec that declares workspace_mode='read-only' survives narrow()
-        and verify_invocation(), and the process Firebreak starts can still
-        write into the workspace, because nothing ever told Firebreak.
+        Before --workspace-mode existed this same probe printed "WORKSPACE
+        WRITABLE True" and the file appeared on the host, because nothing ever
+        told Firebreak what the SandboxSpec said.
         """
         spec = P.SandboxSpec(workspace_mode="read-only", network="none",
                              memory_mb=512, cpu_seconds=60, processes=16)
         self.assertEqual(spec.workspace_mode, "read-only")
         probe = ("import os,pathlib\n"
                  "p=pathlib.Path(os.getcwd())/'written-by-a-read-only-provider.txt'\n"
-                 "p.write_text('x');print('WORKSPACE WRITABLE', p.exists())\n")
+                 "try:\n"
+                 "    p.write_text('x');print('WORKSPACE WRITABLE', p.exists())\n"
+                 "except OSError as e:\n"
+                 "    print('WORKSPACE WRITE REFUSED', type(e).__name__, e.strerror)\n")
         with throwaway_workspace() as (base, ws, env):
-            done = firebreak(env, "--net", "none", "--memory-mb", str(spec.memory_mb),
+            done = firebreak(env, "--net", "none", "--workspace-mode", "read-only",
+                             "--memory-mb", str(spec.memory_mb),
                              "--cpu-seconds", str(spec.cpu_seconds),
                              "--processes", str(spec.processes),
                              "--", sys.executable, "-c", probe)
             wrote = (ws / "written-by-a-read-only-provider.txt").exists()
+        self.assertIn("WORKSPACE WRITE REFUSED", done.stdout, done.stderr)
+        self.assertIn("Read-only file system", done.stdout)
+        self.assertFalse(wrote, "the write reached the host workspace anyway")
+        self.assertEqual(BY_FIELD["workspace_mode"]["status"], "ENFORCED")
+
+    def test_the_default_workspace_mode_is_still_writable(self):
+        """Enforcing read-only must not make every workspace read-only: a
+        code_change mission has to be able to edit the tree it was given."""
+        probe = ("import os,pathlib\n"
+                 "p=pathlib.Path(os.getcwd())/'written-by-a-writing-provider.txt'\n"
+                 "p.write_text('x');print('WORKSPACE WRITABLE', p.exists())\n")
+        with throwaway_workspace() as (base, ws, env):
+            done = firebreak(env, "--net", "none", "--memory-mb", "512",
+                             "--cpu-seconds", "60", "--processes", "16",
+                             "--", sys.executable, "-c", probe)
+            wrote = (ws / "written-by-a-writing-provider.txt").exists()
         self.assertIn("WORKSPACE WRITABLE True", done.stdout, done.stderr)
-        self.assertTrue(wrote, "the write did not reach the host workspace")
-        self.assertEqual(BY_FIELD["workspace_mode"]["status"], NOT_ENFORCED_PHASE_4)
+        self.assertTrue(wrote, "the default posture stopped reaching the host workspace")
 
 
 if __name__ == "__main__":
