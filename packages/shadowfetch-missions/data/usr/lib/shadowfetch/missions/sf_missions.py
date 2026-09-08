@@ -802,6 +802,166 @@ class Store:
         """The name every existing call site uses. Now chained."""
         return self.append_event(mid, event, detail, **correlation)
 
+    # ------------------------------------------------- test runs -----
+    def record_test_run(self, mission_id, *, task_id, command, executable,
+                        sandbox_mode, network_requested, network_effective,
+                        enforcement, guard_state, started_at, duration_ms,
+                        exit_code, log_path, result):
+        """Validation stops being an anonymous subprocess.
+
+        network_requested and network_effective are separate columns because the
+        architecture rule is that validation should eventually run under a
+        STRICTER network policy than inference -- and until Phase 4 can enforce
+        that, a record claiming it would be false. Storing both makes the gap
+        visible in every receipt rather than described in a document nobody
+        reads at review time.
+        """
+        rid = "test-" + uuid.uuid4().hex[:16]
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT INTO test_runs(id,mission_id,task_id,command,executable,"
+                "sandbox_mode,network_requested,network_effective,enforcement,"
+                "guard_state,started_at,duration_ms,exit_code,log_path,result) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (rid, mission_id, task_id, json.dumps(list(command)), executable,
+                 sandbox_mode, network_requested, network_effective,
+                 json.dumps(enforcement), guard_state, started_at, duration_ms,
+                 exit_code, str(log_path) if log_path else None, result))
+            row = self._append(db, mission=mission_id, event="test-run",
+                               task_id=task_id,
+                               detail=f"exit {exit_code} in {duration_ms}ms: "
+                                      + " ".join(str(c) for c in command)[:300])
+        self.mirror(row)
+        return rid
+
+    def test_runs(self, mission_id):
+        with self.db() as db:
+            rows = db.execute("SELECT * FROM test_runs WHERE mission_id=? "
+                              "ORDER BY started_at", (mission_id,)).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            for field in ("command", "enforcement"):
+                if item.get(field):
+                    try:
+                        item[field] = json.loads(item[field])
+                    except (ValueError, TypeError):
+                        pass
+            out.append(item)
+        return out
+
+    # ---------------------------------------------- git structure ----
+    def record_git_change(self, mission_id, *, repo_path, delta):
+        gid = "git-" + uuid.uuid4().hex[:16]
+        at = now()
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT INTO git_changes(id,mission_id,repo_path,head_before,"
+                "head_after,refs_changed,remotes_changed,hooks_changed,"
+                "exec_config_keys,mode_changes,symlink_changes,new_executables,"
+                "build_entrypoints,observed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (gid, mission_id, str(repo_path), delta.get("head_before"),
+                 delta.get("head_after"),
+                 *[json.dumps(delta.get(key) or []) for key in
+                   ("refs_changed", "remotes_changed", "hooks_changed",
+                    "exec_config_keys", "mode_changes", "symlink_changes",
+                    "new_executables", "build_entrypoints")],
+                 at))
+            structural = sorted(
+                key for key in ("refs_changed", "remotes_changed", "hooks_changed",
+                                "exec_config_keys", "symlink_changes",
+                                "new_executables", "build_entrypoints")
+                if delta.get(key))
+            row = self._append(
+                db, mission=mission_id, event="git-structure-recorded",
+                detail=("structural changes: " + ", ".join(structural)) if structural
+                       else "no structural repository change")
+        self.mirror(row)
+        return gid
+
+    def git_changes(self, mission_id):
+        with self.db() as db:
+            rows = db.execute("SELECT * FROM git_changes WHERE mission_id=? "
+                              "ORDER BY observed_at", (mission_id,)).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            for field in ("refs_changed", "remotes_changed", "hooks_changed",
+                          "exec_config_keys", "mode_changes", "symlink_changes",
+                          "new_executables", "build_entrypoints"):
+                if item.get(field):
+                    try:
+                        item[field] = json.loads(item[field])
+                    except (ValueError, TypeError):
+                        pass
+            out.append(item)
+        return out
+
+    # --------------------------------------------------- reviews -----
+    def open_review(self, mission_id, *, summary, diff_path=None,
+                    diff_truncated=False, blast_radius=None):
+        rid = "review-" + uuid.uuid4().hex[:16]
+        at = now()
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT INTO reviews(id,mission_id,requested_at,summary,diff_path,"
+                "diff_truncated,blast_radius) VALUES(?,?,?,?,?,?,?)",
+                (rid, mission_id, at, json.dumps(summary),
+                 str(diff_path) if diff_path else None, 1 if diff_truncated else 0,
+                 json.dumps(blast_radius or {})))
+            row = self._append(db, mission=mission_id, event="review-opened", at=at,
+                               detail="awaiting a human decision")
+        self.mirror(row)
+        return rid
+
+    def decide_review(self, mission_id, decision, *, decided_by):
+        at = now()
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT id FROM reviews WHERE mission_id=? AND decided_at IS NULL "
+                "ORDER BY requested_at DESC LIMIT 1", (mission_id,)).fetchone()
+            if row is None:
+                return None
+            db.execute("UPDATE reviews SET decided_at=?,decision=?,decided_by=? "
+                       "WHERE id=?", (at, decision, decided_by, row["id"]))
+        return row["id"]
+
+    def reviews(self, mission_id):
+        with self.db() as db:
+            rows = db.execute("SELECT * FROM reviews WHERE mission_id=? "
+                              "ORDER BY requested_at", (mission_id,)).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            for field in ("summary", "blast_radius"):
+                if item.get(field):
+                    try:
+                        item[field] = json.loads(item[field])
+                    except (ValueError, TypeError):
+                        pass
+            out.append(item)
+        return out
+
+    # ------------------------------------------------- artifacts -----
+    def record_artifact(self, mission_id, *, task_id, path, sha256, size, kind):
+        aid = "art-" + uuid.uuid4().hex[:16]
+        with self.db() as db:
+            db.execute(
+                "INSERT INTO artifacts(id,mission_id,task_id,path,sha256,bytes,"
+                "kind,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (aid, mission_id, task_id, str(path), sha256, size, kind, now()))
+        return aid
+
+    def artifacts(self, mission_id):
+        with self.db() as db:
+            rows = db.execute("SELECT * FROM artifacts WHERE mission_id=? "
+                              "ORDER BY created_at", (mission_id,)).fetchall()
+        return [dict(r) for r in rows]
+
     # ------------------------------------------------------ approvals ---
     def grant_approval(self, *, subject, scope, granted_by, method,
                        expires_at=None, reason=None):
@@ -1563,6 +1723,134 @@ def process_limits():
     resource.setrlimit(resource.RLIMIT_NOFILE, (256, 256))
     resource.setrlimit(resource.RLIMIT_FSIZE, (8 * 1024**3, 8 * 1024**3))
 
+# The structural facts a text diff does not carry. Phase 1 built the workspace
+# CONTENT comparison (tree_index / git_change); this is the repository STATE
+# around it, and the two answer different questions: "what did the files become"
+# versus "what can this repository now do that it could not before".
+GIT_STRUCTURE_QUERIES = (
+    ("head", ("rev-parse", "HEAD")),
+    ("branch", ("rev-parse", "--abbrev-ref", "HEAD")),
+)
+
+
+def _git(ws, *args, timeout=30):
+    """One git call, or None. Never raises: a workspace that is not a repository
+    is the normal case, not an error."""
+    try:
+        done = subprocess.run(("git", "-C", str(ws), *args), capture_output=True,
+                              text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return done.stdout.strip() if done.returncode == 0 else None
+
+
+def git_structure(ws):
+    """Repository state worth comparing before and after a mission.
+
+    Deliberately more than HEAD. A mission that leaves every tracked file
+    untouched can still add a remote, install a hook, mark a file executable or
+    point a submodule somewhere new -- and a unified diff shows none of that.
+    This is the input the later blast-radius classifier needs; it does not
+    classify anything itself.
+    """
+    if _git(ws, "rev-parse", "--is-inside-work-tree") != "true":
+        return None
+    state = {"repo": str(ws)}
+    for name, args in GIT_STRUCTURE_QUERIES:
+        state[name] = _git(ws, *args)
+    refs = _git(ws, "for-each-ref", "--format=%(refname) %(objectname)")
+    state["refs"] = sorted((refs or "").splitlines())
+    remotes = _git(ws, "remote", "-v")
+    state["remotes"] = sorted(set((remotes or "").splitlines()))
+    # Hooks are executable code git runs on the person's behalf, so their
+    # CONTENT matters, not merely their presence.
+    hooks = {}
+    hook_dir = Path(ws) / ".git" / "hooks"
+    if hook_dir.is_dir():
+        for hook in sorted(hook_dir.iterdir()):
+            if hook.is_file() and not hook.name.endswith(".sample"):
+                try:
+                    hooks[hook.name] = digest(hook)
+                except OSError:
+                    hooks[hook.name] = "unreadable"
+    state["hooks"] = hooks
+    # Config keys that cause git to EXECUTE something. A mission that sets one
+    # of these has changed what a later innocent git command does.
+    executable_config = {}
+    raw = _git(ws, "config", "--local", "--list") or ""
+    for line in raw.splitlines():
+        key, _, value = line.partition("=")
+        lowered = key.lower()
+        if (lowered.startswith(("alias.", "filter.", "difftool.", "mergetool."))
+                or lowered.endswith((".sshcommand", ".process", ".clean", ".smudge",
+                                     ".textconv", ".hookspath"))
+                or lowered in ("core.fsmonitor", "core.editor", "core.pager")):
+            executable_config[key] = value
+    state["executable_config"] = executable_config
+    modes, symlinks = {}, {}
+    listing = _git(ws, "ls-files", "-s") or ""
+    for line in listing.splitlines():
+        meta, _, path = line.partition("\t")
+        parts = meta.split()
+        if len(parts) >= 1 and path:
+            mode = parts[0]
+            if mode == "120000":
+                symlinks[path] = _git(ws, "cat-file", "-p", parts[1]) or ""
+            elif mode == "100755":
+                modes[path] = mode
+    state["executable_files"] = sorted(modes)
+    state["symlinks"] = symlinks
+    return state
+
+
+def git_structure_delta(before, after):
+    """What CHANGED, as the fields the schema stores. Absent-before and
+    absent-after are both possible: a mission can turn a plain directory into a
+    repository, which is itself worth recording."""
+    before = before or {}
+    after = after or {}
+    def changed(key):
+        return sorted(set(map(str, after.get(key) or [])) - set(map(str, before.get(key) or [])))
+    delta = {
+        "head_before": before.get("head"),
+        "head_after": after.get("head"),
+        "refs_changed": changed("refs"),
+        "remotes_changed": changed("remotes"),
+        "new_executables": changed("executable_files"),
+    }
+    hooks_before, hooks_after = before.get("hooks") or {}, after.get("hooks") or {}
+    delta["hooks_changed"] = sorted(
+        name for name in set(hooks_before) | set(hooks_after)
+        if hooks_before.get(name) != hooks_after.get(name))
+    config_before = before.get("executable_config") or {}
+    config_after = after.get("executable_config") or {}
+    delta["exec_config_keys"] = sorted(
+        key for key in set(config_before) | set(config_after)
+        if config_before.get(key) != config_after.get(key))
+    links_before, links_after = before.get("symlinks") or {}, after.get("symlinks") or {}
+    delta["symlink_changes"] = sorted(
+        name for name in set(links_before) | set(links_after)
+        if links_before.get(name) != links_after.get(name))
+    delta["mode_changes"] = delta["new_executables"]
+    # Build entry points: a change here runs on the next build, which is a
+    # different blast radius from an ordinary source edit.
+    entry_points = ("Makefile", "setup.py", "pyproject.toml", "package.json",
+                    "Cargo.toml", "meson.build", "CMakeLists.txt", "build.gradle",
+                    "debian/rules", ".github/workflows")
+    delta["build_entrypoints"] = sorted(
+        name for name in entry_points
+        if name in set(after.get("executable_files") or [])
+        or name in {p for p in (after.get("symlinks") or {})})
+    return delta
+
+
+# What an artifact IS, by extension. Data rather than a branch, so a provider
+# producing a new kind adds a row instead of an if.
+ARTIFACT_KINDS = {".md": "report", ".json": "log", ".diff": "patch",
+                  ".mp4": "media", ".mkv": "media", ".wav": "media",
+                  ".log": "log", ".txt": "report"}
+
+
 def kill_tree(proc):
     if proc.poll() is not None:
         return
@@ -2026,7 +2314,26 @@ class Executor:
         path = scoped(self.ws, str(rel), exists=False)
         atomic(path, content)
         self.artifacts.append(str(path))
+        self.record_artifact(path, kind=ARTIFACT_KINDS.get(path.suffix, "output"))
         return path
+
+    def record_artifact(self, path, *, kind):
+        """Digest and size AT THE MOMENT OF WRITING.
+
+        Recomputing them at review time would describe the file as it stands
+        then, which is a different fact and the one an artifact record exists
+        not to depend on.
+        """
+        try:
+            return self.store.record_artifact(
+                self.mid, task_id=self.task_id, path=path,
+                sha256=digest(path), size=Path(path).stat().st_size, kind=kind)
+        except OSError:
+            # An artifact we cannot read is worth recording as such rather than
+            # silently omitting from the review.
+            return self.store.record_artifact(
+                self.mid, task_id=self.task_id, path=path,
+                sha256="unreadable", size=-1, kind=kind)
 
     def report(self):
         previous = self.store.step(self.mid, "report-published")
@@ -2114,7 +2421,27 @@ class Executor:
         validation_guard = self.validation_guard()
         self.agent_turn(self.mission["prompt"])
         self.verify_validation_guard(validation_guard)
-        code, tail, log = self.run_process(config["test"], "tests")
+        with self.task(TaskKind.VALIDATION):
+            started, clock = now(), time.monotonic()
+            code, tail, log = self.run_process(config["test"], "tests")
+            duration = int((time.monotonic() - clock) * 1000)
+            # The mission's own network posture, which validation currently
+            # SHARES with inference. The architecture rule is that validation
+            # should eventually be stricter; recording both columns is how that
+            # gap stays visible in every receipt instead of living in a document
+            # nobody opens at review time.
+            requested = config.get("network") or "none"
+            self.store.record_test_run(
+                self.mid, task_id=self.task_id, command=list(config["test"]),
+                executable=str(config["test"][0]) if config["test"] else None,
+                sandbox_mode="firebreak", network_requested=requested,
+                network_effective=requested,
+                enforcement={"network_isolation": "enforced",
+                             "network_destination": "not_enforced",
+                             "stricter_than_inference": "not_implemented"},
+                guard_state="intact", started_at=started, duration_ms=duration,
+                exit_code=code, log_path=log,
+                result="passed" if code == 0 else "failed")
         self.tests.append({"command": config["test"], "exit": code, "log": str(log)})
         if code:
             raise MissionError(f"Required tests failed (exit {code}): {tail[-2000:]}")
@@ -2131,6 +2458,9 @@ class Executor:
             if step and step.get("input_sha256") == digest(source) and Path(step["output"]).is_file() and digest(step["output"]) == step["sha256"]:
                 outputs.append(step)
                 self.artifacts.append(step["output"])
+                # A resumed export is still an artifact of THIS attempt; a
+                # review that omitted it would describe an incomplete result.
+                self.record_artifact(Path(step["output"]), kind="media")
                 self.event("step-resumed", "Verified media export " + rel)
                 continue
             # ffprobe writes its report to a FILE. The old path searched the
@@ -2180,6 +2510,7 @@ class Executor:
             result = {"input": rel, "input_sha256": digest(source), "output": str(output), "sha256": digest(output), "bytes": output.stat().st_size, "decode_verified": True, "profile": "H.264/AAC MP4" if video else "48 kHz PCM WAV"}
             outputs.append(result)
             self.artifacts.append(str(output))
+            self.record_artifact(output, kind="media")
             self.store.step(self.mid, "media-" + str(index), result)
             self.event("export-verified", name)
         self.publish("exports.json", json.dumps(outputs, indent=2) + "\n")
@@ -2224,6 +2555,9 @@ class Executor:
         if not acceptance.ok:
             raise MissionError(acceptance.reason)
         before_path = self.directory / "before.json"
+        # Captured before any provider runs, so the comparison is against the
+        # workspace as the person left it rather than as an earlier attempt did.
+        self.git_before = git_structure(self.ws)
         if not self.mission["checkpoint"]:
             with self.task(TaskKind.CHECKPOINT):
                 self.event("checkpoint-started", "Taking workspace recovery point")
@@ -2239,7 +2573,23 @@ class Executor:
         # the orchestrator, which is the thing Phase 2 removed.
         with self.task(CAPABILITY_TASK_KIND.get(capability, TaskKind.INFERENCE)):
             getattr(self, self.CAPABILITY_METHOD[capability])()
+        self.record_structure()
         self.check()
+
+    def record_structure(self):
+        """What the repository can do now that it could not before.
+
+        Recorded even when nothing changed: "no structural change" is a finding
+        a reviewer needs, and its absence would be indistinguishable from having
+        never looked.
+        """
+        before = getattr(self, "git_before", None)
+        after = git_structure(self.ws)
+        if before is None and after is None:
+            return None
+        return self.store.record_git_change(
+            self.mid, repo_path=self.ws,
+            delta=git_structure_delta(before, after))
 
     def receipt(self, state, error=None):
         before_path = self.directory / "before.json"
@@ -2357,8 +2707,69 @@ def run_mission(store, mid):
                 executor.receipt(state, error)
             except Exception as exc:
                 state, error = "failed", "Could not persist execution receipt: " + clean(exc)
+            if state == MissionState.WAITING_REVIEW:
+                try:
+                    open_review_for(store, mid)
+                except Exception as exc:                       # noqa: BLE001
+                    # A summary that cannot be built must not lose the work it
+                    # was summarising. The mission still reaches review; the
+                    # failure is recorded where a person will see it.
+                    store.event(mid, "review-summary-failed", clean(exc)[:500])
             result = store.finish_execution(mid, state, error)
         return result
+
+
+def open_review_for(store, mid):
+    """Summarise what a person is being asked to accept.
+
+    Everything here is read from what was RECORDED, not recomputed at review
+    time: a summary derived from the workspace as it stands now would describe
+    the present rather than what the mission did.
+    """
+    mission = store.get(mid)
+    sessions = store.sessions(mid)
+    changes = store.git_changes(mid)
+    unenforced = sorted({field for session in sessions
+                         for field, entry in (session.get("enforcement") or {}).items()
+                         if entry.get("status") in ("not_enforced", "not_representable")})
+    summary = {
+        "capability": mission.get("capability"),
+        "provider": mission.get("provider_id"),
+        "approval": mission.get("approval_id"),
+        "sessions": [
+            {"id": s["id"], "provider": s["provider_id"],
+             "executable": s["executable"], "executable_trust": s["executable_trust"],
+             "exit_code": s["exit_code"], "outcome": s["outcome"],
+             "credentials_exposed": s.get("credentials_granted") or [],
+             "read_grants": s.get("read_grants") or [],
+             "network_requested": s.get("network_requested"),
+             "network_effective": s.get("network_effective"),
+             "egress_requested": s.get("egress_requested") or []}
+            for s in sessions],
+        "tests": [{"command": t["command"], "exit_code": t["exit_code"],
+                   "result": t["result"], "duration_ms": t["duration_ms"],
+                   "network_requested": t["network_requested"],
+                   "network_effective": t["network_effective"]}
+                  for t in store.test_runs(mid)],
+        "git_structure": changes,
+        "artifacts": store.artifacts(mid),
+        # The caveats a reviewer must see, in the same object as the thing they
+        # are approving. A review that presents declared controls as protection
+        # is worse than one that presents nothing.
+        "declared_but_not_enforced": unenforced,
+        "audit": {k: store.verify_chain()[k] for k in ("ok", "chained", "unchained")},
+    }
+    structural = [key for change in changes
+                  for key in ("refs_changed", "remotes_changed", "hooks_changed",
+                              "exec_config_keys", "symlink_changes",
+                              "new_executables", "build_entrypoints")
+                  if change.get(key)]
+    diff_path = store.directory(mid) / "changes.diff"
+    return store.open_review(
+        mid, summary=summary,
+        diff_path=diff_path if diff_path.exists() else None,
+        blast_radius={"structural_git_changes": sorted(set(structural)),
+                      "note": "inputs for a later classifier; nothing is scored yet"})
 
 
 def review(store, mid, decision):
@@ -2401,6 +2812,7 @@ def review(store, mid, decision):
         # would have made it worse. This is not a duplicate of the state event
         # -- "completed" is what the mission became, "reviewed" is what the
         # person chose, and a mission can reach "undone" from four states.
+        store.decide_review(mid, decision, decided_by=f"uid:{os.getuid()}")
         store.event(mid, "reviewed", decision, actor=ACTOR_USER)
         return store.get(mid)
 
