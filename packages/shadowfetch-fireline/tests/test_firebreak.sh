@@ -28,6 +28,9 @@ ck 'specific provider grant' test-provider-key "$(CODEX_API_KEY=test-provider-ke
 ck 'selected document readable' approved "$(run --net none --read "$fixture/selected-document" -- cat "$fixture/selected-document")"
 ck 'read parent stays hidden' hidden "$(run --net none --read "$fixture/selected-document" -- sh -c 'test ! -r "$1" && echo hidden' sh "$fixture/outside-secret")"
 ck 'root shadow hidden' hidden "$(run --net none -- sh -c 'test ! -e /etc/shadow && echo hidden')"
+if run --net none --read "$HOME" -- true; then ck 'whole-home read grant refused' yes no; else ck 'whole-home read grant refused' yes yes; fi
+if run --net none --read / -- true; then ck 'filesystem-root read grant refused' yes no; else ck 'filesystem-root read grant refused' yes yes; fi
+if "$FB" run --workspace ../../etc --no-checkpoint --net none -- true 2>/dev/null; then ck 'workspace traversal refused' yes no; else ck 'workspace traversal refused' yes yes; fi
 ck 'network namespace isolated' 1 "$(run --net none -- sh -c 'ip -o link show | wc -l' | tr -d ' ')"
 ck 'virtual address not pinned to RSS' unlimited "$(run --net none --memory-mb 512 -- sh -c 'ulimit -v')"
 if run --net nonsense -- true; then ck 'invalid network rejected' yes no; else ck 'invalid network rejected' yes yes; fi

@@ -114,6 +114,10 @@ test:
 	python3 packages/shadowfetch-fireline/tests/test_fireline_mcp.py
 	python3 packages/shadowfetch-fireline/tests/test_checkpoint_roundtrip.py
 	python3 packages/shadowfetch-fireline/tests/test_firebreak_4.py
+	python3 packages/shadowfetch-fireline/tests/test_fireline_privilege.py
+	SHADOWFETCH_FIREBREAK_TEST_BIN=$(CURDIR)/packages/shadowfetch-fireline/data/usr/bin/shadowfetch-firebreak \
+	SHADOWFETCH_CHECKPOINT_BIN=$(CURDIR)/packages/shadowfetch-fireline/data/usr/bin/shadowfetch-checkpoint \
+	bash packages/shadowfetch-fireline/tests/test_firebreak.sh
 	python3 -m unittest discover -s tools/tests -v
 
 source-gate:
