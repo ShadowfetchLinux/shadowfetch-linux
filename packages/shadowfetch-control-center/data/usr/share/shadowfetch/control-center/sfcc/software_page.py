@@ -136,7 +136,12 @@ class SoftwarePage(QWidget):
         try:
             from sfcc.fireproof_page import FireproofPage  # provided by shadowfetch-fireproof's page module when present
             fireproof_widget = FireproofPage()
-        except Exception:
+        except BaseException:
+            # This import EXECUTES another package's 667-line application
+            # script inside this process, and that script raises SystemExit at
+            # module scope for --help/--version. SystemExit is not an
+            # Exception, so a narrower clause takes the whole Control Center
+            # down with the page it was trying to load.
             fireproof_widget = None
         if fireproof_widget is not None:
             self.tabs.addTab(fireproof_widget, "Updates")

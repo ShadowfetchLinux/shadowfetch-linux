@@ -15,7 +15,9 @@ same four production profiles:
 
 Fire is the connected, high-throughput posture. Ice is the private posture:
 Firebreak agent sessions start without network access until the user grants it.
-Both retain project-only writes, secret stripping, checkpoints, and receipts.
+Both keep the same boundary: the project is the only path on your disk a session can
+write, the sandbox environment starts empty rather than having known secrets removed
+from it, and every session takes a checkpoint and leaves a receipt.
 
 Nothing in Workbench silently downloads a model, creates an account, copies a
 credential, publishes work, or grants an agent broader access. The graphical

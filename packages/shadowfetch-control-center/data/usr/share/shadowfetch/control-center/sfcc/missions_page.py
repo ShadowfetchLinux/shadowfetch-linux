@@ -33,6 +33,163 @@ def mission_summary(mission):
     return f"{STATES.get(mission.get('state'), str(mission.get('state', 'Unknown')))}  ·  {KINDS.get(mission.get('kind'), mission.get('kind', 'Mission'))}"
 
 
+# What the engine publishes for each record set and the fields worth showing.
+# The keys and the field names are the engine's own, so a person reading this
+# panel and a person reading the database are looking at the same words.
+RECORD_SECTIONS = (
+    ("tasks", "Steps",
+     ("seq", "kind", "state", "started_at", "finished_at", "exit_code", "error")),
+    ("sessions", "Agent sessions",
+     ("id", "provider_id", "provider_version", "provider_trust", "attempt",
+      "network_requested", "network_effective", "started_at", "ended_at",
+      "exit_code", "outcome")),
+    ("test_runs", "Test runs",
+     ("started_at", "command", "network_requested", "network_effective",
+      "guard_state", "duration_ms", "exit_code", "result")),
+    ("git_changes", "Repository structure",
+     ("observed_at", "head_before", "head_after", "refs_changed",
+      "remotes_changed", "hooks_changed", "new_executables")),
+    ("reviews", "Review",
+     ("requested_at", "summary", "diff_truncated", "blast_radius",
+      "decided_at", "decision", "decided_by")),
+)
+
+NOT_ENFORCED_HEADING = "Relied on by this decision and NOT enforced:"
+
+
+def field_text(value):
+    if value is None:
+        return "not recorded"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(item) for item in value) or "none"
+    if isinstance(value, dict):
+        return json.dumps(value, sort_keys=True)[:300]
+    return str(value)[:300]
+
+
+def mission_text(mission):
+    """State, who performs it, and what was asked for -- as recorded."""
+    config = mission.get("config") or {}
+    return "\n".join([
+        "State: " + STATES.get(mission.get("state"), field_text(mission.get("state"))),
+        "Performed by: " + field_text(mission.get("provider_id") or config.get("provider_id"))
+        + "   ·   capability: " + field_text(mission.get("capability") or config.get("capability")),
+        "Connection requested: " + field_text(config.get("network")),
+        "Stop requested: " + ("yes" if mission.get("cancel_requested") else "no"),
+        "Approval recorded against this mission: " + field_text(mission.get("approval_id")),
+        "Attempt: " + field_text(mission.get("attempt")),
+    ])
+
+
+def decision_text(decision):
+    """The engine's decision, quoted. Nothing here re-derives one."""
+    if not isinstance(decision, dict):
+        return "No policy decision was returned for this mission."
+    scope = decision.get("scope") or {}
+    lines = ["Decision: " + field_text(decision.get("outcome"))]
+    lines += ["  " + str(reason) for reason in decision.get("reasons") or []]
+    lines.append("Scope: " + "   ·   ".join(
+        key + ": " + field_text(value) for key, value in sorted(scope.items())))
+    return "\n".join(lines)
+
+
+def caveat_text(decision):
+    """The controls this decision leans on that nothing actually applies.
+
+    A scope shown on its own reads as a list of rules in force. The engine
+    already separates what it decided from what it can make happen, and names
+    the difference per field; this repeats both rather than letting the scope
+    stand unqualified.
+    """
+    if not isinstance(decision, dict):
+        return ""
+    mediation = decision.get("mediation") or {}
+    if "advisory_fields" not in decision:
+        # ABSENT is not EMPTY. A reply that never carried the field means this
+        # build could not ask, and printing the reassuring sentence for it would
+        # turn "we do not know" into "there is nothing to know".
+        return ("This build could not determine which controls the decision "
+                "relies on. Treat nothing here as enforced.")
+    names = decision.get("advisory_fields") or []
+    if not names:
+        return ("This decision relies on no control that Mission Control cannot "
+                "enforce.")
+    lines = [NOT_ENFORCED_HEADING]
+    for name in names:
+        entry = mediation.get(name) or {}
+        lines.append("  " + str(name) + " — " + field_text(entry.get("mediation"))
+                     + " — " + field_text(entry.get("mechanism")))
+    return "\n".join(lines)
+
+
+def audit_text(report, error=None):
+    """What the chain proves, and separately what the external anchor proves.
+
+    An intact chain says the rows agree with each other. Only the anchor speaks
+    to truncation, so its verdict is printed beside the chain's and never folded
+    into it.
+    """
+    if error:
+        return "The audit log could not be verified: " + error
+    if not isinstance(report, dict):
+        return "The audit log has not been verified in this session."
+    anchor = report.get("anchor") or {}
+    lines = [
+        "Chain: " + ("intact" if report.get("ok") else "BROKEN"),
+        "Events: " + field_text(report.get("events"))
+        + "   ·   chained: " + field_text(report.get("chained"))
+        + "   ·   unchained: " + field_text(report.get("unchained")),
+        "Head: seq " + field_text(report.get("head_seq")) + " "
+        + str(report.get("head") or "")[:16],
+        "External anchor: " + field_text(anchor.get("verdict"))
+        + " (" + field_text(anchor.get("identifier")) + ")",
+    ]
+    if report.get("unchained"):
+        lines.append("  Unchained rows were written before the chain existed. They "
+                     "are pinned by the genesis digest and are not individually "
+                     "verifiable.")
+    if anchor.get("reason"):
+        lines.append("  " + str(anchor["reason"]))
+    if anchor.get("mirror_failures"):
+        lines.append("  Mirror failures: " + field_text(anchor.get("mirror_failures"))
+                     + " (last: " + field_text(anchor.get("last_mirror_error")) + ")")
+    lines += ["  PROBLEM: " + str(problem) for problem in report.get("problems") or []]
+    return "\n".join(lines)
+
+
+def approval_line(row):
+    return ("{id}   ·   granted {granted_at} by {granted_by} via {method}"
+            "   ·   expires: {expires}   ·   revoked: {revoked}").format(
+        id=field_text(row.get("id")), granted_at=field_text(row.get("granted_at")),
+        granted_by=field_text(row.get("granted_by")), method=field_text(row.get("method")),
+        expires=field_text(row.get("expires_at")), revoked=field_text(row.get("revoked_at")))
+
+
+def records_text(mission):
+    """Steps, sessions, test runs, repository change and review, as reported.
+
+    Absent and empty are different facts. This engine's CLI publishes no record
+    sets at all, so each section says that rather than rendering an empty list a
+    reader would take for "nothing happened".
+    """
+    lines = []
+    for key, heading, fields in RECORD_SECTIONS:
+        rows = mission.get(key)
+        if rows is None:
+            lines.append(heading + ": not reported. The mission CLI has no command "
+                         "that returns " + key + "; their events appear in Activity.")
+        elif not rows:
+            lines.append(heading + ": none recorded.")
+        else:
+            lines.append(heading + ":")
+            lines += ["    " + "   ·   ".join(
+                name + ": " + field_text(row.get(name)) for name in fields if name in row)
+                for row in rows if isinstance(row, dict)]
+    return "\n".join(lines)
+
+
 class NewMissionDialog(QDialog):
     """Queue only after the user can inspect scope and explicit network access."""
     def __init__(self, parent, client, on_created, workspace="", kind="code", capabilities=None):
@@ -350,6 +507,7 @@ class MissionsPage(QWidget):
         self.artifacts.setAccessibleName("Mission output files")
         self.artifacts.itemDoubleClicked.connect(self._open_artifact)
         self.tabs.addTab(self.overview, "Overview")
+        self.tabs.addTab(self._control_tab(), "Control")
         self.tabs.addTab(self.events, "Activity")
         self.tabs.addTab(self.diff, "Changes")
         self.tabs.addTab(self.artifacts, "Results")
@@ -380,6 +538,7 @@ class MissionsPage(QWidget):
         QTimer.singleShot(0, self.refresh)
         self.client.grok_status(self._grok_ready)
         self.client.call(["capabilities"], self._capabilities_ready)
+        self._verify_audit()
 
     def _poll(self):
         if self.isVisible():
@@ -440,6 +599,7 @@ class MissionsPage(QWidget):
             self.events.clear()
             self.diff.clear()
             self.artifacts.clear()
+            self._clear_control()
             self.overview.setPlainText("Your results will appear here.\n\nUse New mission to choose an approved project, task and provider. The local queue records progress and keeps reviewable evidence.")
 
     def _selection_changed(self, current, _previous):
@@ -489,8 +649,12 @@ class MissionsPage(QWidget):
             item.setFlags(Qt.ItemFlag.NoItemFlags)
             self.artifacts.addItem(item)
         self._buttons()
+        self.mission_view.setText(mission_text(data))
+        self.records_view.setText(records_text(data))
         self.client.call(["events", requested], lambda value, err: self._events_ready(requested, value, err))
         self.client.call(["diff", requested], lambda value, err: self._diff_ready(requested, value, err))
+        self.client.call(["policy", "show", requested], lambda value, err: self._policy_ready(requested, value, err))
+        self.client.call(["approvals", requested], lambda value, err: self._approvals_ready(requested, value, err))
 
     @staticmethod
     def _replace_text(widget, text):
@@ -577,6 +741,175 @@ class MissionsPage(QWidget):
         value = item.data(Qt.ItemDataRole.UserRole)
         if value:
             self._open_path(value)
+
+    def _control_tab(self):
+        """The control plane, rendered.
+
+        Nothing in this panel decides whether an action is permitted. The
+        buttons ask the engine and the reply is what the panel then shows,
+        because a second copy of those rules here is a second answer to
+        "is this allowed".
+        """
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        body = QWidget()
+        column = QVBoxLayout(body)
+        column.setContentsMargins(4, 4, 4, 4)
+        column.setSpacing(6)
+        column.addWidget(label("MISSION", "safety"))
+        self.mission_view = label("", "detail", wrap=True)
+        column.addWidget(self.mission_view)
+        column.addWidget(label("POLICY DECISION", "safety"))
+        self.decision_view = label("", "detail", wrap=True)
+        column.addWidget(self.decision_view)
+        # Directly beneath the scope on purpose: a scope read on its own is a
+        # list of controls the reader will assume are in force.
+        self.caveat_view = label("", "statusWarn", wrap=True)
+        column.addWidget(self.caveat_view)
+        column.addWidget(label("APPROVALS", "safety"))
+        column.addWidget(label(
+            "A mission that needs approval STARTS only if one covers it. The "
+            "check runs once, before it begins: revoking an approval does not "
+            "stop a mission already running -- use Stop for that. Withholding "
+            "an approval, or revoking it before the mission starts, is how the "
+            "work is refused; the engine records no separate refusal object.",
+            "detail", wrap=True))
+        self.approvals = QListWidget()
+        self.approvals.setAccessibleName("Approvals recorded for this mission")
+        self.approvals.setMaximumHeight(84)
+        self.approvals.currentItemChanged.connect(lambda *_: self._approval_buttons())
+        column.addWidget(self.approvals)
+        buttons = QHBoxLayout()
+        self.approve_button = QPushButton("Approve")
+        self.approve_button.clicked.connect(self._approve)
+        buttons.addWidget(self.approve_button)
+        self.revoke_button = QPushButton("Revoke")
+        self.revoke_button.setObjectName("quiet")
+        self.revoke_button.clicked.connect(self._revoke)
+        buttons.addWidget(self.revoke_button)
+        buttons.addStretch(1)
+        column.addLayout(buttons)
+        self.approval_notice = label("", "statusWarn", wrap=True)
+        self.approval_notice.setAccessibleName("Approval result")
+        column.addWidget(self.approval_notice)
+        column.addWidget(label("AUDIT LOG", "safety"))
+        self.audit_view = label("", "detail", wrap=True)
+        column.addWidget(self.audit_view)
+        audit_row = QHBoxLayout()
+        # Verification recomputes the whole chain, so it is asked for and never
+        # attached to the three-second queue poll.
+        verify = QPushButton("Verify the audit chain")
+        verify.setObjectName("quiet")
+        verify.clicked.connect(self._verify_audit)
+        audit_row.addWidget(verify)
+        audit_row.addStretch(1)
+        column.addLayout(audit_row)
+        column.addWidget(label("STEPS, SESSIONS, TESTS AND REVIEW", "safety"))
+        self.records_view = label("", "detail", wrap=True)
+        column.addWidget(self.records_view)
+        column.addStretch(1)
+        scroll.setWidget(body)
+        self._clear_control()
+        return scroll
+
+    def _clear_control(self):
+        self.mission_view.setText("Choose a mission to see its state, its approvals "
+                                  "and what this system cannot enforce for it.")
+        self.decision_view.setText("")
+        self.caveat_view.setText("")
+        self.approvals.clear()
+        self.approval_notice.setText("")
+        self.records_view.setText("")
+        self._approval_buttons()
+
+    def _approval_buttons(self):
+        # Approve is not gated on a local reading of the decision: asked about a
+        # mission that needs no approval, the engine says so in its own words,
+        # which a copy of its rules here could only paraphrase.
+        item = self.approvals.currentItem()
+        self.approve_button.setEnabled(bool(self.selected_id) and not self._mutation_pending)
+        self.revoke_button.setEnabled(
+            not self._mutation_pending and item is not None
+            and bool(item.data(Qt.ItemDataRole.UserRole)))
+
+    def _policy_ready(self, requested, data, error):
+        if requested != self.selected_id:
+            return
+        if error:
+            self.decision_view.setText("The engine did not return a decision for this "
+                                       "mission: " + error)
+            self.caveat_view.setText("")
+            return
+        self.decision_view.setText(decision_text(data))
+        self.caveat_view.setText(caveat_text(data))
+
+    def _approvals_ready(self, requested, data, error):
+        if requested != self.selected_id:
+            return
+        if error:
+            self.approvals.clear()
+            self.approval_notice.setText(error)
+            self._approval_buttons()
+            return
+        rows = [row for row in (data or []) if isinstance(row, dict) and row.get("id")]
+        current = self.approvals.currentItem()
+        keep = current.data(Qt.ItemDataRole.UserRole) if current else None
+        self.approvals.clear()
+        for row in rows:
+            item = QListWidgetItem(approval_line(row))
+            item.setData(Qt.ItemDataRole.UserRole, row["id"])
+            self.approvals.addItem(item)
+            if row["id"] == keep:
+                self.approvals.setCurrentItem(item)
+        if not rows:
+            item = QListWidgetItem("No approval has been granted for this mission.")
+            item.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.approvals.addItem(item)
+        self._approval_buttons()
+
+    def _approve(self):
+        if self.selected_id:
+            self._control_action(["approve", str(self.selected_id)])
+
+    def _revoke(self):
+        item = self.approvals.currentItem()
+        approval = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if approval:
+            self._control_action(["revoke", str(approval)])
+
+    def _control_action(self, arguments):
+        if self._mutation_pending or not self.selected_id:
+            return
+        self._mutation_pending = True
+        self.approval_notice.setText("")
+        self._approval_buttons()
+        self._buttons()
+        self.client.call(arguments, self._control_done)
+
+    def _control_done(self, data, error):
+        """The engine's answer is the only thing that changes anything here.
+
+        A refusal applies nothing locally: the mission, the decision and the
+        approval list are all re-read from the engine afterwards, so what the
+        panel shows next is what the engine actually holds.
+        """
+        self._mutation_pending = False
+        if error:
+            self.approval_notice.setText(error)
+        elif isinstance(data, dict) and data.get("reason"):
+            self.approval_notice.setText(str(data["reason"]))
+        else:
+            self.approval_notice.setText("")
+        self._approval_buttons()
+        self._buttons()
+        self.refresh()
+
+    def _verify_audit(self):
+        self.audit_view.setText("Verifying the audit chain…")
+        self.client.call(["audit", "verify"], self._audit_ready)
+
+    def _audit_ready(self, data, error):
+        self.audit_view.setText(audit_text(data, error))
 
     def _grok_ready(self, data, error):
         if error or not isinstance(data, dict):

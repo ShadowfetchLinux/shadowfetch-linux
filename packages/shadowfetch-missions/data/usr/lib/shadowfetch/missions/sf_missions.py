@@ -20,6 +20,7 @@ import json
 import os
 from pathlib import Path
 import re
+import select
 import resource
 import selectors
 import shutil
@@ -1519,27 +1520,99 @@ class Store:
         directory.mkdir(mode=0o700, exist_ok=True)
         return directory
 
+    @staticmethod
+    def workspace_key(value):
+        """The canonical form of a workspace reference.
+
+        Missions store the RESOLVED path; callers variously hold a name or a
+        path. Normalising here means a caller cannot select the empty set by
+        spelling it the other way, which is a silent no-op rather than an
+        error and is exactly how a reconciliation can appear to succeed while
+        touching nothing.
+        """
+        if value is None:
+            return None
+        try:
+            return str(workspace(str(value)))
+        except MissionError:
+            # Already a path, or a workspace that no longer exists. Both are
+            # legitimate here: reconciliation must still settle rows for a
+            # workspace somebody has since deleted.
+            return str(value)
+
+    def lock_path(self, workspace=None):
+        """One lock file per workspace, plus a global one.
+
+        The name is a digest, not the workspace name: a workspace name is
+        user-supplied and would otherwise decide a filename in the state
+        directory. The name is kept in a comment inside the file so a person
+        looking at a stuck lock can tell which workspace it belongs to.
+        """
+        if workspace is None:
+            return self.root / "execution.lock", "all workspaces"
+        canonical = self.workspace_key(workspace)
+        key = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:32]
+        return self.root / f"execution-{key}.lock", str(workspace)
+
     @contextlib.contextmanager
-    def lock(self, *, wait_seconds=0):
+    def lock(self, *, workspace=None, wait_seconds=0):
+        """Serialize execution on ONE workspace, or across all of them.
+
+        Two levels, because there are two genuinely different claims:
+
+          lock()                 "nothing may execute anywhere" -- recovery, and
+                                 anything that reasons across workspaces.
+                                 Takes execution.lock EXCLUSIVE.
+          lock(workspace=name)   "nothing else may touch THIS workspace" -- a
+                                 mission run, a retry, a review. Takes
+                                 execution.lock SHARED and the workspace's own
+                                 file EXCLUSIVE.
+
+        The shared level is what makes the hierarchy work: two workspaces hold
+        it at once and proceed, while a whole-system holder excludes them all.
+        Dropping it -- which the first version of this did -- means a worker in
+        recovery no longer stops a mission from starting underneath it.
+        """
         deadline = time.monotonic() + wait_seconds
-        with (self.root / "execution.lock").open("a") as stream:
+        global_path, _ = self.lock_path(None)
+        streams = []
+
+        def acquire(stream, mode, label):
             while True:
-                if wait_seconds > 0 and time.monotonic() >= deadline:
-                    raise MissionError("Mission controller is busy; this review was not applied. Try again shortly.")
                 try:
-                    fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
+                    fcntl.flock(stream, mode | fcntl.LOCK_NB)
+                    return
                 except BlockingIOError:
                     if wait_seconds <= 0:
-                        raise MissionError("Another mission is executing; this task remains queued")
+                        raise MissionError(
+                            f"Another mission is executing on {label}; this task "
+                            "remains queued")
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
-                        raise MissionError("Mission controller is busy; this review was not applied. Try again shortly.")
+                        raise MissionError(
+                            "Mission controller is busy; this review was not "
+                            "applied. Try again shortly.")
                     time.sleep(min(.05, remaining))
-            try:
-                yield
-            finally:
-                fcntl.flock(stream, fcntl.LOCK_UN)
+
+        try:
+            outer = global_path.open("a")
+            streams.append(outer)
+            if workspace is None:
+                acquire(outer, fcntl.LOCK_EX, "all workspaces")
+            else:
+                acquire(outer, fcntl.LOCK_SH, "all workspaces")
+                path, label = self.lock_path(workspace)
+                inner = path.open("a")
+                streams.append(inner)
+                acquire(inner, fcntl.LOCK_EX, label)
+            yield
+        finally:
+            # Innermost first, so the hierarchy unwinds in the order it was built.
+            for stream in reversed(streams):
+                try:
+                    fcntl.flock(stream, fcntl.LOCK_UN)
+                finally:
+                    stream.close()
 
     def create(self, *, kind=None, capability=None, provider_id=None, workspace_value, title, prompt, runtime=None, model="", inputs=None, test=None, network=None, timeout=900):
         """Create a mission as CAPABILITY plus PROVIDER.
@@ -1631,7 +1704,7 @@ class Store:
         return self.get(mid)
 
     def retry(self, mid):
-        with self.lock():
+        with self.lock(workspace=self.get(mid)["workspace"]):
             mission = self.get(mid)
             if mission["state"] not in ("failed", "cancelled"):
                 raise MissionError("Only failed or cancelled missions can be retried")
@@ -1642,9 +1715,14 @@ class Store:
                             detail="Explicit retry; original recovery checkpoint retained")
         return self.get(mid)
 
-    def recover(self):
+    def recover(self, workspace=None):
         # Caller owns execution lock, so no live mission process owns these rows.
+        # Only rows whose lock this caller holds. Recovering a mission on a
+        # workspace somebody else is executing would mark a LIVE mission failed.
+        wanted = self.workspace_key(workspace)
         for mission in self.list(states=("running",)):
+            if wanted is not None and mission["workspace"] != wanted:
+                continue
             # A mission the person had ALREADY asked to cancel did not
             # "fail" -- it was cancelled and then the worker died before it
             # could say so. Recording that as a failure invites a retry of work
@@ -1663,6 +1741,79 @@ class Store:
                     error="Execution was interrupted. Inspect changes, then "
                           "Retry or Undo; no automatic replay.",
                     detail="Worker restarted with no execution lock owner")
+
+    def reconcile(self, *, workspace=None, reason="startup"):
+        """Settle everything a crash left mid-flight, and say what was found.
+
+        The caller must hold the matching lock: whole-system for workspace=None,
+        that workspace otherwise. Reconciling a row somebody else is executing
+        would mark a LIVE mission failed, which is the one outcome worse than
+        leaving it stale.
+
+        Provider processes are NOT resumed. Resumption is not supported by any
+        provider here, and re-running a turn that may already have had effects
+        -- a file written, a request sent -- is a decision only a person can
+        make. Partial work is preserved and the mission becomes retriable.
+        """
+        found = {"missions": [], "tasks": [], "sessions": [], "reviews": 0,
+                 "waiting_approval": 0, "reason": reason}
+
+        # 1. Missions. Order matters: settling the mission first would emit its
+        #    terminal event before the task and session records that explain it.
+        wanted = self.workspace_key(workspace)
+        stale = [m for m in self.list(states=(MissionState.RUNNING,))
+                 if wanted is None or m["workspace"] == wanted]
+
+        for mission in stale:
+            mid = mission["id"]
+            for task in self.tasks(mid):
+                if task["state"] == TaskState.RUNNING:
+                    self.task_transition(
+                        task["id"], TaskState.FAILED, actor=ACTOR_WORKER,
+                        error="The worker stopped while this step was running",
+                        detail="settled by reconciliation")
+                    found["tasks"].append(task["id"])
+            for session in self.sessions(mid):
+                if session["ended_at"] is None:
+                    self.close_session(
+                        session["id"], exit_code=None,
+                        outcome="interrupted: the worker stopped before this "
+                                "session was closed")
+                    found["sessions"].append(session["id"])
+            found["missions"].append(mid)
+
+        # 2. Now the missions themselves, through the same recover() the worker
+        #    and the tests already use, so there is one place that decides
+        #    cancelled-versus-failed.
+        self.recover(workspace=workspace)
+
+        # 3. Things that are WAITING rather than broken. Reported, never
+        #    touched: a mission awaiting a person is in a correct state and
+        #    "fixing" it would discard the wait.
+        for mission in self.list(states=(MissionState.QUEUED,)):
+            if wanted is not None and mission["workspace"] != wanted:
+                continue
+            try:
+                decision, _ceiling = mission_decision(self, mission)
+            except MissionError:
+                continue
+            if decision is not None and decision.needs_approval:
+                subject = "mission:" + mission["id"]
+                row, _why = self.find_approval(subject, decision.scope)
+                if row is None:
+                    found["waiting_approval"] += 1
+        for mission in self.list(states=(MissionState.WAITING_REVIEW,)):
+            if wanted is None or mission["workspace"] == wanted:
+                found["reviews"] += 1
+
+        if found["missions"] or found["tasks"] or found["sessions"]:
+            self.append_event(
+                "*", "reconciled",
+                json.dumps({k: (len(v) if isinstance(v, list) else v)
+                            for k, v in found.items() if k != "reason"}
+                           | {"reason": reason}, sort_keys=True),
+                actor=ACTOR_WORKER)
+        return found
 
     def step(self, mid, name, result=None):
         with self.db() as db:
@@ -2681,10 +2832,106 @@ def require_approval(store, mission):
     return row["id"]
 
 
+# --------------------------------------------------------------------------- #
+# Waking up
+# --------------------------------------------------------------------------- #
+# A fallback interval, not a poll interval. It is the longest the worker can
+# sleep through a missed notification -- a watch that could not be established,
+# an event queue overflow, a filesystem that does not report writes. Long
+# enough that the idle cost is negligible, short enough that a lost wake-up is
+# an inconvenience rather than a stall.
+WAKE_FALLBACK_SECONDS = 30
+
+IN_MODIFY = 0x00000002
+IN_CLOSE_WRITE = 0x00000008
+IN_MOVED_TO = 0x00000080
+IN_CREATE = 0x00000100
+IN_Q_OVERFLOW = 0x00004000
+
+
+class Wakeup:
+    """Blocks until the mission database changes, or the fallback expires.
+
+    Watches the state DIRECTORY rather than the database file: in WAL mode the
+    writes land in -wal, and the -wal and -shm files are created and unlinked
+    constantly, so a watch on a single inode would be stale within a second.
+
+    Degrades honestly. If inotify cannot be set up -- an old kernel, a
+    filesystem that does not support it, the per-user watch limit reached --
+    this becomes a plain sleep at the fallback interval, which is exactly the
+    old behaviour at a slower rate, and says so once on stderr rather than
+    pretending it is event-driven.
+    """
+
+    def __init__(self, directory, *, fallback=WAKE_FALLBACK_SECONDS):
+        self.fallback = fallback
+        self.reason = None
+        self._fd = None
+        try:
+            import ctypes
+            self._libc = ctypes.CDLL("libc.so.6", use_errno=True)
+            fd = self._libc.inotify_init1(0o4000)          # IN_NONBLOCK
+            if fd < 0:
+                raise OSError(ctypes.get_errno(), "inotify_init1 failed")
+            watch = self._libc.inotify_add_watch(
+                fd, str(directory).encode(),
+                IN_MODIFY | IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE)
+            if watch < 0:
+                os.close(fd)
+                raise OSError(ctypes.get_errno(), "inotify_add_watch failed")
+            self._fd = fd
+        except (OSError, AttributeError) as exc:
+            self.reason = f"{type(exc).__name__}: {exc}"
+
+    @property
+    def event_driven(self):
+        return self._fd is not None
+
+    def wait(self, timeout=None):
+        """Block until something changed or the timeout expired.
+
+        Returns True if woken by an event. The caller re-reads the queue either
+        way -- the wake-up is a hint, never the data, so a spurious wake costs
+        one query and a missed one costs at most the fallback.
+        """
+        timeout = self.fallback if timeout is None else timeout
+        if self._fd is None:
+            time.sleep(timeout)
+            return False
+        readable, _, _ = select.select([self._fd], [], [], timeout)
+        if not readable:
+            return False
+        try:
+            # Drain. One INSERT produces several events and leaving them queued
+            # would spin the loop once per event for no additional information.
+            while True:
+                try:
+                    if not os.read(self._fd, 65536):
+                        break
+                except BlockingIOError:
+                    break
+        except OSError:
+            pass
+        return True
+
+    def close(self):
+        if self._fd is not None:
+            try:
+                os.close(self._fd)
+            finally:
+                self._fd = None
+
+
 def run_mission(store, mid):
-    with store.lock():
-        store.recover()
+    # The workspace is read BEFORE the lock, because the lock is per workspace
+    # and we cannot know which one to take without it. The state is re-read
+    # inside, so a mission that changed meanwhile is still refused.
+    workspace_name = store.get(mid)["workspace"]
+    with store.lock(workspace=workspace_name):
+        store.recover(workspace=workspace_name)
         mission = store.get(mid)
+        if mission["workspace"] != workspace_name:
+            raise MissionError("This mission's workspace changed while it was starting")
         if mission["state"] != "queued":
             raise MissionError("Only queued missions can run")
         # BEFORE the state moves. A mission that needs approval and has none
@@ -2781,7 +3028,8 @@ def review(store, mid, decision):
     # A published result can still be releasing its lock, and an idle worker
     # owns this lock during recovery. Wait before reading state;
     # only acquisition is retried, never a partially applied review operation.
-    with store.lock(wait_seconds=REVIEW_LOCK_WAIT_SECONDS):
+    with store.lock(workspace=store.get(mid)["workspace"],
+                    wait_seconds=REVIEW_LOCK_WAIT_SECONDS):
         mission = store.get(mid)
         if mission["state"] not in ("waiting-review", "failed", "cancelled", "completed"):
             raise MissionError("Mission is not ready for review or recovery")
@@ -2971,23 +3219,51 @@ def worker(store, once=False):
                 store.cancel(item["id"])
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
-        while not stopping:
-            try:
-                with store.lock():
-                    store.recover()
-                queue = sorted(store.list(states=("queued",)), key=lambda m: (m["created_at"], m["id"]))
-                for mission in queue:
-                    if stopping:
-                        break
-                    try:
-                        run_mission(store, mission["id"])
-                    except MissionError:
-                        continue
-            except MissionError:
-                pass
-            if once:
-                return 0
-            time.sleep(1)
+        # Reconciliation runs ONCE, at startup, under the whole-system lock --
+        # not every tick. Repeating it was harmless only because it found
+        # nothing to do; as a wake-up-driven loop it would be a poll wearing a
+        # different name.
+        wake = Wakeup(store.root)
+        try:
+            with store.lock():
+                store.reconcile(reason="worker started")
+        except MissionError:
+            # Somebody else holds the whole system: another worker is already
+            # reconciling, so there is nothing here to do twice.
+            pass
+        if not wake.event_driven:
+            sys.stderr.write(
+                "shadowfetch-missions: inotify unavailable (" + str(wake.reason)
+                + "); falling back to a " + str(wake.fallback)
+                + "s poll. New missions may wait that long.\n")
+        try:
+            while not stopping:
+                try:
+                    queue = sorted(store.list(states=("queued",)),
+                                   key=lambda m: (m["created_at"], m["id"]))
+                    for mission in queue:
+                        if stopping:
+                            break
+                        try:
+                            run_mission(store, mission["id"])
+                        except ApprovalRequired:
+                            # Waiting for a person is not a failure and not
+                            # something to retry in a loop. It stays queued and
+                            # the next wake-up -- an approval IS a write --
+                            # picks it up.
+                            continue
+                        except MissionError:
+                            continue
+                except MissionError:
+                    pass
+                if once:
+                    return 0
+                # The wake-up is a hint, never the data: the queue is re-read
+                # either way, so a spurious wake costs one query and a missed
+                # one costs at most the fallback.
+                wake.wait()
+        finally:
+            wake.close()
     return 0
 
 

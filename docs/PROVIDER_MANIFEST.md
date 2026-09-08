@@ -174,7 +174,7 @@ which is what the Control Center uses to decide whether to demand explicit conse
 #### `egress_allowlist` — array of string, optional, unique, hostname pattern
 (`^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$`, so a
 leading `*.` wildcard is allowed)
-The hosts this provider may reach.
+The hosts this provider declares it will reach.
 **Not enforced at the sandbox boundary today.** `SandboxSpec.firebreak_network`
 collapses `"allowlist"` to Firebreak's `allow`, because `allow` is the strongest
 posture the current sandbox can express. The list is carried on the `SandboxSpec`,
@@ -208,7 +208,9 @@ Passed to Firebreak as `--workspace-mode`. Enforced: `read-only` binds the works
 `--ro-bind`, so a write fails with `EROFS` no matter what the provider's own program
 does. `/tmp` stays a writable tmpfs, so a read-only task still has scratch space.
 `read-only` means the provider may not modify the mission workspace at all.
-`workspace-write` means it may write inside the workspace and nowhere else.
+`workspace-write` means the workspace is the only path on the HOST it can write.
+`/tmp`, `/run` and the private `/home/agent` are writable too, but they are
+sandbox-local tmpfs that vanish with the session.
 **Wrong:** declaring `read-only` for a code-change provider makes its work
 impossible. Declaring `workspace-write` when you only read hands the agent a writable
 project directory it did not need — and per-invocation narrowing is available, which
@@ -255,7 +257,8 @@ its own mount without changing the schema *and* adding a matching flag to
 other side — but it means this is not a field a provider author can use freely today.
 
 #### `masked_paths` — array of absolute paths, optional, unique
-Paths that must not be visible even if another grant would expose them.
+Paths the provider DECLARES must not be visible even if another grant would
+expose them.
 **Declared and checked, but never forwarded.** `narrow()` refuses to drop one and
 `verify_invocation()` refuses an invocation that dropped one, but `run_process()`
 does not pass them to Firebreak. Do not rely on this field for containment.

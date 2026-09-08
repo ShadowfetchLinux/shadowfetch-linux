@@ -542,7 +542,7 @@ From an `Invocation`'s `SandboxSpec` it passes:
 
 | Spec field | Firebreak flag | Enforced? |
 |---|---|---|
-| `firebreak_network` | `--net none` / `--net allow` | yes |
+| `firebreak_network` | `--net none` / `--net allow` | **`none`: yes** — `--unshare-net`, and `connect()` fails with `ENETUNREACH`. **`allow`: the on/off decision only** — no network namespace is created, so the sandbox keeps the host's network, its loopback services and its abstract sockets, and no destination is filtered. `sandbox_enforcement()` reports this row as `partial` for any spec that is not `none` |
 | `memory_mb` | `--memory-mb` | yes |
 | `processes` | `--processes` | yes |
 | `read_grants` | one `--read` each | yes |

@@ -93,7 +93,8 @@ from PyQt6.QtGui import QFont, QIcon
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QStackedWidget, QCheckBox, QProgressBar,
-    QFrame, QScrollArea, QRadioButton, QButtonGroup, QDialog, QMessageBox, QLayout,
+    QFrame, QScrollArea, QRadioButton, QButtonGroup, QDialog, QInputDialog,
+    QMessageBox, QLayout,
 )
 
 try:
@@ -1862,17 +1863,49 @@ class CatalogPage(QWidget):
             btn.setEnabled(False)
 
     def _template(self, rec: dict):
-        for cmd in (["shadowfetch-agent-workspace"],
-                    ["konsole", "-e", "shadowfetch-agent-workspace"]):
-            if shutil.which(cmd[0]):
-                try:
-                    subprocess.Popen(cmd)
-                    return
-                except Exception:  # noqa: BLE001
-                    continue
-        QMessageBox.information(
-            self, "Not installed",
-            "The workspace tool is not installed on this system.")
+        """Create the workspace here, with the name as an argument.
+
+        This used to spawn `shadowfetch-agent-workspace` with no verb. That
+        form opens an interactive shell menu whose first act is a `read` on
+        stdin; started from a desktop button there is no terminal, the read
+        gets EOF, and the tool exits under `set -e` having created nothing.
+        The konsole candidate listed after it could never run either, because
+        `which` finds the tool itself whenever it is installed. The `create`
+        verb takes the name as an argument and needs no terminal at all - the
+        same shape the Control Center's Workbench already uses.
+        """
+        helper = shutil.which("shadowfetch-agent-workspace")
+        if not helper:
+            QMessageBox.information(
+                self, "Not installed",
+                "The workspace tool is not installed on this system.")
+            return
+        title = str(rec.get("name") or "workspace")
+        name, accepted = QInputDialog.getText(
+            self, f"New {title}", "Workspace name:")
+        if not accepted or not name.strip():
+            return
+        try:
+            done = subprocess.run(
+                [helper, "create", name.strip()],
+                stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                timeout=30, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            QMessageBox.warning(
+                self, "Workspace not created",
+                f"The workspace tool did not run: {exc}")
+            return
+        if done.returncode == 0:
+            QMessageBox.information(
+                self, "Workspace created",
+                # The helper's own two lines name the path and how to open it.
+                # Reprinting them beats parsing them into a second wording.
+                done.stdout.strip() or f"Created workspace {name.strip()}.")
+        else:
+            QMessageBox.warning(
+                self, "Workspace not created",
+                (done.stderr or done.stdout).strip()
+                or "The workspace tool reported an error. Nothing was created.")
 
 
 # ---- pages ---------------------------------------------------------------

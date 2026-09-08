@@ -118,6 +118,7 @@ test:
 	bash tools/build_drkonqi_pickup.sh --test
 	python3 -m unittest discover -s packages/shadowfetch-missions/tests -v
 	QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s packages/shadowfetch-control-center/tests -v
+	QT_QPA_PLATFORM=offscreen python3 -m unittest discover -s packages/shadowfetch-welcome/tests -v
 	python3 -m unittest discover -s packages/shadowfetch-defaults/tests -v
 	python3 -m unittest discover -s packages/shadowfetch-firewatchd/tests -v
 	python3 -m unittest discover -s packages/shadowfetch-fireproof/tests -v

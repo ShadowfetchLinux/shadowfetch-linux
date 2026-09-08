@@ -89,7 +89,7 @@
       ]
     },
     "egress_allowlist": {
-      "description": "Hosts this provider may reach when network_policy is 'allowlist'. Declared for audit and for future enforcement; recorded in the receipt so a reviewer can see what was permitted.",
+      "description": "Hosts this provider states it will contact when network_policy is 'allowlist'. NOT ENFORCED: Firebreak has two network postures, none and allow, and no destination filter, so a provider with 'allowlist' reaches whatever the host reaches. This is a declaration recorded for audit and for a future egress filter -- it is not a permission, and nothing compares it to where packets actually went.",
       "type": "array",
       "uniqueItems": true,
       "items": {
@@ -147,7 +147,7 @@
           ]
         },
         "masked_paths": {
-          "description": "Paths that must NOT be visible even if some other grant would expose them.",
+          "description": "Paths this provider states must not be visible to it. NOT ENFORCED: Firebreak has no masking flag, so these paths reach no mechanism. They are checked on widening -- an adapter may add masks and never drop one -- and recorded for audit. Do not rely on them for containment; a path that must be invisible must not be inside the workspace or a read grant.",
           "type": "array",
           "uniqueItems": true,
           "items": {

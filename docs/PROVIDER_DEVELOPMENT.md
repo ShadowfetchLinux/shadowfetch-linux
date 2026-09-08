@@ -513,9 +513,11 @@ field whose safe direction is inverted — adding a mask narrows, removing one w
 Guidance per field:
 
 * **`network_policy`** — `none` if you can. If you need `allowlist`, list every host
-  you actually contact. The list is not enforced by the sandbox today (Firebreak
-  speaks `none`/`allow`), but it is recorded so a reviewer can see what was permitted,
-  and it is what a future egress filter will use.
+  you actually contact. **Nothing filters egress today** -- Firebreak speaks
+  `none`/`allow`, so an `allowlist` provider reaches whatever the host reaches. The
+  list records what you SAID you would contact, which a reviewer can compare against
+  what you did; it is not a permission, and no mechanism checks it. It is what a
+  future egress filter will use. Do not rely on it for containment.
 * **`workspace_mode`** — enforced (`--ro-bind` when read-only). Declare the *widest*
   mode any of your capabilities needs, then narrow per invocation. `code_change` needs
   `workspace-write`; `sourced_report` should be narrowed to `read-only`. Do not rely

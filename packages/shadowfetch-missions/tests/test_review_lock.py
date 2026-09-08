@@ -118,8 +118,10 @@ m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 store = m.Store()
 recover = store.recover
-def gated_recovery():
-    recover()
+def gated_recovery(*args, **kwargs):
+    # Phase 3 gave recover() a workspace= parameter and routed the worker
+    # through reconcile(); the gate is still what this test is about.
+    recover(*args, **kwargs)
     print('RECOVERY_LOCK_HELD', flush=True)
     if sys.stdin.readline().strip() != 'release':
         raise RuntimeError('missing test release')

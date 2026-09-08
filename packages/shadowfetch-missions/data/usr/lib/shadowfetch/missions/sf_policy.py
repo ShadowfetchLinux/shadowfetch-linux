@@ -85,6 +85,12 @@ POLICY_MEDIATION = {
 }
 
 
+# Trust classes this build will execute. Named rather than open-ended: an
+# approval policy carries whatever string a human sealed, and an unrecognised
+# one must be refused rather than treated as merely unfamiliar.
+KNOWN_TRUST = ("distro-managed", "developer", "unknown")
+
+
 class PolicyError(Exception):
     """A policy input that does not make sense, as opposed to a DENY."""
 
@@ -222,10 +228,10 @@ class PolicyEngine:
         reasons = []
         outcome = AUTO_ALLOW
 
-        if provider_trust not in ("distro-managed", "developer", "unknown"):
-            return Decision(DENY,
-                            (f"provider trust {provider_trust!r} is not one this "
-                             "build will execute",), scope, self._mediation_for(scope))
+        if provider_trust not in KNOWN_TRUST:
+            return self._decide(DENY,
+                                (f"provider trust {provider_trust!r} is not one this "
+                                 "build will execute",), scope)
 
         if self.require_approval_for_network and scope.network != "none":
             outcome = ESCALATE
@@ -248,6 +254,18 @@ class PolicyEngine:
             reasons.append(
                 "offline, no credentials, and bounded by an enforced sandbox")
 
+        return self._decide(outcome, tuple(reasons), scope)
+
+    def _decide(self, outcome, reasons, scope):
+        """The ONLY place a Decision is built.
+
+        Every path computes advisory_fields, including DENY. A Decision that
+        skipped it returned an empty tuple, and a caller rendering "no unenforced
+        controls" from an empty list then printed an affirmative enforcement
+        claim about a decision that had never looked. Two constructors for one
+        type is how a field comes to be optional in practice while looking
+        required in the dataclass.
+        """
         mediation = self._mediation_for(scope)
         advisory = tuple(sorted(
             name for name, entry in mediation.items()
