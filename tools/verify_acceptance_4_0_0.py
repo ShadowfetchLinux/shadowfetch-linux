@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import struct
@@ -14,9 +16,19 @@ import tempfile
 from typing import Any
 
 
-VALID_STATUSES = {"pending", "pass", "fail", "blocked"}
+VALID_STATUSES = {"pending", "pass", "fail", "blocked", "waived"}
 VALID_PHASES = {"prepublish", "postpublish"}
 VALID_KINDS = {"artifact", "json", "log", "report", "screenshot"}
+# A required case may only be "pass" or "waived" for a release to proceed. "waived"
+# is a recorded, written decision to accept the gap; "pending" is nobody having run it.
+WAIVER_FIELDS = ("approver", "reason")
+
+# Evidence-quality floors. These reject files that cannot be a real result:
+# empty files, files far too small to hold one, and files whose bytes carry almost
+# no information (all-zero logs, blank/solid-colour screenshots).
+MIN_EVIDENCE_BYTES = 8
+MIN_SCREENSHOT_BYTES = 1024
+MIN_EVIDENCE_ENTROPY_BITS = 1.5
 
 
 def sha256_file(path: Path) -> str:
@@ -61,6 +73,57 @@ def png_size(path: Path) -> tuple[int, int]:
     if header[12:16] != b"IHDR":
         raise ValueError("PNG does not begin with IHDR")
     return struct.unpack(">II", header[16:24])
+
+
+def byte_entropy(path: Path) -> float:
+    """Shannon entropy of the file's bytes, in bits per byte (0.0 to 8.0)."""
+    counts: collections.Counter[int] = collections.Counter()
+    total = 0
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            counts.update(chunk)
+            total += len(chunk)
+    if not total:
+        return 0.0
+    entropy = -sum(
+        (count / total) * math.log2(count / total) for count in counts.values()
+    )
+    return max(0.0, entropy)
+
+
+def evidence_quality_errors(path: Path, kind: str) -> list[str]:
+    """Reject evidence that is empty, implausibly small, or informationless."""
+    errors: list[str] = []
+    size = path.stat().st_size
+    if size == 0:
+        return ["evidence file is empty (0 bytes)"]
+    minimum = MIN_SCREENSHOT_BYTES if kind == "screenshot" else MIN_EVIDENCE_BYTES
+    if size < minimum:
+        errors.append(
+            f"evidence file is {size} bytes, below the {minimum}-byte minimum for "
+            f"kind {kind!r}"
+        )
+    entropy = byte_entropy(path)
+    if entropy < MIN_EVIDENCE_ENTROPY_BITS:
+        errors.append(
+            f"evidence file carries {entropy:.2f} bits/byte of entropy, below the "
+            f"{MIN_EVIDENCE_ENTROPY_BITS:.2f} floor: it is blank, uniform or "
+            "otherwise not a real result"
+        )
+    return errors
+
+
+def waiver_errors(case: dict[str, Any]) -> list[str]:
+    """A waived case must carry a written, attributed reason."""
+    waiver = case.get("waiver")
+    if not isinstance(waiver, dict):
+        return ["waived status requires a waiver object with approver and reason"]
+    errors: list[str] = []
+    for field in WAIVER_FIELDS:
+        value = waiver.get(field)
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"waiver.{field} must be a non-empty string")
+    return errors
 
 
 def repo_root_for(manifest: Path) -> Path:
@@ -126,6 +189,10 @@ def validate_manifest(data: dict[str, Any]) -> list[str]:
             errors.append(f"{case_id or label}: invalid phase")
         if case.get("status") not in VALID_STATUSES:
             errors.append(f"{case_id or label}: invalid status")
+        elif case.get("status") == "waived":
+            errors.extend(
+                f"{case_id or label}: {error}" for error in waiver_errors(case)
+            )
         if not isinstance(case.get("required"), bool):
             errors.append(f"{case_id or label}: required must be boolean")
         if not isinstance(case.get("evidence"), list):
@@ -155,9 +222,20 @@ def verify(args: argparse.Namespace) -> int:
     for case in selected:
         case_id = case["id"]
         status = case["status"]
+        if status == "waived":
+            # Structure already validated: approver and reason are present.
+            print(
+                f"WAIVED: {case_id}: {case['waiver']['reason']} "
+                f"(approved by {case['waiver']['approver']})"
+            )
+            continue
         if status != "pass":
             if not args.allow_pending or status != "pending":
-                errors.append(f"{case_id}: required status is {status}, not pass")
+                errors.append(
+                    f"{case_id}: required status is {status}, not pass or waived"
+                )
+            elif args.allow_pending:
+                print(f"REPORT: {case_id}: status is pending, no evidence recorded")
             continue
         evidence = case["evidence"]
         if not evidence:
@@ -193,6 +271,10 @@ def verify(args: argparse.Namespace) -> int:
                 errors.append(
                     f"{label}: SHA-256 mismatch, expected {expected_hash}, got {actual_hash}"
                 )
+            errors.extend(
+                f"{label}: {error}"
+                for error in evidence_quality_errors(evidence_path, kind)
+            )
             if kind == "screenshot":
                 try:
                     width, height = png_size(evidence_path)
@@ -233,9 +315,11 @@ def verify(args: argparse.Namespace) -> int:
 
     passed = sum(1 for case in selected if case["status"] == "pass")
     pending = sum(1 for case in selected if case["status"] == "pending")
+    waived = sum(1 for case in selected if case["status"] == "waived")
     print(
         f"ACCEPTANCE_PASSED phase={args.phase} required={len(selected)} "
-        f"passed={passed} pending={pending} evidence_root={evidence_root}"
+        f"passed={passed} waived={waived} pending={pending} "
+        f"evidence_root={evidence_root}"
     )
     return 0
 
@@ -253,6 +337,22 @@ def record(args: argparse.Namespace) -> int:
     case["status"] = args.status
     if args.notes is not None:
         case["notes"] = args.notes
+
+    waiver_reason = getattr(args, "waiver_reason", None)
+    waiver_approver = getattr(args, "waiver_approver", None)
+    if args.status == "waived":
+        case["waiver"] = {
+            "approver": waiver_approver or "",
+            "reason": waiver_reason or "",
+        }
+        problems = waiver_errors(case)
+        if problems:
+            raise ValueError(
+                "a waived case requires --waiver-approver and --waiver-reason: "
+                + "; ".join(problems)
+            )
+    elif waiver_reason is not None or waiver_approver is not None:
+        raise ValueError("--waiver-approver/--waiver-reason require --status waived")
 
     if args.clear_evidence:
         case["evidence"] = []
@@ -273,6 +373,9 @@ def record(args: argparse.Namespace) -> int:
             kind = args.kind
             if kind is None:
                 kind = "screenshot" if source.suffix.lower() == ".png" else "log"
+            problems = evidence_quality_errors(source, kind)
+            if problems:
+                raise ValueError(f"unusable evidence {source}: " + "; ".join(problems))
             recorded.append(
                 {
                     "kind": kind,
@@ -309,12 +412,40 @@ def build_parser() -> argparse.ArgumentParser:
     )
     verify_parser.set_defaults(func=verify)
 
+    # Soft reporting path: structure plus recorded passes, pending cases listed.
+    audit_parser = subparsers.add_parser(
+        "acceptance-audit",
+        aliases=["audit"],
+        help="report on the manifest without failing on pending cases",
+    )
+    audit_parser.add_argument(
+        "--phase", choices=("prepublish", "final"), default="prepublish"
+    )
+    audit_parser.set_defaults(func=verify, allow_pending=True)
+
+    # Hard gate: every required case must be pass or waived, artifact fully recorded.
+    gate_parser = subparsers.add_parser(
+        "acceptance-gate",
+        aliases=["gate"],
+        help="fail unless every required case is pass or waived",
+    )
+    gate_parser.add_argument(
+        "--phase", choices=("prepublish", "final"), default="prepublish"
+    )
+    gate_parser.set_defaults(func=verify, allow_pending=False)
+
     record_parser = subparsers.add_parser("record", help="record one case result")
     record_parser.add_argument("case_id")
     record_parser.add_argument("--status", choices=sorted(VALID_STATUSES), required=True)
     record_parser.add_argument("--evidence", action="append", type=Path)
     record_parser.add_argument("--kind", choices=sorted(VALID_KINDS))
     record_parser.add_argument("--notes")
+    record_parser.add_argument(
+        "--waiver-approver", help="who accepted the gap (required for --status waived)"
+    )
+    record_parser.add_argument(
+        "--waiver-reason", help="written reason (required for --status waived)"
+    )
     record_parser.add_argument("--clear-evidence", action="store_true")
     record_parser.set_defaults(func=record)
     return parser
