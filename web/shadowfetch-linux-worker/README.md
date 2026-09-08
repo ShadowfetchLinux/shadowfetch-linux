@@ -54,7 +54,14 @@ Publish in this order so an ISO is never surfaced without its supporting files:
 
 Wrangler's object-upload API is limited to small objects. `tools/r2_s3_publish.py` uses Cloudflare's R2 S3 credential derivation in memory and boto3 multipart upload for a full ISO. It does not write the derived access key or secret to disk. Pass an active, bucket-scoped Cloudflare API token file; do not use a broad account token.
 
-`tools/r2_prune_release.py` keeps the named ISO release and every package referenced by the live `Packages` index. It only deletes after `--apply` is supplied; without that flag it is a dry run.
+`tools/r2_prune_release.py` keeps the named ISO release and every package referenced by the live `Packages` index. It only deletes after `--apply` is supplied; without that flag (or with `--dry-run`) it is a dry run that prints every `WOULD_DELETE` key.
+
+Because the tool works by keeping one release and deleting the rest, a bad `--version` used to mean "delete every published ISO". It now refuses to run unless all of these hold:
+
+- `--version` is a bare semantic version (`4.0.0`); anything else is rejected before a client is even constructed.
+- The ISO being kept, `releases/shadowfetch-<version>-amd64.iso`, is actually present in the bucket. A keep-prefix that matches nothing is an abort, never a licence to delete everything.
+- The delete set is no larger than `--max-deletes` (default 200). Over the bound it prints the preview and aborts without deleting.
+- The kept ISO's `.sha256`, `.asc`, `.sig` and `.torrent` sidecars are never in the delete set.
 
 ## Local dev
 
