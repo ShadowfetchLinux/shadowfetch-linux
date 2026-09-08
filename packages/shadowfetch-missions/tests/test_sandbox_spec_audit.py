@@ -248,11 +248,16 @@ AUDIT = (
         "narrowed": True,
         "passed": True,
         "firebreak_flag": "--memory-mb",
-        "enforced": "partial",
-        "status": "ENFORCED (resident memory only) — swap is uncapped",
+        "enforced": "yes",
+        "status": "ENFORCED",
         "looks_enforced_but_is_not": False,
-        "mechanism": "systemd-run --user --scope --property=MemoryMax=<N>M. Real cgroup-v2 "
-                     "memory.max. But MemorySwapMax is left at infinity.",
+        "mechanism": "systemd-run --user --scope --property=MemoryMax=<N>M plus "
+                     "--property=MemorySwapMax=0. Real cgroup-v2 memory.max with swap "
+                     "closed, so the cap bounds the workload rather than the resident "
+                     "set. Before MemorySwapMax was set, a process touched 4096 MiB "
+                     "under a 256 MiB cap and exited 0, the excess going to swap -- so "
+                     "the strength of this control depended on host swap configuration, "
+                     "which is not a property a sandbox may have.",
         "evidence": {
             "declared": "source", "validated": "executed", "narrowed": "executed",
             "passed": "executed", "enforced": "executed",
@@ -932,8 +937,8 @@ class EnforcedEmpiricallyTests(unittest.TestCase):
         self.assertIn("REFUSED after", done.stdout, done.stderr)
         self.assertNotIn("SPAWNED 64", done.stdout)
 
-    def test_memory_mb_reaches_the_scope_but_swap_is_left_uncapped(self):
-        """memory_mb bounds RESIDENT memory only. Recorded as a measured fact."""
+    def test_memory_mb_bounds_the_workload_and_not_merely_the_resident_set(self):
+        """The cap holds against a workload that used to escape it through swap."""
         probe = textwrap.dedent("""
             import resource
             held = []
@@ -949,12 +954,16 @@ class EnforcedEmpiricallyTests(unittest.TestCase):
             done = firebreak(env, "--net", "none", "--memory-mb", "256",
                              "--cpu-seconds", "120", "--processes", "16",
                              "--", sys.executable, "-c", probe, timeout=300)
-        if done.returncode != 0:
-            self.skipTest("no swap headroom here; the workload was OOM-killed, which is "
-                          "the swapless behaviour the audit row describes")
-        self.assertIn("held MiB 384", done.stdout, done.stderr)
-        peak = int(done.stdout.split("peak RSS MiB")[1].split()[0])
-        self.assertLess(peak, 400, "MemoryMax did not bound the resident set")
+        # 384 MiB touched under a 256 MiB cap. It must be STOPPED, whatever the
+        # host's swap configuration -- which is the whole point of MemorySwapMax=0.
+        # A skip here would have let the fix be reverted silently on any machine
+        # with swap, which is most of them.
+        self.assertNotEqual(done.returncode, 0,
+                            "a workload 1.5x its memory cap ran to completion; "
+                            "MemorySwapMax is not being set")
+        self.assertNotIn("held MiB 384", done.stdout,
+                         "the workload allocated past its cap before being stopped")
+        self.assertEqual(BY_FIELD["memory_mb"]["enforced"], "yes")
 
     def test_a_read_only_workspace_mode_refuses_the_write(self):
         """The cpu_seconds-shaped defect, now closed, demonstrated end to end.

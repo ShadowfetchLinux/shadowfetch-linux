@@ -70,7 +70,8 @@ from sf_providers import (  # noqa: E402
     ACCEPTED_EXECUTABLE_TRUST, Acceptance, AgentEvent, AgentProvider,
     ApprovedPolicy, CAPABILITIES, Capability, Invocation, ProviderError,
     ProviderRegistry, Readiness, SandboxSpec, classify_executable,
-    resolve_executable, sandbox_from_manifest,
+    declared_executables, resolve_executable, sandbox_from_manifest,
+    verify_invocation,
 )
 
 # AgentEvent has no public roster of its types, and a test that hard-codes
@@ -880,6 +881,27 @@ class ProviderConformanceTests(unittest.TestCase):
                 self.assertIsInstance(events, (list, tuple))
                 self.assertFalse(self.profile.turn_succeeded(events, 1),
                                  "a non-zero exit was reported as a successful turn")
+
+    def test_a_program_the_manifest_does_not_declare_is_refused(self):
+        """WHICH program, not merely what kind of program.
+
+        Checking only the trust tier let an adapter substitute any OTHER
+        distro-managed binary -- /bin/sh for a provider declaring
+        /usr/bin/ffmpeg -- and inherit that provider's credentials and network
+        grant. The adapter is packaged code, but this seam exists precisely
+        because its OUTPUT is not trusted. Found by attack 15 of the Phase 2.5
+        adversarial pass, which the tier check had appeared to refuse for the
+        wrong reason.
+        """
+        substitute = "/usr/bin/true" if Path("/usr/bin/true").is_file() else "/bin/true"
+        if substitute in declared_executables(self.manifest):
+            self.skipTest("this provider genuinely declares the substitute")
+        invocation = Invocation(executable=substitute, argv=("-x",),
+                                sandbox=self.declared,
+                                manifest_executable=self.manifest.get("executable"))
+        with self.assertRaises(ProviderError) as caught:
+            verify_invocation(invocation, self.manifest)
+        self.assertIn("not a program this manifest declares", str(caught.exception))
 
     def test_the_adapter_does_not_resolve_its_program_through_path(self):
         module = sys.modules[self.manifest["adapter_module"]]

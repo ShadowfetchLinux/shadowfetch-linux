@@ -539,6 +539,40 @@ class AgentProvider:
 # Manifest loading
 # --------------------------------------------------------------------------- #
 
+def declared_executables(manifest) -> set:
+    """Every path a manifest's executable declaration currently resolves to.
+
+    resolve_executable() answers "which one shall we run"; this answers "which
+    ones was this provider ever allowed to run", which is the question
+    verify_invocation() has to ask. Same expansion rules, no trust filtering --
+    the tier is checked separately, and mixing the two would make a refusal say
+    the wrong thing.
+    """
+    block = (manifest or {}).get("executable") or {}
+    kind = block.get("kind")
+    if kind == "absolute":
+        return {str(Path(block["path"]).resolve())}
+    if kind != "candidates":
+        return set()
+    home = Path.home()
+    found = set()
+    for pattern in block.get("candidates") or ():
+        pattern = str(pattern)
+        if pattern.startswith("~/"):
+            base, relative = home, pattern[2:]
+        elif pattern.startswith("/"):
+            base, relative = Path("/"), pattern[1:]
+        else:
+            continue                       # never a relative lookup
+        try:
+            matches = sorted(base.glob(relative))
+        except (OSError, ValueError):
+            continue
+        for match in matches:
+            found.add(str(match.resolve()))
+    return found
+
+
 def resolve_executable(manifest):
     """Locate a provider program from its DECLARED candidates. No PATH.
 
@@ -874,6 +908,25 @@ def verify_invocation(invocation, manifest):
                 f"declared {getattr(ceiling, field)}")
     if ceiling.workspace_mode == "read-only" and spec.workspace_mode != "read-only":
         raise ProviderError(f"{manifest['id']}: upgraded a read-only workspace to writable")
+
+    # WHICH program, not merely what kind of program. Checking only the trust
+    # tier let an adapter substitute any OTHER distro-managed binary -- /bin/sh
+    # for a provider declaring /usr/bin/ffmpeg -- and inherit that provider's
+    # credentials and network grant. The adapter is packaged code, but the seam
+    # exists precisely because its OUTPUT is not trusted, and "whatever it says
+    # its program is, that answer is checked here" was only half true.
+    block = (manifest or {}).get("executable") or {}
+    if invocation.executable:
+        if block.get("kind") == "none":
+            raise ProviderError(
+                f"{manifest['id']}: built an invocation with a program "
+                f"({invocation.executable}) but its manifest declares none")
+        allowed = declared_executables(manifest)
+        if str(Path(invocation.executable).resolve()) not in allowed:
+            raise ProviderError(
+                f"{manifest['id']}: {invocation.executable} is not a program this "
+                f"manifest declares. Declared: "
+                f"{', '.join(sorted(allowed)) or '(nothing currently installed)'}")
     if spec.account_mount and spec.account_mount != ceiling.account_mount:
         raise ProviderError(
             f"{manifest['id']}: requested credential mount {spec.account_mount!r} "
