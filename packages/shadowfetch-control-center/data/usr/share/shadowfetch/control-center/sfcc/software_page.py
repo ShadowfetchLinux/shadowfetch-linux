@@ -6,7 +6,7 @@ built-in updates card, keeping 2.1.1's Safe Update reachable either way.
 
 Tab 2 renders the same Ignition bundle records Welcome uses, straight from
 the root-owned catalog JSON, installs through the id-locked pkexec helper
-(pkexec shadowfetch-bundle-install <catalog-id>), and every transaction is
+(pkexec shadowfetch-bundle-install install <catalog-id>), and every transaction is
 wrapped in Phoenix Points by the apt hooks — zero snapshot code here.
 Installs are strictly user-initiated; offline the buttons disable with a
 plain-words note.
@@ -110,7 +110,7 @@ class BundleCard(Card):
             return
         dialog = ProcessDialog(
             self._page, f"Installing {self.record.get('name', bundle_id)}",
-            ["pkexec", busutil.BUNDLE_INSTALL, bundle_id],
+            ["pkexec", busutil.BUNDLE_INSTALL, "install", bundle_id],
             "One apt transaction from the pinned archive, wrapped in a "
             "Phoenix Point automatically. Safe to leave running.")
         dialog.completed.connect(lambda _code: self._page.reload_bundles())

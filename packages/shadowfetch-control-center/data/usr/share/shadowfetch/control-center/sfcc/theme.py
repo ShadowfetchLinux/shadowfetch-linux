@@ -252,6 +252,12 @@ class ProcessDialog(QDialog):
         if code == 0:
             self._state.setText("Finished successfully.")
             self._state.setObjectName("status")
+        elif code == 126:
+            self._state.setText("Authorisation was declined or cancelled.")
+            self._state.setObjectName("statusWarn")
+        elif code == 127:
+            self._state.setText("The privileged helper could not be run.")
+            self._state.setObjectName("statusWarn")
         else:
             self._state.setText(f"Finished with status {code}.")
             self._state.setObjectName("statusWarn")

@@ -352,7 +352,9 @@ class EmberPage(QWidget):
             except ValueError:
                 duration = 0
         if duration:
-            args += ["--duration", str(duration)]
+            # ember-duration takes the seconds as a bare positional
+            # argument; a --duration flag is rejected by its parser.
+            args += [str(duration)]
         if args and helper:
             self.note.setText("Waiting for authorisation…")
             self._helper_proc = QProcess(self)
@@ -374,7 +376,16 @@ class EmberPage(QWidget):
 
     def _helper_done(self, code, _status) -> None:
         if code != 0:
-            self.note.setText("Authorisation was cancelled — Ember was not started.")
+            # 126 = polkit refused or the user dismissed the prompt;
+            # 127 = the helper could not be executed. Anything else is the
+            # helper itself failing, which must not be reported as a
+            # cancelled authorisation.
+            if code == 126:
+                self.note.setText("Authorisation was cancelled — Ember was not started.")
+            elif code == 127:
+                self.note.setText("The Ember helper could not be run — Ember was not started.")
+            else:
+                self.note.setText(f"The Ember helper failed (status {code}) — Ember was not started.")
             self._busy = False
             self._pending_profile = None
             self._refresh_state()
