@@ -91,7 +91,7 @@ R2_REGION   ?= auto
 LINUX_HOST ?= shadowfetch-linux
 LINUX_PATH ?= ~/projects/shadowfetch-4.0.0
 
-.PHONY: all help test source-gate package-gate iso-gate acceptance-audit deps packages repo refresh-index check-index iso sign pre-release-check publish qemu clean distclean \
+.PHONY: all help test source-gate package-gate iso-gate acceptance-audit acceptance-gate deps packages repo refresh-index check-index iso sign pre-release-check publish qemu clean distclean \
         sync-from-linux deploy-worker ship stamp-version
 
 all: iso
@@ -103,7 +103,8 @@ help:
 	@echo "  make source-gate Run tests, parsers, linters and secret scans"
 	@echo "  make package-gate Validate packages, signed repo and clean install"
 	@echo "  make iso-gate   Validate the signed hybrid ISO and installed-image payload"
-	@echo "  make acceptance-audit Validate the current release manifest and pending evidence"
+	@echo "  make acceptance-audit Report on the release manifest (does NOT fail on pending)"
+	@echo "  make acceptance-gate  HARD gate: every required case must pass or be waived"
 	@echo "  make packages   Build all .deb packages"
 	@echo "  make repo       Build local APT repository"
 	@echo "  make refresh-index Re-sign the APT indices in place (no rebuild)"
@@ -142,7 +143,17 @@ package-gate: repo
 acceptance-audit:
 	@test -x $(ACCEPTANCE_TOOL) || { echo "Missing acceptance tool: $(ACCEPTANCE_TOOL)" >&2; exit 1; }
 	@test -f $(ACCEPTANCE_MANIFEST) || { echo "Missing acceptance manifest: $(ACCEPTANCE_MANIFEST)" >&2; exit 1; }
-	$(ACCEPTANCE_TOOL) --manifest $(ACCEPTANCE_MANIFEST) verify --allow-pending
+	$(ACCEPTANCE_TOOL) --manifest $(ACCEPTANCE_MANIFEST) acceptance-audit
+
+# The HARD gate. acceptance-audit reports and exits 0 even with pending
+# cases, which is how 4.0.0 was published with thirteen of eighteen required
+# cases unproven. This target refuses unless every required case is pass or
+# waived and every artifact field is recorded. A release must depend on this,
+# not on the audit.
+acceptance-gate:
+	@test -x $(ACCEPTANCE_TOOL) || { echo "Missing acceptance tool: $(ACCEPTANCE_TOOL)" >&2; exit 1; }
+	@test -f $(ACCEPTANCE_MANIFEST) || { echo "Missing acceptance manifest: $(ACCEPTANCE_MANIFEST)" >&2; exit 1; }
+	$(ACCEPTANCE_TOOL) --manifest $(ACCEPTANCE_MANIFEST) acceptance-gate
 
 deps:
 	sudo apt-get update
