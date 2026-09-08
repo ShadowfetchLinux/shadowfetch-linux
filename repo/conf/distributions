@@ -4,7 +4,7 @@ Codename: umbra
 Architectures: amd64 source
 Components: main
 Description: Shadowfetch Linux package repository
-ValidFor: 14d
+ValidFor: 180d
 DebIndices: Packages Release . .gz
 DscIndices: Sources Release . .gz
 SignWith: 8F13CE1535EE1F4A2916A1F73C5C900B7BE80CA1
