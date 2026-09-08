@@ -30,6 +30,7 @@ Phase 1 found real defects of each kind:
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import importlib
 import importlib.util
 import json
@@ -50,6 +51,7 @@ __all__ = [
     "SandboxSpec", "Invocation", "AgentEvent", "Readiness", "Acceptance",
     "AgentProvider", "ProviderRegistry", "load_manifest", "manifest_schema",
     "trusted_executable", "TRUSTED_EXEC_PREFIXES", "verify_invocation",
+    "ApprovedPolicy", "PolicyError", "load_policy", "manifest_digest",
     "resolve_executable",
 ]
 
@@ -59,6 +61,14 @@ different interface_version is reported unavailable with a reason rather than
 imported and failed later."""
 
 MANIFEST_DIR = Path("/usr/share/shadowfetch/providers")
+
+# The approved-provider policy deliberately does NOT live in the discovery
+# directory. A third-party package may add a file to providers/ without a
+# dpkg conflict; it cannot overwrite a file another package owns. Keeping the
+# policy in its own directory, shipped by shadowfetch-missions, is what makes
+# the pin meaningful against a package rather than merely against a typo.
+POLICY_DIR = Path("/usr/share/shadowfetch/provider-policy")
+POLICY_NAME = "approved.json"
 
 # A provider program may only be executed from a directory the packaging
 # system owns. This is the mechanism behind "no PATH resolution": even an
@@ -144,6 +154,10 @@ class ProviderError(Exception):
 
 class ManifestError(ProviderError):
     """A provider manifest is malformed or dishonest."""
+
+
+class PolicyError(ProviderError):
+    """A provider is not approved, or asks for more than it was approved for."""
 
 
 # --------------------------------------------------------------------------- #
@@ -472,26 +486,22 @@ def manifest_schema(root: Path | None = None) -> dict:
 
 
 def _default_root() -> Path:
-    override = os.environ.get("SHADOWFETCH_PROVIDER_MANIFESTS")
-    if override:
-        # A test/QA seam, but not an unconditional one. The document it selects
-        # decides network policy, credential identities, read grants and
-        # resource caps -- so an environment-selected manifest root is the
-        # Phase-1 defect class one layer up from PATH. It is honoured only from
-        # a directory the invoking user owns and that no one else can write.
-        candidate = Path(override).expanduser()
-        try:
-            info = candidate.stat()
-            safe = (candidate.is_dir() and not candidate.is_symlink()
-                    and info.st_uid in (0, os.getuid())
-                    and not info.st_mode & 0o022)
-        except OSError:
-            safe = False
-        if safe:
-            return candidate
+    """The production provider discovery root. Not environment-selectable.
+
+    SHADOWFETCH_PROVIDER_MANIFESTS used to point this anywhere the invoking
+    user owned. Even clamped for ownership and mode, that is an environment
+    variable deciding which credentials and network posture a provider may
+    request -- the Phase-1 defect class one layer up from PATH. It is gone.
+
+    Tests and fixtures inject a root through the ProviderRegistry constructor
+    instead, which is explicit, local to the caller, and cannot be set by
+    something else in the session. See docs/PROVIDER_TRUST.md.
+    """
+    if os.environ.get("SHADOWFETCH_PROVIDER_MANIFESTS"):
         sys.stderr.write(
-            f"ignoring SHADOWFETCH_PROVIDER_MANIFESTS={candidate}: it must be a "
-            "directory you own that is not group- or world-writable\n")
+            "ignoring SHADOWFETCH_PROVIDER_MANIFESTS: the provider discovery root "
+            "is not environment-selectable in production; pass root= to "
+            "ProviderRegistry for tests\n")
     if MANIFEST_DIR.is_dir():
         return MANIFEST_DIR
     for parent in Path(__file__).resolve().parents:
@@ -523,6 +533,141 @@ def load_manifest(path, *, schema: dict | None = None) -> dict:
             f"{path.name}: manifest filename must match its id {document['id']!r}, "
             "so a provider cannot be shadowed by a second file claiming the same id")
     return document
+
+
+def manifest_digest(path) -> str:
+    """SHA-256 of a manifest file, exactly as it ships."""
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+NETWORK_RANK = {"none": 0, "allowlist": 1}
+
+
+class ApprovedPolicy:
+    """Which providers Shadowfetch permits, and the ceiling for each.
+
+    This is reviewed DATA, not source. Adding a provider means adding an entry
+    here and shipping its manifest; it does not mean editing Python. That is
+    the property Phase 2 bought and this class must not take back.
+    """
+
+    def __init__(self, document: dict, source: str = "<injected>"):
+        self.source = source
+        if not isinstance(document, dict):
+            raise PolicyError(f"{source}: approved-provider policy must be an object")
+        if document.get("schema_version") != 1:
+            raise PolicyError(
+                f"{source}: unsupported policy schema_version "
+                f"{document.get('schema_version')!r}")
+        entries = document.get("providers")
+        if not isinstance(entries, dict):
+            raise PolicyError(f"{source}: policy has no providers object")
+        self.entries = entries
+        self.document = document
+
+    def __contains__(self, provider_id):
+        return provider_id in self.entries
+
+    def ids(self):
+        return sorted(self.entries)
+
+    def approve(self, manifest: dict, digest: str) -> dict:
+        """Return the EFFECTIVE manifest, or raise PolicyError.
+
+        Effective privilege is the intersection of what the manifest requests
+        and what the policy permits -- never the union. Any request that
+        exceeds the ceiling is refused outright rather than quietly clamped,
+        because a provider that asked for more than it may have is either
+        mis-packaged or hostile, and silently narrowing it would hide both.
+        """
+        provider_id = manifest.get("id")
+        entry = self.entries.get(provider_id)
+        if entry is None:
+            raise PolicyError(
+                f"provider {provider_id!r} is not in the approved-provider policy "
+                f"({self.source}). A schema-valid manifest is not sufficient to "
+                "become a provider.")
+
+        expected = entry.get("manifest_sha256")
+        if not expected or expected != digest:
+            raise PolicyError(
+                f"provider {provider_id!r}: manifest digest {digest[:16]}... does not "
+                f"match the approved {str(expected)[:16]}.... The manifest changed "
+                "after it was approved; re-review it and re-seal the policy.")
+
+        if manifest.get("package") != entry.get("package"):
+            raise PolicyError(
+                f"provider {provider_id!r}: manifest claims package "
+                f"{manifest.get('package')!r}, policy approved "
+                f"{entry.get('package')!r}")
+
+        if manifest.get("interface_version") != entry.get("interface_version"):
+            raise PolicyError(
+                f"provider {provider_id!r}: manifest declares provider interface "
+                f"v{manifest.get('interface_version')}, policy approved "
+                f"v{entry.get('interface_version')}")
+
+        for field in ("capabilities", "credential_ids", "egress_allowlist"):
+            requested = set(manifest.get(field) or ())
+            permitted = set(entry.get(field) or ())
+            excess = sorted(requested - permitted)
+            if excess:
+                raise PolicyError(
+                    f"provider {provider_id!r} requests {field} it was not approved "
+                    f"for: {', '.join(excess)}")
+
+        wanted = NETWORK_RANK.get(manifest.get("network_policy"), 99)
+        allowed = NETWORK_RANK.get(entry.get("network_policy"), -1)
+        if wanted > allowed:
+            raise PolicyError(
+                f"provider {provider_id!r} requests network policy "
+                f"{manifest.get('network_policy')!r}, approved for "
+                f"{entry.get('network_policy')!r}")
+
+        # The intersection. Equal to the manifest today, because anything
+        # broader was already refused -- but computed rather than assumed, so
+        # a policy narrower than a manifest genuinely narrows.
+        effective = dict(manifest)
+        for field in ("capabilities", "credential_ids", "egress_allowlist"):
+            if field in manifest:
+                permitted = set(entry.get(field) or ())
+                effective[field] = [v for v in manifest[field] if v in permitted]
+        if not effective.get("capabilities"):
+            raise PolicyError(
+                f"provider {provider_id!r} has no approved capability left after "
+                "applying policy")
+        effective["_policy"] = {
+            "source": self.source,
+            "package": entry.get("package"),
+            "manifest_sha256": digest,
+            "trust": entry.get("trust", "distro-managed"),
+        }
+        return effective
+
+
+def load_policy(root=None) -> ApprovedPolicy:
+    """Read the approved-provider policy from a trusted location."""
+    root = Path(root) if root else _default_policy_root()
+    path = Path(root) / POLICY_NAME
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise PolicyError(
+            f"approved-provider policy is unavailable at {path}: {exc}. Mission "
+            "Control will not activate any provider without one.") from exc
+    except ValueError as exc:
+        raise PolicyError(f"approved-provider policy is not valid JSON: {path}: {exc}") from exc
+    return ApprovedPolicy(document, source=str(path))
+
+
+def _default_policy_root() -> Path:
+    if POLICY_DIR.is_dir():
+        return POLICY_DIR
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "data/usr/share/shadowfetch/provider-policy"
+        if candidate.is_dir():
+            return candidate
+    return POLICY_DIR
 
 
 def sandbox_from_manifest(manifest: dict) -> SandboxSpec:
@@ -615,11 +760,16 @@ class ProviderRegistry:
     """Manifest-driven discovery. Unknown providers fail closed; a broken
     adapter is reported unavailable rather than crashing Mission Control."""
 
-    def __init__(self, root: Path | None = None, *, module_root: Path | None = None):
+    def __init__(self, root: Path | None = None, *, module_root: Path | None = None,
+                 policy=None, policy_root: Path | None = None):
         self.root = Path(root) if root else _default_root()
         self.module_root = Path(module_root) if module_root else Path(__file__).resolve().parent
         self._entries: dict = {}
         self._errors: list = []
+        # policy= is dependency injection for tests. policy_root= points at a
+        # policy file. Neither is reachable from the environment.
+        self._policy = policy
+        self._policy_root = policy_root
         self._load()
 
     # -- loading -----------------------------------------------------------
@@ -632,12 +782,25 @@ class ProviderRegistry:
         except ManifestError as exc:
             self._errors.append(str(exc))
             return
+        if self._policy is None:
+            try:
+                self._policy = load_policy(self._policy_root)
+            except PolicyError as exc:
+                # No policy means no providers. Failing open here would make
+                # deleting one file equivalent to approving everything.
+                self._errors.append(str(exc))
+                return
         for path in sorted(self.root.glob("*.json")):
             if path.name == SCHEMA_NAME:
                 continue
             try:
                 manifest = load_manifest(path, schema=schema)
             except ManifestError as exc:
+                self._errors.append(str(exc))
+                continue
+            try:
+                manifest = self._policy.approve(manifest, manifest_digest(path))
+            except PolicyError as exc:
                 self._errors.append(str(exc))
                 continue
             if manifest["id"] in self._entries:

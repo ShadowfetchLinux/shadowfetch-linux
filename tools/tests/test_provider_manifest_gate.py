@@ -10,6 +10,7 @@ That is the architectural proof for Phase 2, so it is asserted here as well as
 in the conformance suite.
 """
 import copy
+import hashlib
 import json
 import sys
 import unittest
@@ -23,9 +24,11 @@ from providers.validate_manifest import (validate_provider_payload,
 DATA = ROOT / "packages/shadowfetch-missions/data"
 MISSION_SOURCE = (DATA / "usr/lib/shadowfetch/missions/sf_missions.py").read_text()
 MANIFEST_DIR = "usr/share/shadowfetch/providers"
+POLICY_PATH = "usr/share/shadowfetch/provider-policy/approved.json"
 ADAPTER_DIR = "usr/lib/shadowfetch/missions"
 
 SHIPPED = [
+    POLICY_PATH,
     f"{MANIFEST_DIR}/provider-manifest.schema.json",
     f"{MANIFEST_DIR}/codex.json",
     f"{MANIFEST_DIR}/offline-media.json",
@@ -44,11 +47,37 @@ def real_read(relative):
         return None
 
 
+def sealed_policy(**manifests):
+    """The shipped policy, re-sealed over the given replacement manifests.
+
+    A test that mutates a manifest is usually about the SCHEMA or a policy
+    FIELD, not about the digest -- and the digest would fire first and mask
+    it. Re-sealing the digest (and only the digest) lets the intended check
+    run. Tests specifically about the digest pin do not use this.
+    """
+    document = json.loads(real_read(POLICY_PATH))
+    for relative, text in manifests.items():
+        # Key the re-seal on the FILENAME, never on the id inside the document.
+        # A test that mutates an id would otherwise re-seal a DIFFERENT provider
+        # entry and break that provider is pin instead of its own.
+        provider_id = Path(relative).stem
+        entry = document["providers"].get(provider_id)
+        if entry is not None:
+            entry["manifest_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return json.dumps(document, indent=2)
+
+
 def overlay(**files):
-    """A reader that serves `files` and falls back to what really ships."""
+    """A reader that serves `files`, re-seals the policy digest for any
+    manifest among them, and otherwise falls back to what really ships."""
+    manifests = {k: v for k, v in files.items() if k.startswith(MANIFEST_DIR + "/")}
+    merged = dict(files)
+    if manifests and POLICY_PATH not in files:
+        merged[POLICY_PATH] = sealed_policy(**manifests)
+
     def read(relative):
-        if relative in files:
-            return files[relative]
+        if relative in merged:
+            return merged[relative]
         return real_read(relative)
     return read
 
@@ -231,8 +260,24 @@ class ThirdProviderNeedsNoGateEdit(unittest.TestCase):
             f"{MANIFEST_DIR}/example-agent.json",
             f"{ADAPTER_DIR}/sf_provider_example_agent.py",
         ]
+        third = json.dumps(self.THIRD)
+        # A third provider is added as DATA: a manifest, an adapter, and an
+        # approval entry. That last one is the Phase 2.5 addition, and it is
+        # still data -- no gate source changes.
+        policy = json.loads(real_read(POLICY_PATH))
+        policy["providers"]["example-agent"] = {
+            "package": self.THIRD["package"],
+            "interface_version": self.THIRD["interface_version"],
+            "capabilities": self.THIRD["capabilities"],
+            "credential_ids": self.THIRD["credential_ids"],
+            "network_policy": self.THIRD["network_policy"],
+            "egress_allowlist": self.THIRD["egress_allowlist"],
+            "manifest_sha256": hashlib.sha256(third.encode("utf-8")).hexdigest(),
+            "trust": "distro-managed",
+        }
         read = overlay(**{
-            f"{MANIFEST_DIR}/example-agent.json": json.dumps(self.THIRD),
+            POLICY_PATH: json.dumps(policy, indent=2),
+            f"{MANIFEST_DIR}/example-agent.json": third,
             f"{ADAPTER_DIR}/sf_provider_example_agent.py":
                 "from sf_providers import AgentProvider\n"
                 "class ExampleAgentProvider(AgentProvider):\n    pass\n",

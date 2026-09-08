@@ -34,9 +34,13 @@ _MISSIONS_DATA = ROOT / "packages/shadowfetch-missions/data/usr/lib/shadowfetch/
 if str(_MISSIONS_DATA) not in sys.path:
     sys.path.insert(0, str(_MISSIONS_DATA))
 
+import hashlib
+
 import sf_jsonschema  # the same validator the installed system uses
+from sf_providers import ApprovedPolicy, PolicyError  # the same policy the runtime applies
 
 MANIFEST_DIR = "usr/share/shadowfetch/providers"
+POLICY_PATH = "usr/share/shadowfetch/provider-policy/approved.json"
 SCHEMA_PATH = f"{MANIFEST_DIR}/provider-manifest.schema.json"
 ADAPTER_DIR = "usr/lib/shadowfetch/missions"
 
@@ -119,7 +123,25 @@ def validate_provider_payload(paths, mission_source, *, read=None):
     except ValueError as exc:
         raise ProviderPolicyError(f"Provider manifest schema is not valid JSON: {exc}") from exc
 
-    # -- 3. validate each manifest ---------------------------------------
+    # -- 3. the approved-provider policy must ship, and must be the same
+    #       document the runtime will apply. Validating a copy, or a
+    #       gate-local reimplementation, would let the two disagree.
+    policy_text = read(POLICY_PATH)
+    if not policy_text:
+        raise ProviderPolicyError(
+            f"approved-provider policy is missing from the artifact: {POLICY_PATH}. "
+            "Without it the installed system activates no provider at all.")
+    try:
+        approved = ApprovedPolicy(json.loads(policy_text), source=POLICY_PATH)
+    except ValueError as exc:
+        raise ProviderPolicyError(f"{POLICY_PATH}: not valid JSON: {exc}") from exc
+    except PolicyError as exc:
+        raise ProviderPolicyError(str(exc)) from exc
+    if POLICY_PATH not in inventory:
+        raise ProviderPolicyError(
+            f"{POLICY_PATH} is readable but does not ship in this artifact")
+
+    # -- 4. validate each manifest ---------------------------------------
     seen = {}
     declared_adapters = set()
     for relative in manifest_paths:
@@ -147,6 +169,16 @@ def validate_provider_payload(paths, mission_source, *, read=None):
             raise ProviderPolicyError(
                 f"duplicate provider id {provider_id!r} in {seen[provider_id]} and {name}")
         seen[provider_id] = name
+
+        # Approve it with the SAME code the runtime uses, against the digest of
+        # the bytes that actually ship. A provider the gate lets through but the
+        # runtime would refuse is a release that silently loses a provider.
+        # Structural checks ran first, so a malformed manifest reports what is
+        # malformed rather than reporting that it is unapproved.
+        try:
+            approved.approve(manifest, hashlib.sha256(text.encode("utf-8")).hexdigest())
+        except PolicyError as exc:
+            raise ProviderPolicyError(f"{name}: {exc}") from exc
 
         # capabilities are meaningful, not free text
         unknown = sorted(set(manifest["capabilities"]) - VALID_CAPABILITIES)
@@ -218,7 +250,15 @@ def validate_provider_payload(paths, mission_source, *, read=None):
         raise ProviderPolicyError(
             "No shipped provider performs: " + ", ".join(missing))
 
-    return {"providers": sorted(seen), "checked": True}
+    # -- 6. the policy must not approve a provider that does not ship, which
+    #       would be a stale entry nobody noticed removing.
+    orphaned = sorted(set(approved.ids()) - set(seen))
+    if orphaned:
+        raise ProviderPolicyError(
+            "approved-provider policy approves providers that do not ship: "
+            + ", ".join(orphaned))
+
+    return {"providers": sorted(seen), "approved": approved.ids(), "checked": True}
 
 
 __all__ = ["validate_provider_payload", "ProviderPolicyError", "REMOVED_AI_PATH"]

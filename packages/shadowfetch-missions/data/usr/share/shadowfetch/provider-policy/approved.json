@@ -1,0 +1,38 @@
+{
+  "providers": {
+    "codex": {
+      "approved_note": "Reviewed as part of the Shadowfetch release.",
+      "capabilities": [
+        "code_change",
+        "sourced_report"
+      ],
+      "credential_ids": [
+        "CODEX_API_KEY"
+      ],
+      "egress_allowlist": [
+        "api.openai.com",
+        "chatgpt.com",
+        "auth.openai.com"
+      ],
+      "interface_version": 1,
+      "manifest_sha256": "9508a119bea46a32be987edc1ad8374bd6d829fe37ffc94205d9b827a7a032d0",
+      "network_policy": "allowlist",
+      "package": "shadowfetch-missions",
+      "trust": "distro-managed"
+    },
+    "offline-media": {
+      "approved_note": "Reviewed as part of the Shadowfetch release.",
+      "capabilities": [
+        "media_export"
+      ],
+      "credential_ids": [],
+      "egress_allowlist": [],
+      "interface_version": 1,
+      "manifest_sha256": "c6730894f10b2dd788c73bf1a88ce7cd9d1622922c04bfd16980311daabc9c2e",
+      "network_policy": "none",
+      "package": "shadowfetch-missions",
+      "trust": "distro-managed"
+    }
+  },
+  "schema_version": 1
+}

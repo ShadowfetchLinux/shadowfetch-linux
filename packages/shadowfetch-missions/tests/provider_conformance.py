@@ -40,6 +40,7 @@ import ast
 import atexit
 import contextlib
 import dataclasses
+import json
 import hashlib
 import io
 import os
@@ -120,6 +121,51 @@ def manifest_root(*manifests: Path) -> Path:
     for manifest in manifests:
         _link(Path(manifest), root / Path(manifest).name)
     return root
+
+
+def policy_root_for(manifests_dir: Path) -> Path:
+    """Seal an approved-provider policy over a fixture manifest directory.
+
+    The registry refuses to activate anything without a policy, which is the
+    point. A fixture therefore needs one too. Sealing it here rather than
+    bypassing the check means every conformance registry goes through the real
+    approval path, and a fixture that is meant to fail for a MANIFEST reason
+    still fails for that reason instead of collapsing into "unapproved".
+    """
+    import hashlib
+    root = _tempdir("sf-conformance-policy-")
+    providers = {}
+    for path in sorted(Path(manifests_dir).glob("*.json")):
+        if path.name == SCHEMA_NAME:
+            continue
+        try:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            continue                      # a deliberately unparseable fixture
+        provider_id = manifest.get("id")
+        if not isinstance(provider_id, str) or not provider_id:
+            continue
+        providers[provider_id] = {
+            "package": manifest.get("package"),
+            "interface_version": manifest.get("interface_version"),
+            "capabilities": manifest.get("capabilities"),
+            "credential_ids": manifest.get("credential_ids"),
+            "network_policy": manifest.get("network_policy"),
+            "egress_allowlist": manifest.get("egress_allowlist"),
+            "manifest_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "trust": "developer",
+            "approved_note": "conformance fixture",
+        }
+    (root / "approved.json").write_text(
+        json.dumps({"schema_version": 1, "providers": providers}, indent=2) + "\n",
+        encoding="utf-8")
+    return root
+
+
+def fixture_registry(manifests_dir: Path, modules_dir: Path):
+    """A ProviderRegistry over a fixture root, with a sealed fixture policy."""
+    return ProviderRegistry(root=manifests_dir, module_root=modules_dir,
+                            policy_root=policy_root_for(manifests_dir))
 
 
 def module_root(*modules: Path) -> Path:

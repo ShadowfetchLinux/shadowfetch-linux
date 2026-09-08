@@ -21,6 +21,7 @@ process is used anywhere in this file.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import signal
@@ -39,7 +40,7 @@ from provider_conformance import (
     conformance_class, failed_method_names, manifest_root, module_root, path_resolution_hits,
     protected_digests, run_conformance, shipped_adapter_files, shipped_manifest_files,
     stream,
-)
+    fixture_registry, policy_root_for)
 
 sys.path.insert(0, str(REPO_ROOT / "tools/providers"))
 import validate_manifest  # noqa: E402  the release gate, imported not edited
@@ -49,6 +50,7 @@ import sf_provider_codex  # noqa: E402
 import sf_provider_offline_media  # noqa: E402
 
 MANIFEST_DIR = validate_manifest.MANIFEST_DIR
+POLICY_PATH = validate_manifest.POLICY_PATH
 ADAPTER_DIR = validate_manifest.ADAPTER_DIR
 SHIPPED_DATA = REPO_ROOT / "packages/shadowfetch-missions/data"
 
@@ -59,20 +61,19 @@ SHIPPED_DATA = REPO_ROOT / "packages/shadowfetch-missions/data"
 FIXTURE_ADAPTER_FILES = sorted(FIXTURE_ADAPTERS.glob("sf_provider_*.py"))
 ECHO_MANIFEST = FIXTURE_MANIFESTS / "conformance-echo.json"
 
-SHIPPED_REGISTRY = ProviderRegistry(root=SHIPPED_MANIFESTS, module_root=MISSION_MODULES)
+SHIPPED_REGISTRY = fixture_registry(SHIPPED_MANIFESTS, MISSION_MODULES)
 
 COMBINED_MANIFEST_ROOT = manifest_root(*shipped_manifest_files(), ECHO_MANIFEST)
 COMBINED_MODULE_ROOT = module_root(*shipped_adapter_files(), *FIXTURE_ADAPTER_FILES)
-COMBINED_REGISTRY = ProviderRegistry(root=COMBINED_MANIFEST_ROOT,
-                                     module_root=COMBINED_MODULE_ROOT)
+COMBINED_REGISTRY = fixture_registry(COMBINED_MANIFEST_ROOT, COMBINED_MODULE_ROOT)
 
 FIXTURE_MODULE_ROOT = module_root(*FIXTURE_ADAPTER_FILES)
 BROKEN_MANIFEST_ROOT = manifest_root(*sorted(FIXTURE_BROKEN.glob("*.json")))
-BROKEN_REGISTRY = ProviderRegistry(root=BROKEN_MANIFEST_ROOT, module_root=FIXTURE_MODULE_ROOT)
+BROKEN_REGISTRY = fixture_registry(BROKEN_MANIFEST_ROOT, FIXTURE_MODULE_ROOT)
 
 # A registry whose adapter directory contains an orphan module no manifest names.
-ECHO_ONLY_REGISTRY = ProviderRegistry(root=manifest_root(ECHO_MANIFEST),
-                                      module_root=FIXTURE_MODULE_ROOT)
+_ECHO_ONLY_ROOT = manifest_root(ECHO_MANIFEST)
+ECHO_ONLY_REGISTRY = fixture_registry(_ECHO_ONLY_ROOT, FIXTURE_MODULE_ROOT)
 
 _SCRATCH = tempfile.TemporaryDirectory(prefix="sf-conformance-bin-")
 FAKE_CODEX = Path(_SCRATCH.name) / "codex"
@@ -406,8 +407,11 @@ class RegistryTests(unittest.TestCase):
             ECHO_ONLY_REGISTRY.get("conformance-orphan")
 
     def test_a_missing_manifest_directory_fails_closed(self):
+        # A real policy, so this fails for the missing DIRECTORY rather than
+        # for the missing approval -- the test is about the former.
         registry = ProviderRegistry(root=Path("/nonexistent/providers"),
-                                    module_root=MISSION_MODULES)
+                                    module_root=MISSION_MODULES,
+                                    policy_root=policy_root_for(SHIPPED_MANIFESTS))
         self.assertEqual(registry.ids(), [])
         self.assertEqual(registry.list(), [])
         self.assertTrue(registry.errors)
@@ -680,8 +684,26 @@ class ReleaseGateTests(unittest.TestCase):
         gate_before = (REPO_ROOT / "tools/providers/validate_manifest.py").read_bytes()
         manifest_rel = f"{MANIFEST_DIR}/conformance-echo.json"
         adapter_rel = f"{ADAPTER_DIR}/sf_provider_conformance_echo.py"
+        manifest_text = ECHO_MANIFEST.read_text(encoding="utf-8")
+        echo = json.loads(manifest_text)
+        # Three pieces of DATA: a manifest, an adapter, and an approval entry.
+        # The approval is the Phase 2.5 addition -- a provider nobody approved
+        # is not a provider -- and it is still data. No gate source changes.
+        approved = json.loads((SHIPPED_DATA / POLICY_PATH).read_text(encoding="utf-8"))
+        approved["providers"][echo["id"]] = {
+            "package": echo["package"],
+            "interface_version": echo["interface_version"],
+            "capabilities": echo["capabilities"],
+            "credential_ids": echo["credential_ids"],
+            "network_policy": echo["network_policy"],
+            "egress_allowlist": echo["egress_allowlist"],
+            "manifest_sha256":
+                hashlib.sha256(manifest_text.encode("utf-8")).hexdigest(),
+            "trust": "developer",
+        }
         extra = {
-            manifest_rel: ECHO_MANIFEST.read_text(encoding="utf-8"),
+            POLICY_PATH: json.dumps(approved, indent=2),
+            manifest_rel: manifest_text,
             adapter_rel: (FIXTURE_ADAPTERS / "sf_provider_conformance_echo.py")
                          .read_text(encoding="utf-8"),
         }
@@ -744,8 +766,7 @@ class ThirdProviderProofTests(unittest.TestCase):
 
     def test_the_third_provider_is_discovered_without_touching_protected_files(self):
         before = protected_digests()
-        registry = ProviderRegistry(root=COMBINED_MANIFEST_ROOT,
-                                    module_root=COMBINED_MODULE_ROOT)
+        registry = fixture_registry(COMBINED_MANIFEST_ROOT, COMBINED_MODULE_ROOT)
         self.assertEqual(registry.errors, [])
         self.assertIn("conformance-echo", registry.ids())
         provider = registry.get("conformance-echo")
@@ -779,8 +800,8 @@ class ThirdProviderProofTests(unittest.TestCase):
 
     def test_the_third_provider_is_discovered_purely_from_its_manifest(self):
         """Remove the manifest and the adapter is just a file again."""
-        without = ProviderRegistry(root=manifest_root(*shipped_manifest_files()),
-                                   module_root=COMBINED_MODULE_ROOT)
+        _root = manifest_root(*shipped_manifest_files())
+        without = fixture_registry(_root, COMBINED_MODULE_ROOT)
         self.assertEqual(without.ids(), ["codex", "offline-media"])
         self.assertIn("sf_provider_conformance_echo.py",
                       {p.name for p in Path(COMBINED_MODULE_ROOT).iterdir()})
