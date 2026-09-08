@@ -43,7 +43,15 @@ PACKAGES := \
 REPO_KEY_ID ?= 8F13CE1535EE1F4A2916A1F73C5C900B7BE80CA1
 # Generate an apt Valid-Until field automatically so clients do not break on
 # stale metadata after publication. Reprepro accepts durations such as 14d.
-REPO_VALID_FOR ?= 14d
+#
+# This was 14d, which is only safe for a repository that is republished on a
+# schedule. Nothing republishes this one, so every installed machine lost
+# `apt update` a fortnight after each release -- the index published with
+# 4.0.0 on 2026-09-06 was already down to twelve days when this was found.
+# A longer window trades a little rollback-attack protection for a
+# repository that stays usable between releases; shorten it again only
+# alongside an automated `make refresh-index` job.
+REPO_VALID_FOR ?= 180d
 # Publication gate minimum remaining Valid-Until lifetime: 24 hours.
 REPO_MIN_VALID_FOR_SECONDS ?= 86400
 # `sudo make iso` keeps SUDO_USER but changes HOME to /root. Point GnuPG at
@@ -83,7 +91,7 @@ R2_REGION   ?= auto
 LINUX_HOST ?= shadowfetch-linux
 LINUX_PATH ?= ~/projects/shadowfetch-4.0.0
 
-.PHONY: all help test source-gate package-gate iso-gate acceptance-audit deps packages repo iso sign pre-release-check publish qemu clean distclean \
+.PHONY: all help test source-gate package-gate iso-gate acceptance-audit deps packages repo refresh-index check-index iso sign pre-release-check publish qemu clean distclean \
         sync-from-linux deploy-worker ship stamp-version
 
 all: iso
@@ -98,6 +106,8 @@ help:
 	@echo "  make acceptance-audit Validate the current release manifest and pending evidence"
 	@echo "  make packages   Build all .deb packages"
 	@echo "  make repo       Build local APT repository"
+	@echo "  make refresh-index Re-sign the APT indices in place (no rebuild)"
+	@echo "  make check-index Fail if the APT index is expired or expiring"
 	@echo "  make iso        Build the bootable ISO (requires sudo)"
 	@echo "  make qemu       Boot ISO in QEMU for testing"
 	@echo "  make clean      Clean live-build artifacts"
@@ -233,6 +243,44 @@ repo: packages
 	@$(GPG) --armor --export $(REPO_KEY_ID) > $(REPO_DIR)/shadowfetch.gpg.asc
 	@echo ">>> Repo built at $(REPO_DIR). Contents:"
 	@$(REPREPRO) -b $(REPO_DIR) list $(CODENAME)
+
+# Re-sign the repository indices in place: same pool, same packages, fresh
+# Date/Valid-Until. This is what to run when the published metadata is
+# approaching expiry -- it rebuilds no package and no ISO. Publish the
+# resulting dists/ afterwards.
+refresh-index:
+	@test -d $(REPO_DIR)/db || { echo "No repository database at $(REPO_DIR). Run 'make repo' first." >&2; exit 1; }
+	@test -d $(REPO_DIR)/pool || { echo "No pool at $(REPO_DIR)/pool; refusing to export an empty repository." >&2; exit 1; }
+	@before=$$($(REPREPRO) -b $(REPO_DIR) list $(CODENAME) | sort) ; \
+	printf '%s\n' \
+		'Origin: Shadowfetch' \
+		'Label: Shadowfetch' \
+		'Codename: $(CODENAME)' \
+		'Architectures: amd64 source' \
+		'Components: main' \
+		'Description: Shadowfetch Linux package repository' \
+		'ValidFor: $(REPO_VALID_FOR)' \
+		'DebIndices: Packages Release . .gz' \
+		'DscIndices: Sources Release . .gz' \
+		'SignWith: $(REPO_KEY_ID)' \
+		> $(REPO_DIR)/conf/distributions ; \
+	$(REPREPRO) -b $(REPO_DIR) export $(CODENAME) ; \
+	after=$$($(REPREPRO) -b $(REPO_DIR) list $(CODENAME) | sort) ; \
+	[ "$$before" = "$$after" ] || { echo 'Package list changed during a metadata refresh; refusing.' >&2; exit 1; }
+	@$(GPG) --armor --export $(REPO_KEY_ID) > $(REPO_DIR)/shadowfetch.gpg.asc
+	@$(MAKE) --no-print-directory check-index
+	@echo ">>> Indices re-signed in $(REPO_DIR)/dists. Publish dists/ (and shadowfetch.gpg.asc) to make it live."
+
+# Fail if the local index is already expired or expires too soon. Runs on
+# its own so it can be used as a monitoring check.
+check-index:
+	@python3 -c 'import email.utils, sys, time; \
+	  path = "$(REPO_DIR)/dists/$(CODENAME)/Release"; \
+	  head = dict(l.split(": ", 1) for l in open(path) if ": " in l and not l.startswith(" ")); \
+	  raw = head["Valid-Until"].strip(); \
+	  left = email.utils.mktime_tz(email.utils.parsedate_tz(raw)) - time.time(); \
+	  sys.stderr.write(">>> %s Valid-Until %s (%.1f days remaining)\n" % ("$(CODENAME)", raw, left / 86400.0)); \
+	  sys.exit(0 if left > $(REPO_MIN_VALID_FOR_SECONDS) else 1)'
 
 iso: repo
 # A release build starts without any prior image or verification sidecars. If
