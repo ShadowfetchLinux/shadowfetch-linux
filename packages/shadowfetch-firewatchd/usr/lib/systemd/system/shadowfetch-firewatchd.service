@@ -43,10 +43,16 @@ IPAddressDeny=any
 IPAddressAllow=127.0.0.0/8
 IPAddressAllow=::1/128
 
-# smartctl/nvme need raw device access (SMART passthrough is ioctl-based, so
-# the block devices need rw); NVML needs the nvidia char devices. Listing any
-# DeviceAllow implies DevicePolicy=closed for everything else.
-DeviceAllow=block-* rw
+# smartctl/nvme need raw device access; NVML needs the nvidia char devices.
+# Listing any DeviceAllow implies DevicePolicy=closed for everything else.
+#
+# Block devices are READ-only. The device cgroup is enforced at open(2):
+# 'r' admits O_RDONLY and refuses O_RDWR with EPERM. Both reporting paths
+# this daemon uses -- `smartctl --json=c -H -A` and `nvme smart-log` -- open
+# the node O_RDONLY and then issue their SMART/log-page ioctls on that
+# descriptor, which the cgroup does not gate. Nothing here writes a disk, so
+# 'w' only widened the blast radius of a compromised root daemon.
+DeviceAllow=block-* r
 DeviceAllow=char-nvme rw
 DeviceAllow=char-nvidia* rw
 

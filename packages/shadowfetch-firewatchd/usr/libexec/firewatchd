@@ -81,6 +81,17 @@ TOP_PSS_ROWS = 15       # PSS is read ONLY for the displayed top-N rows
 PUBLISHED_ROWS = 30
 MAX_PIDS_PER_ROW = 40
 
+# Cache ceilings. firewatchd runs as root for the uptime of the machine and
+# keys most of its caches on names that are per *process instance* --
+# app-<id>-<pid>.scope, session-<n>.scope, and the (pid, starttime) pairs
+# below -- so a plain dict grows for as long as the box stays up. Every
+# entry is reconstructible from /proc or the systemd manager, so an
+# eviction costs one recomputation and changes nothing that is published.
+UNIT_CACHE_MAX = 512         # unit -> (display name, icon)
+DESKTOP_CACHE_MAX = 512      # desktop-entry id -> (Name, Icon) | None
+UNIT_DESC_CACHE_MAX = 512    # systemd unit -> Description | None
+PID_CGROUP_CACHE_MAX = 8192  # (pid, starttime) -> unit | None
+
 EMA_TAU_S = 10.0        # 10 s CPU EMA (the ELI work term)
 HOT_ELI = 40.0
 INFERNO_ELI = 85.0
@@ -137,6 +148,55 @@ def read_file(path, cap=65536):
 
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
+
+
+class BoundedCache:
+    """A dict with a hard entry cap and least-recently-used eviction.
+
+    Drop-in for the plain dicts this daemon used to cache lookups in: ``in``,
+    ``[]``, ``.get()`` and ``len()`` behave identically. The difference is
+    that inserting past ``cap`` discards the least recently used entry
+    instead of growing, which is what a process that never exits needs.
+    """
+
+    __slots__ = ("_data", "_cap")
+
+    def __init__(self, cap):
+        if cap < 1:
+            raise ValueError("cache cap must be >= 1")
+        self._data = collections.OrderedDict()
+        self._cap = cap
+
+    @property
+    def cap(self):
+        return self._cap
+
+    def __len__(self):
+        return len(self._data)
+
+    def __contains__(self, key):
+        return key in self._data
+
+    def __getitem__(self, key):
+        value = self._data[key]
+        self._data.move_to_end(key)
+        return value
+
+    def get(self, key, default=None):
+        if key not in self._data:
+            return default
+        return self[key]
+
+    def __setitem__(self, key, value):
+        self._data[key] = value
+        self._data.move_to_end(key)
+        while len(self._data) > self._cap:
+            self._data.popitem(last=False)
+
+    def retain(self, live_keys):
+        """Drop every entry whose key is absent from ``live_keys``."""
+        for key in [k for k in self._data if k not in live_keys]:
+            del self._data[key]
 
 
 # ---- NVIDIA (bounded nvidia-smi CSV, available after driver setup) ----------
@@ -599,8 +659,8 @@ class Humanizer:
     The UI never sees raw cgroup paths (judge must-fix #1, folded)."""
 
     def __init__(self, systemd_desc_lookup=None):
-        self._cache = {}
-        self._desktop_cache = {}
+        self._cache = BoundedCache(UNIT_CACHE_MAX)
+        self._desktop_cache = BoundedCache(DESKTOP_CACHE_MAX)
         self._systemd_desc = systemd_desc_lookup  # callable(unit) -> str|None
 
     def _desktop_entry(self, entry_id):
@@ -715,7 +775,10 @@ class HeatMap:
         self.humanizer = humanizer
         self._prev_ticks = {}     # (pid, starttime) -> proc ticks
         self._prev_mono = None
-        self._cgroup_cache = {}   # (pid, starttime) -> unit|None
+        # Pruned every sweep (below) AND hard-capped: the prune only runs
+        # when a sweep completes, so the cap is what bounds a daemon whose
+        # sweep is failing or on a box forking faster than it sweeps.
+        self._cgroup_cache = BoundedCache(PID_CGROUP_CACHE_MAX)
         self._pss_cache = {}      # unit-key -> pss bytes
         self._vram_map = {}       # pid -> bytes (nvidia-smi CSV)
         self._last_slow = 0.0
@@ -826,8 +889,7 @@ class HeatMap:
 
         self._prev_ticks = new_ticks
         # prune dead pids from the cgroup cache
-        self._cgroup_cache = {k: v for k, v in self._cgroup_cache.items()
-                              if k in new_ticks}
+        self._cgroup_cache.retain(new_ticks)
 
         ordered = sorted(groups.values(),
                          key=lambda g: g["rss_bytes"], reverse=True)
@@ -1061,6 +1123,65 @@ def run_once():
     return 0
 
 
+# ---- systemd unit lookups ---------------------------------------------------
+
+SYSTEMD_UNIT_IFACE = "org.freedesktop.systemd1.Unit"
+NO_SUCH_UNIT_ERROR = "org.freedesktop.systemd1.NoSuchUnit"
+
+
+class SystemdUnits:
+    """Read-only systemd unit lookups with a bounded Description cache.
+
+    Manager.LoadUnit is not a lookup: it makes PID 1 load the named unit into
+    the manager and keep it there. This daemon asks about every unit name it
+    ever sees in a cgroup path -- including per-instance app-<id>-<pid>.scope
+    names that are gone seconds later -- so using it meant a strictly
+    read-only telemetry daemon was growing init's unit table. Manager.GetUnit
+    answers for units that are already loaded and raises NoSuchUnit
+    otherwise, which is exactly the "nothing to report" case: loading a
+    never-loaded unit only ever produced a stub whose Description equals its
+    own name, and Humanizer.resolve already discards that.
+    """
+
+    def __init__(self, manager, properties_for_path, cap=UNIT_DESC_CACHE_MAX):
+        self._manager = manager
+        self._properties_for_path = properties_for_path
+        self._desc_cache = BoundedCache(cap)
+
+    def object_path(self, unit):
+        """Object path of an already-loaded unit, or None if it is not loaded."""
+        try:
+            return self._manager.GetUnit(unit)
+        except Exception as exc:
+            get_dbus_name = getattr(exc, "get_dbus_name", None)
+            if callable(get_dbus_name) and get_dbus_name() == NO_SUCH_UNIT_ERROR:
+                return None
+            raise
+
+    def _unit_property(self, unit, name):
+        path = self.object_path(unit)
+        if path is None:
+            return None
+        props = self._properties_for_path(path)
+        return str(props.Get(SYSTEMD_UNIT_IFACE, name))
+
+    def description(self, unit):
+        if unit in self._desc_cache:
+            return self._desc_cache[unit]
+        try:
+            desc = self._unit_property(unit, "Description")
+        except Exception:
+            desc = None
+        self._desc_cache[unit] = desc
+        return desc
+
+    def is_active(self, unit):
+        try:
+            return self._unit_property(unit, "ActiveState") == "active"
+        except Exception:
+            return False
+
+
 # ---- the D-Bus service ------------------------------------------------------
 
 def main():
@@ -1083,35 +1204,16 @@ def main():
     systemd = bus.get_object("org.freedesktop.systemd1",
                              "/org/freedesktop/systemd1")
     systemd_mgr = dbus.Interface(systemd, "org.freedesktop.systemd1.Manager")
-    _desc_cache = {}
 
-    def systemd_description(unit):
-        if unit in _desc_cache:
-            return _desc_cache[unit]
-        desc = None
-        try:
-            path = systemd_mgr.LoadUnit(unit)
-            obj = bus.get_object("org.freedesktop.systemd1", path)
-            props = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
-            desc = str(props.Get("org.freedesktop.systemd1.Unit",
-                                 "Description"))
-        except Exception:
-            desc = None
-        _desc_cache[unit] = desc
-        return desc
+    def properties_for_path(path):
+        obj = bus.get_object("org.freedesktop.systemd1", path)
+        return dbus.Interface(obj, "org.freedesktop.DBus.Properties")
 
-    def ember_armed():
-        try:
-            path = systemd_mgr.LoadUnit("shadowfetch-ember.service")
-            obj = bus.get_object("org.freedesktop.systemd1", path)
-            props = dbus.Interface(obj, "org.freedesktop.DBus.Properties")
-            return str(props.Get("org.freedesktop.systemd1.Unit",
-                                 "ActiveState")) == "active"
-        except Exception:
-            return False
+    units = SystemdUnits(systemd_mgr, properties_for_path)
 
-    collector = Collector(systemd_desc_lookup=systemd_description,
-                          armed_lookup=ember_armed)
+    collector = Collector(
+        systemd_desc_lookup=units.description,
+        armed_lookup=lambda: units.is_active("shadowfetch-ember.service"))
 
     class FirewatchService(dbus.service.Object):
         def __init__(self):
