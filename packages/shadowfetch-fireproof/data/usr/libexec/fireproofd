@@ -79,6 +79,9 @@ IFACE = "org.shadowfetch.Fireproof1"
 ACTION_UPDATE = "org.shadowfetch.fireproof.update"
 
 STATE_DIR = "/var/lib/shadowfetch"
+# Analyze is unauthenticated by design (the tray badge needs it), so the
+# work it triggers has to be bounded rather than gated. W-21.
+ANALYZE_CACHE_SECONDS = 30
 STATE_FILE = os.path.join(STATE_DIR, "fireproof-state.json")
 PENDING_FILE = os.path.join(STATE_DIR, "fireproof-pending")
 LOCK_FRONTEND = "/var/lib/dpkg/lock-frontend"
@@ -733,6 +736,12 @@ class Fireproof(dbus.service.Object):
         self._bus = bus
         self._loop = loop
         self._lock = threading.Lock()      # one operation at a time
+        self._verify_lock = threading.Lock()   # one verify battery at a time
+        self._last_verify = None           # last completed battery, for Inspect()
+        self._analyze_guard = threading.Lock()
+        self._analyze_running = False
+        self._analyze_waiters = []
+        self._analysis_at = 0.0            # monotonic stamp of self._analysis
         self._phase = "idle"
         self._state = load_state()
         self._analysis = None
@@ -844,16 +853,45 @@ class Fireproof(dbus.service.Object):
     @dbus.service.method(IFACE, in_signature="", out_signature="s",
                          async_callbacks=("reply", "error"))
     def Analyze(self, reply, error):
+        """Side-effect free, but not free: build_analysis opens the apt
+        cache. The method is deliberately unauthenticated so the tray badge
+        works without a password, which means any local process can call it
+        in a loop. Previously each call spawned another cache-opening thread
+        inside a root daemon with no bound. Now a fresh result is served
+        from cache, and concurrent callers coalesce onto a single run."""
+        with self._analyze_guard:
+            fresh = (self._analysis is not None and
+                     time.monotonic() - self._analysis_at < ANALYZE_CACHE_SECONDS)
+            if fresh:
+                GLib.idle_add(reply, json.dumps(self._analysis))
+                return
+            self._analyze_waiters.append((reply, error))
+            if self._analyze_running:
+                return          # join the run already in flight
+            self._analyze_running = True
+
         def work():
             try:
                 analysis = build_analysis(self._state)
                 self._analysis = analysis
+                self._analysis_at = time.monotonic()
                 GLib.idle_add(self._notify_badge)
-                GLib.idle_add(reply, json.dumps(analysis))
+                self._drain_analyze(json.dumps(analysis), None)
             except Exception as e:  # cache open can fail on broken lists
                 log("analyze failed: %s" % e)
-                GLib.idle_add(error, AnalyzeFailedError(str(e)))
+                self._drain_analyze(None, AnalyzeFailedError(str(e)))
         threading.Thread(target=work, name="analyze", daemon=True).start()
+
+    def _drain_analyze(self, payload, failure):
+        """Answer every caller that coalesced onto the finished run."""
+        with self._analyze_guard:
+            waiters, self._analyze_waiters = self._analyze_waiters, []
+            self._analyze_running = False
+        for reply, error in waiters:
+            if failure is None:
+                GLib.idle_add(reply, payload)
+            else:
+                GLib.idle_add(error, failure)
 
     @dbus.service.method(IFACE, in_signature="", out_signature="s")
     def GetState(self):
@@ -1118,15 +1156,43 @@ class Fireproof(dbus.service.Object):
     # -- verify + rollback bookkeeping ------------------------------------
 
     @dbus.service.method(IFACE, in_signature="", out_signature="s",
-                         async_callbacks=("reply", "error"))
-    def Verify(self, reply, error):
+                         async_callbacks=("reply", "error"),
+                         sender_keyword="sender")
+    def Verify(self, reply, error, sender=None):
+        """Run the post-update verify battery.
+
+        Polkit-gated. The battery executes `dpkg --audit` and
+        `apt-get -s -f install` as root on demand, so while it mutates
+        nothing it is unbounded root work that any local process could
+        previously drive on the system bus, and it hands the caller a
+        detailed report of the machine's package state. Inspect() returns
+        the last recorded result and executes nothing."""
+        try:
+            self._require_auth(sender)
+        except NotAuthorizedError as e:
+            error(e)
+            return
+        if not self._verify_lock.acquire(blocking=False):
+            error(BusyError("a verify battery is already running"))
+            return
         txn = self._state.get("last_txn") or {}
         def work():
             try:
-                GLib.idle_add(reply, json.dumps(run_verify(txn)))
+                result = run_verify(txn)
+                self._last_verify = {"recorded": now_iso(), "result": result}
+                GLib.idle_add(reply, json.dumps(result))
             except Exception as e:
                 GLib.idle_add(error, VerifyFailedError(str(e)))
+            finally:
+                self._verify_lock.release()
         threading.Thread(target=work, name="verify", daemon=True).start()
+
+    @dbus.service.method(IFACE, in_signature="", out_signature="s")
+    def Inspect(self):
+        """The last recorded verify battery, or null. Executes nothing, so
+        it needs no authorization -- this is the unprivileged read path
+        that Verify used to provide by accident."""
+        return json.dumps(self._last_verify)
 
     @dbus.service.method(IFACE, in_signature="", out_signature="s")
     def RollbackTarget(self):
