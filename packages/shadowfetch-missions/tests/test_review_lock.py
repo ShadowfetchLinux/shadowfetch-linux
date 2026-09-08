@@ -19,6 +19,8 @@ import tempfile
 import threading
 import time
 import unittest
+
+import mission_states
 from unittest.mock import patch
 
 SOURCE = Path(os.environ.get("SHADOWFETCH_REVIEW_TEST_SOURCE", str(
@@ -168,7 +170,7 @@ raise SystemExit(m.worker(store, once=True))
                     review = pool.submit(m.review, self.store, self.mid, "accept")
                     self.assertTrue(blocked.wait(2))
                     self.assertFalse(concurrent.futures.wait([review], timeout=.1)[0])
-                    self.store.update(self.mid, state="completed")
+                    mission_states.reach(self.store, self.mid, "completed")
                     before_events = self.store.events(self.mid)
                 with self.assertRaisesRegex(m.MissionError, "Only successful missions awaiting review"):
                     review.result(timeout=5)

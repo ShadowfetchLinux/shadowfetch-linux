@@ -280,7 +280,11 @@ class ChainIsTamperEvident(MigrationHarness):
         self.assertIn("does not match its hash", self.broken())
 
     def test_a_corrupted_prev_hash_is_detected(self):
-        self.raw_write("UPDATE events SET prev_hash='0'||substr(prev_hash,2) WHERE seq=4")
+        # 'x' is not a hex digit, so this always differs from the real value.
+        # The first version of this test used '0', which was a no-op whenever the
+        # hash already began with '0' -- a flake that passed roughly fifteen runs
+        # in sixteen and reported a corruption it had not made.
+        self.raw_write("UPDATE events SET prev_hash='x'||substr(prev_hash,2) WHERE seq=4")
         self.assertIn("does not match the previous row", self.broken())
 
     def test_rewriting_a_row_AND_its_hash_still_breaks_the_successor(self):

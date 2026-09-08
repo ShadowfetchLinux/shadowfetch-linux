@@ -33,6 +33,8 @@ import tempfile
 import threading
 import time
 import unittest
+
+import mission_states
 from pathlib import Path
 from unittest import mock
 
@@ -745,7 +747,7 @@ class _ExecutorHarness:
         self.mission = self.store.create(
             kind="report", workspace_value="probe", title="Local model probe",
             prompt="Summarize the launch", inputs=["facts.md"], network="allow")
-        self.store.update(self.mission["id"], state="running")
+        mission_states.reach(self.store, self.mission["id"], "running")
         self.executor = sfm.Executor(self.store, self.store.get(self.mission["id"]))
         self.provider = provider()
 

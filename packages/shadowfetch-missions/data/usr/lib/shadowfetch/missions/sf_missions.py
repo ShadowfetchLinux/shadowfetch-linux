@@ -31,8 +31,81 @@ import time
 import uuid
 
 VERSION = "4.0.0"
-ACTIVE = ("queued", "running")
-FINAL = ("completed", "undone")
+# ---------------------------------------------------------------- states ---
+# The seven 4.0.0 mission states, kept exactly as they are spelled on disk, in
+# the CLI and in the desktop. Phase 3 adds a machine, not a vocabulary: renaming
+# them would rewrite every existing row's meaning for no gain, and the brief
+# says not to rename gratuitously.
+class MissionState:
+    QUEUED = "queued"
+    RUNNING = "running"
+    WAITING_REVIEW = "waiting-review"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    UNDONE = "undone"
+
+
+MISSION_STATES = (MissionState.QUEUED, MissionState.RUNNING,
+                  MissionState.WAITING_REVIEW, MissionState.COMPLETED,
+                  MissionState.FAILED, MissionState.CANCELLED, MissionState.UNDONE)
+
+ACTIVE = (MissionState.QUEUED, MissionState.RUNNING)
+# Terminal in the sense that execution will not resume from here on its own.
+# COMPLETED and UNDONE are the reviewed ends; FAILED and CANCELLED can be
+# retried, which is a NEW transition and not a resumption.
+FINAL = (MissionState.COMPLETED, MissionState.UNDONE)
+
+# The transition table. Every edge names the reason it exists, and that reason
+# is what a refusal quotes back -- a person who is told "a completed mission
+# cannot run again" can act on it; "invalid state" cannot be acted on.
+#
+# (from, to) -> (event name, reason the edge exists)
+MISSION_TRANSITIONS = {
+    (None, MissionState.QUEUED):
+        ("queued", "a new mission enters the queue"),
+    (MissionState.QUEUED, MissionState.RUNNING):
+        ("running", "the worker claimed a queued mission"),
+    (MissionState.QUEUED, MissionState.CANCELLED):
+        ("cancelled", "a queued mission was cancelled before it started"),
+    (MissionState.RUNNING, MissionState.WAITING_REVIEW):
+        ("waiting-review", "execution finished and its work awaits a human decision"),
+    (MissionState.RUNNING, MissionState.FAILED):
+        ("failed", "execution raised, or was interrupted with no owner"),
+    (MissionState.RUNNING, MissionState.CANCELLED):
+        ("cancelled", "a running mission honoured a cancellation request"),
+    (MissionState.WAITING_REVIEW, MissionState.COMPLETED):
+        ("completed", "a human accepted the work"),
+    (MissionState.WAITING_REVIEW, MissionState.UNDONE):
+        ("undone", "a human rejected the work and the workspace was restored"),
+    (MissionState.FAILED, MissionState.UNDONE):
+        ("undone", "a human restored the workspace after a failure"),
+    (MissionState.CANCELLED, MissionState.UNDONE):
+        ("undone", "a human restored the workspace after a cancellation"),
+    (MissionState.COMPLETED, MissionState.UNDONE):
+        ("undone", "a human changed their mind about accepted work"),
+    (MissionState.FAILED, MissionState.QUEUED):
+        ("retry-queued", "a human retried a failed mission"),
+    (MissionState.CANCELLED, MissionState.QUEUED):
+        ("retry-queued", "a human retried a cancelled mission"),
+}
+
+
+def transition_allowed(current, target):
+    """(allowed, event, reason). The single answer to FROM/TO/ALLOWED/REASON."""
+    edge = MISSION_TRANSITIONS.get((current, target))
+    if edge is not None:
+        return True, edge[0], edge[1]
+    if target not in MISSION_STATES:
+        return False, None, (
+            f"{target!r} is not a mission state. Known states: "
+            + ", ".join(MISSION_STATES))
+    if current == target:
+        return False, None, f"the mission is already {target}"
+    return False, None, (
+        f"a {current} mission cannot become {target}. From {current} a mission may "
+        "become: " + (", ".join(sorted(
+            to for (frm, to) in MISSION_TRANSITIONS if frm == current)) or "nothing"))
 MAX_TEXT = 200_000
 MAX_OUTPUT = 2_000_000
 # Written between the retained head and the retained tail when a provider
@@ -57,6 +130,11 @@ CHANGE_ADDED, CHANGE_REMOVED, CHANGE_MODIFIED = "added", "removed", "modified"
 
 class MissionError(Exception):
     pass
+
+class TransitionError(MissionError):
+    """A refused state change. Its own class so callers can tell a rejected
+    transition from a storage failure, and so nothing catches it by accident."""
+
 
 class Cancelled(MissionError):
     pass
@@ -687,12 +765,73 @@ class Store:
         return report
 
     def update(self, mid, **fields):
-        allowed = {"state", "attempt", "error", "checkpoint", "artifacts", "receipt", "cancel_requested"}
+        """Change mission fields that are NOT the state.
+
+        state was removed from this allow-list in Phase 3. It used to be here,
+        and Store.update(mid, state="banana") was accepted and persisted --
+        every guard lived in a high-level verb that a caller could simply not
+        use. State changes go through transition(), which validates the edge
+        and writes the event in the same transaction.
+        """
+        allowed = {"attempt", "error", "checkpoint", "artifacts", "receipt",
+                   "cancel_requested", "approval_id"}
+        if "state" in fields:
+            raise TransitionError(
+                "Mission state cannot be set directly; use Store.transition(), "
+                "which validates the change and records it")
         if not fields.keys() <= allowed:
             raise MissionError("Invalid controller update")
         fields["updated_at"] = now()
         with self.db() as db:
             db.execute("UPDATE missions SET " + ",".join(k + "=?" for k in fields) + " WHERE id=?", [*fields.values(), mid])
+
+    def transition(self, mid, target, *, detail=None, actor=ACTOR_ORCHESTRATOR,
+                   expect=None, **fields):
+        """Move a mission to `target`, or refuse and change nothing.
+
+        One transaction covers the read of the current state, the validation,
+        the write, and the event. That matters in both directions: a state
+        change with no event would be invisible to the audit trail, and an
+        event describing a change that was rolled back would be a lie. The
+        baseline had exactly the first problem -- a forced undone -> queued
+        emitted nothing at all.
+
+        expect= is optimistic concurrency for callers that already read the
+        row: if the state moved underneath them, the transition is refused
+        rather than applied to a mission they were not looking at.
+
+        Extra keyword fields are written in the SAME transaction, so
+        `attempt`, `error` and `cancel_requested` cannot drift out of step with
+        the state they describe.
+        """
+        bad = set(fields) - {"attempt", "error", "checkpoint", "artifacts",
+                             "receipt", "cancel_requested", "approval_id"}
+        if bad:
+            raise MissionError("Invalid controller update")
+        at = now()
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT state FROM missions WHERE id=?", (mid,)).fetchone()
+            if row is None:
+                raise MissionError("Mission does not exist")
+            current = row["state"]
+            if expect is not None and current != expect:
+                raise TransitionError(
+                    f"This mission is {current}, not {expect}; it changed while you "
+                    "were looking at it")
+            allowed, event, reason = transition_allowed(current, target)
+            if not allowed:
+                raise TransitionError(f"Refused {current} -> {target}: {reason}")
+            assignments = dict(fields)
+            assignments["state"] = target
+            assignments["updated_at"] = at
+            db.execute(
+                "UPDATE missions SET " + ",".join(k + "=?" for k in assignments)
+                + " WHERE id=?", [*assignments.values(), mid])
+            self._append(db, mission=mid, event=event, actor=actor, at=at,
+                         detail=detail if detail is not None else reason)
+            result = db.execute("SELECT * FROM missions WHERE id=?", (mid,)).fetchone()
+        return self.unpack(result)
 
     def finish_execution(self, mid, state, error, **correlation):
         # Publish readiness with its final event only after the receipt exists.
@@ -701,7 +840,13 @@ class Store:
         detail = error or "Execution finished. Inspect artifacts and diff, then Accept or Undo"
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
-            self._append(db, mission=mid, event=state, detail=detail,
+            row = db.execute("SELECT state FROM missions WHERE id=?", (mid,)).fetchone()
+            if row is None:
+                raise MissionError("Mission does not exist")
+            allowed, event, reason = transition_allowed(row["state"], state)
+            if not allowed:
+                raise TransitionError(f"Refused {row['state']} -> {state}: {reason}")
+            self._append(db, mission=mid, event=event, detail=detail,
                          actor=ACTOR_ORCHESTRATOR, at=at, **correlation)
             db.execute("UPDATE missions SET state=?,error=?,updated_at=? WHERE id=?", (state, error, at, mid))
             row = db.execute("SELECT * FROM missions WHERE id=?", (mid,)).fetchone()
@@ -837,15 +982,30 @@ class Store:
             raise MissionError(acceptance.reason)
         timestamp = now()
         with self.db() as db:
-            db.execute("INSERT INTO missions(id,title,kind,capability,provider_id,state,workspace,prompt,config,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (mid, title.strip(), kind, capability, provider.id, "queued", str(ws), prompt, json.dumps(config), timestamp, timestamp))
-        self.event(mid, "queued", f"{capability} via {provider.id}; scope={ws}; network={network}")
+            db.execute("INSERT INTO missions(id,title,kind,capability,provider_id,state,workspace,prompt,config,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (mid, title.strip(), kind, capability, provider.id, MissionState.QUEUED, str(ws), prompt, json.dumps(config), timestamp, timestamp))
+        # Creation is the one edge with no prior state, so it inserts rather
+        # than transitions. The event NAME still comes from the table, so the
+        # vocabulary has exactly one definition.
+        created_event = MISSION_TRANSITIONS[(None, MissionState.QUEUED)][0]
+        self.event(mid, created_event, f"{capability} via {provider.id}; scope={ws}; network={network}",
+                   actor=ACTOR_USER)
         return self.get(mid)
 
     def cancel(self, mid):
         mission = self.get(mid)
         if mission["state"] not in ACTIVE:
             raise MissionError("Only queued or running missions can be cancelled")
-        self.update(mid, cancel_requested=1, **({"state": "cancelled"} if mission["state"] == "queued" else {}))
+        if mission["state"] == MissionState.QUEUED:
+            # A queued mission has started nothing, so cancelling it IS the
+            # terminal transition and it lands atomically with its event.
+            # transition() returns the updated row, which is what the CLI
+            # prints and the desktop reads.
+            return self.transition(mid, MissionState.CANCELLED, actor=ACTOR_USER,
+                                   expect=MissionState.QUEUED, cancel_requested=1,
+                                   detail="Cancelled before execution started")
+        # A running mission is asked, not told: the flag is what Executor.check()
+        # observes. The state moves only when execution actually stops.
+        self.update(mid, cancel_requested=1)
         self.event(mid, "cancel-requested", "Running process is terminated; workspace checkpoint remains available")
         return self.get(mid)
 
@@ -856,15 +1016,19 @@ class Store:
                 raise MissionError("Only failed or cancelled missions can be retried")
             if mission["attempt"] >= 3:
                 raise MissionError("Retry budget exhausted (three attempts); create a new reviewed mission")
-            self.update(mid, state="queued", error=None, cancel_requested=0)
-            self.event(mid, "retry-queued", "Explicit retry; original recovery checkpoint retained")
+            self.transition(mid, MissionState.QUEUED, actor=ACTOR_USER,
+                            expect=mission["state"], error=None, cancel_requested=0,
+                            detail="Explicit retry; original recovery checkpoint retained")
         return self.get(mid)
 
     def recover(self):
         # Caller owns execution lock, so no live mission process owns these rows.
         for mission in self.list(states=("running",)):
-            self.update(mission["id"], state="failed", error="Execution was interrupted. Inspect changes, then Retry or Undo; no automatic replay.")
-            self.event(mission["id"], "interrupted", "Worker restarted with no execution lock owner")
+            self.transition(mission["id"], MissionState.FAILED, actor=ACTOR_WORKER,
+                            expect=MissionState.RUNNING,
+                            error="Execution was interrupted. Inspect changes, then "
+                                  "Retry or Undo; no automatic replay.",
+                            detail="Worker restarted with no execution lock owner")
 
     def step(self, mid, name, result=None):
         with self.db() as db:
@@ -1516,8 +1680,9 @@ def run_mission(store, mid):
         # before another can mutate it, preserving a meaningful Undo boundary.
         if any(m["id"] != mid and m["workspace"] == mission["workspace"] for m in store.list(states=("waiting-review",))):
             raise MissionError("Review the previous mission for this workspace before running another")
-        store.update(mid, state="running", attempt=mission["attempt"] + 1, error=None)
-        store.event(mid, "running", "Exclusive execution slot acquired")
+        store.transition(mid, MissionState.RUNNING, actor=ACTOR_WORKER,
+                         expect=MissionState.QUEUED,
+                         attempt=mission["attempt"] + 1, error=None)
         executor = Executor(store, store.get(mid))
         state, error = "waiting-review", None
         try:
@@ -1546,7 +1711,9 @@ def review(store, mid, decision):
         if decision == "accept":
             if mission["state"] != "waiting-review":
                 raise MissionError("Only successful missions awaiting review can be accepted")
-            store.update(mid, state="completed")
+            store.transition(mid, MissionState.COMPLETED, actor=ACTOR_USER,
+                             expect=MissionState.WAITING_REVIEW,
+                             detail="Accepted by review")
         else:
             if not mission["checkpoint"]:
                 raise MissionError("This mission has no workspace checkpoint")
@@ -1565,8 +1732,15 @@ def review(store, mid, decision):
             if json.loads(index_path.read_text()) != recovery_index(ws):
                 raise MissionError("Workspace changed after this mission. Preserve your newer edits, then use shadowfetch-checkpoint for deliberate manual recovery")
             checkpoint_call("undo", ws, checkpoint=mission["checkpoint"])
-            store.update(mid, state="undone")
-        store.event(mid, "reviewed", decision)
+            store.transition(mid, MissionState.UNDONE, actor=ACTOR_USER,
+                             expect=mission["state"],
+                             detail="Undone by review; workspace restored from checkpoint")
+        # Kept as "reviewed" with the bare decision as its detail: that detail
+        # is a machine-readable value that consumers already read, and prose
+        # would have made it worse. This is not a duplicate of the state event
+        # -- "completed" is what the mission became, "reviewed" is what the
+        # person chose, and a mission can reach "undone" from four states.
+        store.event(mid, "reviewed", decision, actor=ACTOR_USER)
         return store.get(mid)
 
 

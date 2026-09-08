@@ -15,6 +15,8 @@ import tempfile
 import threading
 import time
 import unittest
+
+import mission_states
 from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parents[1] / "data/usr/lib/shadowfetch/missions/sf_missions.py"
@@ -108,7 +110,7 @@ class MissionTests(unittest.TestCase):
             m.review(self.store, first["id"], "undo")
     def test_recovery_never_replays_interrupted_work(self):
         mission = self.create()
-        self.store.update(mission["id"], state="running", attempt=1)
+        mission_states.reach(self.store, mission["id"], "running", attempt=1)
         with self.store.lock():
             self.store.recover()
         item = self.store.get(mission["id"])
@@ -118,7 +120,7 @@ class MissionTests(unittest.TestCase):
         self.assertEqual(self.store.get(item["id"])["state"], "queued")
     def test_retry_budget_is_bounded(self):
         mission = self.create()
-        self.store.update(mission["id"], state="failed", attempt=3)
+        mission_states.reach(self.store, mission["id"], "failed", attempt=3)
         with self.assertRaisesRegex(m.MissionError, "exhausted"):
             self.store.retry(mission["id"])
     def test_queued_cancellation_is_durable(self):
@@ -129,7 +131,7 @@ class MissionTests(unittest.TestCase):
             m.run_mission(self.store, mission["id"])
     def test_running_process_cancel_kills_child_group(self):
         mission = self.create()
-        self.store.update(mission["id"], state="running")
+        mission_states.reach(self.store, mission["id"], "running")
         executor = m.Executor(self.store, self.store.get(mission["id"]))
         marker = self.base / "should-not-exist"
         script = "import time,pathlib;time.sleep(3);pathlib.Path(" + repr(str(marker)) + ").write_text('bad')"
@@ -167,7 +169,9 @@ class MissionTests(unittest.TestCase):
         mission = self.create()
         with patch.object(m.Executor, "agent_turn", return_value="Friday. [S1:L1]"):
             result = m.run_mission(self.store, mission["id"])
-        self.store.update(mission["id"], state="failed")
+        # Stands in for "the report was published, then a later step failed" --
+        # running -> failed in the engine, unreachable from waiting-review here.
+        mission_states.fabricate(self.store, mission["id"], "failed")
         self.store.retry(mission["id"])
         with patch.object(m.Executor, "agent_turn", side_effect=AssertionError("must resume verified report")):
             result = m.run_mission(self.store, mission["id"])
@@ -179,7 +183,9 @@ class MissionTests(unittest.TestCase):
             first = m.run_mission(self.store, mission["id"])
         report_path = next(Path(path) for path in first["artifacts"] if path.endswith("report.md"))
         report_before = report_path.read_text()
-        self.store.update(mission["id"], state="failed")
+        # Stands in for "the report was published, then a later step failed" --
+        # running -> failed in the engine, unreachable from waiting-review here.
+        mission_states.fabricate(self.store, mission["id"], "failed")
         (self.ws / "facts.md").write_text("Updated launch is Saturday.\n")
         self.store.retry(mission["id"])
         with patch.object(m.Executor, "agent_turn", side_effect=AssertionError("must not replay inference")):
@@ -203,7 +209,10 @@ class MissionTests(unittest.TestCase):
         self.assertEqual(first["state"], "waiting-review")
         provenance = self.store.step(mission["id"], "report-provenance")
         for change_source in (False, True):
-            self.store.update(mission["id"], state="failed")
+            # Stands in for "the report was published, then a later step
+            # failed" -- running -> failed in the engine, unreachable from
+            # waiting-review here.
+            mission_states.fabricate(self.store, mission["id"], "failed")
             self.store.retry(mission["id"])
             if change_source:
                 (self.ws / "facts.md").write_text("A newer personal source edit.\n")
@@ -224,7 +233,9 @@ class MissionTests(unittest.TestCase):
         with patch.object(m.Executor, "agent_turn", return_value="Friday. [S1:L1]"):
             m.run_mission(self.store, mission["id"])
         self.store.step(mission["id"], "report-provenance", {})
-        self.store.update(mission["id"], state="failed")
+        # Stands in for "the report was published, then a later step failed" --
+        # running -> failed in the engine, unreachable from waiting-review here.
+        mission_states.fabricate(self.store, mission["id"], "failed")
         self.store.retry(mission["id"])
         with patch.object(m.Executor, "agent_turn", side_effect=AssertionError("no repeat inference")):
             result = m.run_mission(self.store, mission["id"])
