@@ -1026,6 +1026,11 @@ def main(argv=None):
     except (MissionError, ValueError, OSError) as exc:
         print(json.dumps({"error": clean(exc)}))
         return 1
+    except StopIteration as exc:
+        # An exhausted iterator must not escape as a traceback: the desktop client
+        # parses stdout as JSON and would only report an unusable response.
+        print(json.dumps({"error": clean("Mission records were incomplete while running this command; refresh Mission Control and try again" + (": " + str(exc) if str(exc) else ""))}))
+        return 1
 
 if __name__ == "__main__":
     raise SystemExit(main())

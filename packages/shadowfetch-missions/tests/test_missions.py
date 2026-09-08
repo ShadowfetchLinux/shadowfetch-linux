@@ -364,6 +364,14 @@ class MissionTests(unittest.TestCase):
                 m.review(self.store, mission["id"], "undo")
         self.assertEqual(self.store.get(mission["id"])["state"], "waiting-review")
 
+    def test_cli_reports_an_exhausted_iterator_as_json_not_a_traceback(self):
+        mission = self.create()
+        printed = []
+        with patch.object(m.Store, "get", side_effect=StopIteration()), patch("builtins.print", lambda *values, **kwargs: printed.append(" ".join(map(str, values)))):
+            code = m.main(["--json", "show", mission["id"]])
+        self.assertEqual(code, 1)
+        self.assertIn("Mission records were incomplete", json.loads(printed[-1])["error"])
+
     # W-16: the guard covers new validation files, measured against a pristine baseline.
     def test_code_refuses_newly_added_validation_files(self):
         (self.ws / "app.py").write_text("def add(a, b): return a - b\n")
