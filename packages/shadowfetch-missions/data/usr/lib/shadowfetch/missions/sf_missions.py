@@ -34,6 +34,11 @@ ACTIVE = ("queued", "running")
 FINAL = ("completed", "undone")
 MAX_TEXT = 200_000
 MAX_OUTPUT = 2_000_000
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from sf_providers import (LEGACY_KIND_CAPABILITY, CAPABILITY_LEGACY_KIND,
+                         CAPABILITIES, Capability, ProviderRegistry,
+                         ProviderError)
+
 MAX_FILES = 40
 REVIEW_LOCK_WAIT_SECONDS = 10
 LIST_PAGE_LIMIT = 1000
@@ -242,6 +247,21 @@ def difference(before, after):
     """Historical text rendering of a workspace change set; see git_change for structure."""
     return git_change(before, after).text
 
+SCHEMA_VERSION = 2
+"""Operational-state schema version, stored in PRAGMA user_version.
+
+v0/v1  the 4.0.0 shape: mission kind only, provider identity buried in the
+       JSON config blob as "runtime".
+v2     capability and provider_id are first-class columns. kind is KEPT and
+       still written, so a 4.0.0 reader sees exactly what it saw before and
+       nothing about an existing mission is reinterpreted."""
+
+# A legacy runtime name is not always a provider id: the offline media
+# runtime became the "offline-media" provider when it gained a manifest.
+LEGACY_RUNTIME_PROVIDER = {"codex": "codex", "offline": "offline-media"}
+LEGACY_PROVIDER_RUNTIME = {v: k for k, v in LEGACY_RUNTIME_PROVIDER.items()}
+
+
 class Store:
     def __init__(self, path=None):
         self.root = Path(path or os.environ.get("SHADOWFETCH_MISSIONS_STATE", str(Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "shadowfetch/missions"))).expanduser().resolve()
@@ -267,7 +287,60 @@ class Store:
                     PRIMARY KEY (mission, name));
                 CREATE INDEX IF NOT EXISTS missions_queue ON missions(state, created_at);
             """)
+            self.migrate(db)
         self.db_path.chmod(0o600)
+
+    def migrate(self, db):
+        """Bring an existing database forward. Runs inside the caller's
+        transaction, so a failure leaves the old shape intact.
+
+        Nothing is dropped, renamed or reinterpreted: v2 adds two columns and
+        fills them from data the row already carried. A mission written by
+        4.0.0 stays readable, listable, reviewable and undoable, and its
+        original kind and config survive untouched.
+        """
+        version = db.execute("PRAGMA user_version").fetchone()[0]
+        if version == SCHEMA_VERSION:
+            return
+        if version > SCHEMA_VERSION:
+            raise MissionError(
+                f"This mission database was written by a newer Shadowfetch "
+                f"(schema v{version}; this build understands v{SCHEMA_VERSION}). "
+                "Upgrade rather than risk reinterpreting its records.")
+        if version < 2:
+            columns = {row[1] for row in db.execute("PRAGMA table_info(missions)")}
+            if "capability" not in columns:
+                db.execute("ALTER TABLE missions ADD COLUMN capability TEXT")
+            if "provider_id" not in columns:
+                db.execute("ALTER TABLE missions ADD COLUMN provider_id TEXT")
+            migrated = 0
+            for mid, kind, raw in db.execute(
+                    "SELECT id, kind, config FROM missions "
+                    "WHERE capability IS NULL OR provider_id IS NULL").fetchall():
+                try:
+                    config = json.loads(raw) if raw else {}
+                except ValueError:
+                    config = {}
+                capability = LEGACY_KIND_CAPABILITY.get(kind)
+                runtime = config.get("runtime")
+                provider = LEGACY_RUNTIME_PROVIDER.get(runtime, runtime)
+                if capability is None or not provider:
+                    # An unrecognised legacy row is left with NULL columns
+                    # rather than guessed at. It still reads and lists; only
+                    # re-execution is refused, which is what 4.0.0 did too.
+                    continue
+                db.execute("UPDATE missions SET capability=?, provider_id=? WHERE id=?",
+                           (capability, provider, mid))
+                migrated += 1
+            db.execute("CREATE INDEX IF NOT EXISTS missions_capability "
+                       "ON missions(capability, provider_id)")
+            if migrated:
+                db.execute(
+                    "INSERT INTO events(mission,at,event,detail) VALUES(?,?,?,?)",
+                    ("*", now(), "schema-migrated",
+                     f"v{version} -> v2: derived capability and provider_id for "
+                     f"{migrated} existing mission(s); no record was altered otherwise"))
+        db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     @contextlib.contextmanager
     def db(self):
