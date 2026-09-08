@@ -1451,6 +1451,11 @@ class Store:
         mission = self.get(mid)
         if mission["state"] not in ACTIVE:
             raise MissionError("Only queued or running missions can be cancelled")
+        if mission["cancel_requested"]:
+            # Repeating a cancellation is not an error -- a person pressing Stop
+            # twice means the same thing once -- but it must not append a second
+            # request event, or the log implies two decisions.
+            return mission
         if mission["state"] == MissionState.QUEUED:
             # A queued mission has started nothing, so cancelling it IS the
             # terminal transition and it lands atomically with its event.
@@ -1480,11 +1485,24 @@ class Store:
     def recover(self):
         # Caller owns execution lock, so no live mission process owns these rows.
         for mission in self.list(states=("running",)):
-            self.transition(mission["id"], MissionState.FAILED, actor=ACTOR_WORKER,
-                            expect=MissionState.RUNNING,
-                            error="Execution was interrupted. Inspect changes, then "
-                                  "Retry or Undo; no automatic replay.",
-                            detail="Worker restarted with no execution lock owner")
+            # A mission the person had ALREADY asked to cancel did not
+            # "fail" -- it was cancelled and then the worker died before it
+            # could say so. Recording that as a failure invites a retry of work
+            # somebody had explicitly stopped.
+            if mission["cancel_requested"]:
+                self.transition(
+                    mission["id"], MissionState.CANCELLED, actor=ACTOR_WORKER,
+                    expect=MissionState.RUNNING,
+                    error="Cancelled; the worker stopped before it could record it. "
+                          "Inspect changes, then Retry or Undo.",
+                    detail="Cancellation was requested before the worker was interrupted")
+            else:
+                self.transition(
+                    mission["id"], MissionState.FAILED, actor=ACTOR_WORKER,
+                    expect=MissionState.RUNNING,
+                    error="Execution was interrupted. Inspect changes, then "
+                          "Retry or Undo; no automatic replay.",
+                    detail="Worker restarted with no execution lock owner")
 
     def step(self, mid, name, result=None):
         with self.db() as db:
