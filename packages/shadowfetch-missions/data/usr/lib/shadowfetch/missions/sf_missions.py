@@ -254,14 +254,179 @@ def difference(before, after):
     """Historical text rendering of a workspace change set; see git_change for structure."""
     return git_change(before, after).text
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 """Operational-state schema version, stored in PRAGMA user_version.
 
 v0/v1  the 4.0.0 shape: mission kind only, provider identity buried in the
        JSON config blob as "runtime".
 v2     capability and provider_id are first-class columns. kind is KEPT and
        still written, so a 4.0.0 reader sees exactly what it saw before and
-       nothing about an existing mission is reinterpreted."""
+       nothing about an existing mission is reinterpreted.
+v3     the orchestration domain: tasks, agent_sessions, tool_executions,
+       approvals, reviews, artifacts, test_runs, git_changes; missions gain
+       approval_id; events gain correlation columns and a hash chain. Every
+       v2 column and row survives untouched -- v3 only adds."""
+
+CHAIN_GENESIS = "audit-chain-started"
+GENESIS_PREV = "0" * 64
+ACTOR_USER = "user"
+ACTOR_ORCHESTRATOR = "orchestrator"
+ACTOR_WORKER = "worker"
+
+# Fields covered by an event's hash, in a fixed order. seq is included, so
+# reordering or renumbering rows is detectable and not merely implausible.
+HASHED_FIELDS = ("seq", "at", "mission", "task_id", "session_id",
+                 "tool_execution_id", "actor", "event", "detail")
+
+
+def canonical(payload: dict) -> bytes:
+    """One byte string for one logical record.
+
+    sort_keys so key order cannot change the digest; separators without spaces
+    so pretty-printing cannot; ensure_ascii=False so a non-ASCII detail hashes
+    as the text it is rather than as an escape sequence that a different json
+    version might spell differently.
+    """
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False).encode("utf-8")
+
+
+def event_hash(prev_hash: str, row: dict) -> str:
+    """sha256(prev_hash || canonical(row)). Chaining is what makes a single
+    altered row invalidate everything after it."""
+    payload = {k: row.get(k) for k in HASHED_FIELDS}
+    return hashlib.sha256((prev_hash or "").encode("utf-8") + canonical(payload)).hexdigest()
+
+
+# The orchestration tables. Each one exists because something in the engine
+# writes it and something else reads it; the audit proposed three more
+# (schema_version, agent_providers, workspaces) that are deliberately absent,
+# with the reasoning in PHASE3_IMPLEMENTATION.md.
+DOMAIN_SCHEMA = """
+CREATE TABLE IF NOT EXISTS tasks (
+    id           TEXT PRIMARY KEY,
+    mission_id   TEXT NOT NULL,
+    seq          INTEGER NOT NULL,
+    kind         TEXT NOT NULL,
+    state        TEXT NOT NULL,
+    depends_on   TEXT NOT NULL DEFAULT '[]',
+    sandbox_spec TEXT,
+    started_at   TEXT, finished_at TEXT,
+    exit_code    INTEGER, error TEXT, result TEXT,
+    UNIQUE(mission_id, seq));
+CREATE INDEX IF NOT EXISTS tasks_mission ON tasks(mission_id, seq);
+
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    id                    TEXT PRIMARY KEY,
+    mission_id            TEXT NOT NULL,
+    task_id               TEXT,
+    provider_id           TEXT NOT NULL,
+    provider_version      TEXT NOT NULL,
+    provider_trust        TEXT NOT NULL,
+    attempt               INTEGER NOT NULL,
+    firebreak_session     TEXT,
+    executable            TEXT,
+    executable_trust      TEXT,
+    requested_sandbox     TEXT NOT NULL,
+    effective_sandbox     TEXT NOT NULL,
+    enforcement           TEXT NOT NULL,
+    credentials_requested TEXT NOT NULL DEFAULT '[]',
+    credentials_granted   TEXT NOT NULL DEFAULT '[]',
+    read_grants           TEXT NOT NULL DEFAULT '[]',
+    network_requested     TEXT,
+    egress_requested      TEXT NOT NULL DEFAULT '[]',
+    network_effective     TEXT,
+    command               TEXT,
+    started_at TEXT NOT NULL, ended_at TEXT, exit_code INTEGER,
+    usage TEXT, outcome TEXT);
+CREATE INDEX IF NOT EXISTS sessions_mission ON agent_sessions(mission_id, started_at);
+CREATE INDEX IF NOT EXISTS sessions_firebreak ON agent_sessions(firebreak_session);
+
+CREATE TABLE IF NOT EXISTS tool_executions (
+    id            TEXT PRIMARY KEY,
+    session_id    TEXT NOT NULL,
+    seq           INTEGER NOT NULL,
+    at            TEXT NOT NULL,
+    tool          TEXT NOT NULL,
+    args_redacted TEXT, args_digest TEXT,
+    requested_action TEXT,
+    decision      TEXT NOT NULL,
+    approval_id   TEXT,
+    started_at TEXT, ended_at TEXT,
+    exit_status   TEXT, result_digest TEXT,
+    bytes_changed INTEGER, files_changed INTEGER,
+    UNIQUE(session_id, seq));
+CREATE INDEX IF NOT EXISTS tool_exec_decision ON tool_executions(decision, at);
+
+CREATE TABLE IF NOT EXISTS approvals (
+    id         TEXT PRIMARY KEY,
+    subject    TEXT NOT NULL,
+    scope      TEXT NOT NULL,
+    granted_by TEXT NOT NULL,
+    method     TEXT NOT NULL,
+    granted_at TEXT NOT NULL,
+    expires_at TEXT, revoked_at TEXT, reason TEXT);
+CREATE INDEX IF NOT EXISTS approvals_subject ON approvals(subject, granted_at);
+
+CREATE TABLE IF NOT EXISTS reviews (
+    id            TEXT PRIMARY KEY,
+    mission_id    TEXT NOT NULL,
+    requested_at  TEXT NOT NULL,
+    decided_at    TEXT, decision TEXT, decided_by TEXT,
+    summary       TEXT NOT NULL DEFAULT '{}',
+    diff_path     TEXT, diff_truncated INTEGER NOT NULL DEFAULT 0,
+    blast_radius  TEXT NOT NULL DEFAULT '{}');
+CREATE INDEX IF NOT EXISTS reviews_mission ON reviews(mission_id, requested_at);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+    id         TEXT PRIMARY KEY,
+    mission_id TEXT NOT NULL,
+    task_id    TEXT,
+    path       TEXT NOT NULL,
+    sha256     TEXT NOT NULL,
+    bytes      INTEGER NOT NULL,
+    kind       TEXT NOT NULL,
+    created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS artifacts_mission ON artifacts(mission_id);
+
+CREATE TABLE IF NOT EXISTS test_runs (
+    id          TEXT PRIMARY KEY,
+    mission_id  TEXT NOT NULL,
+    task_id     TEXT,
+    command     TEXT NOT NULL,
+    executable  TEXT,
+    sandbox_mode TEXT, network_requested TEXT,
+    network_effective TEXT, enforcement TEXT NOT NULL DEFAULT '{}',
+    guard_state TEXT,
+    started_at TEXT, duration_ms INTEGER, exit_code INTEGER,
+    log_path TEXT, result TEXT);
+CREATE INDEX IF NOT EXISTS test_runs_mission ON test_runs(mission_id);
+
+CREATE TABLE IF NOT EXISTS git_changes (
+    id          TEXT PRIMARY KEY,
+    mission_id  TEXT NOT NULL,
+    repo_path   TEXT NOT NULL,
+    head_before TEXT, head_after TEXT,
+    refs_changed      TEXT NOT NULL DEFAULT '[]',
+    remotes_changed   TEXT NOT NULL DEFAULT '[]',
+    hooks_changed     TEXT NOT NULL DEFAULT '[]',
+    exec_config_keys  TEXT NOT NULL DEFAULT '[]',
+    mode_changes      TEXT NOT NULL DEFAULT '[]',
+    symlink_changes   TEXT NOT NULL DEFAULT '[]',
+    new_executables   TEXT NOT NULL DEFAULT '[]',
+    build_entrypoints TEXT NOT NULL DEFAULT '[]',
+    observed_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS git_changes_mission ON git_changes(mission_id);
+"""
+
+# Columns added to tables that already existed. Adding rather than rewriting is
+# the whole migration strategy: a v2 reader keeps seeing exactly what it saw.
+V3_ADDED_COLUMNS = {
+    "missions": (("approval_id", "TEXT"),),
+    "events": (("task_id", "TEXT"), ("session_id", "TEXT"),
+               ("tool_execution_id", "TEXT"), ("actor", "TEXT"),
+               ("prev_hash", "TEXT"), ("hash", "TEXT")),
+}
 
 # A legacy runtime name is not always a provider id: the offline media
 # runtime became the "offline-media" provider when it gained a manifest.
@@ -344,12 +509,62 @@ class Store:
             db.execute("CREATE INDEX IF NOT EXISTS missions_capability "
                        "ON missions(capability, provider_id)")
             if migrated:
+                # Deliberately a raw insert: this row is written during the v2
+                # step, before the chain columns exist. start_chain() runs
+                # afterwards and pins it along with every other pre-chain row.
                 db.execute(
                     "INSERT INTO events(mission,at,event,detail) VALUES(?,?,?,?)",
                     ("*", now(), "schema-migrated",
                      f"v{version} -> v2: derived capability and provider_id for "
                      f"{migrated} existing mission(s); no record was altered otherwise"))
+        if version < 3:
+            # NOT executescript(): it issues an implicit COMMIT first, which
+            # would end the caller's transaction and leave a failure halfway
+            # through v3 with the new tables present and the version still 2.
+            for statement in DOMAIN_SCHEMA.split(";"):
+                if statement.strip():
+                    db.execute(statement)
+            for table, columns in V3_ADDED_COLUMNS.items():
+                present = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+                for column, kind in columns:
+                    if column not in present:
+                        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+            self.start_chain(db, from_version=version)
         db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    def start_chain(self, db, *, from_version=None):
+        """Begin the hash chain, honestly.
+
+        Rows written before v3 were never protected, and back-filling hashes
+        over them would MANUFACTURE tamper evidence for a period that had none
+        -- the audit trail would then assert something no mechanism ever
+        guaranteed. They keep NULL prev_hash/hash and verify() reports them as
+        unchained.
+
+        What the genesis row can honestly do is PIN them: it records how many
+        there were and a digest over their canonical form, so an alteration of
+        a pre-chain row after this moment is still detectable, while an
+        alteration before it is not. That distinction is the point.
+        """
+        rows = db.execute(
+            "SELECT seq,mission,at,event,detail FROM events ORDER BY seq").fetchall()
+        if any(r["event"] == CHAIN_GENESIS for r in rows):
+            return
+        digest = hashlib.sha256()
+        for row in rows:
+            digest.update(canonical({"seq": row["seq"], "mission": row["mission"],
+                                     "at": row["at"], "event": row["event"],
+                                     "detail": row["detail"]}))
+        self._append(db, mission="*", event=CHAIN_GENESIS, actor=ACTOR_ORCHESTRATOR,
+                     detail=json.dumps({
+                         "from_schema_version": from_version,
+                         "to_schema_version": SCHEMA_VERSION,
+                         "unchained_events": len(rows),
+                         "unchained_digest": digest.hexdigest(),
+                         "note": ("events before this row predate the chain and are "
+                                  "not individually verifiable; this digest pins the "
+                                  "set as it stood when the chain began"),
+                     }, sort_keys=True))
 
     @contextlib.contextmanager
     def db(self):
@@ -363,9 +578,113 @@ class Store:
         finally:
             db.close()
 
-    def event(self, mid, event, detail=""):
+    def _append(self, db, *, mission, event, detail="", actor=ACTOR_ORCHESTRATOR,
+                task_id=None, session_id=None, tool_execution_id=None, at=None):
+        """Append one chained event. THE only INSERT into events.
+
+        seq is chosen explicitly rather than left to AUTOINCREMENT because the
+        hash covers it: the row has to know its own sequence number before it
+        is written, and reading it back afterwards to UPDATE the hash would
+        need an UPDATE on an append-only table.
+
+        The caller supplies the connection so that a state change and its
+        event land in ONE transaction. Callers that have no transaction of
+        their own use append_event().
+        """
+        head = db.execute(
+            "SELECT seq, hash FROM events ORDER BY seq DESC LIMIT 1").fetchone()
+        row = {
+            "seq": (head["seq"] + 1) if head else 1,
+            "at": at or now(),
+            "mission": mission,
+            "task_id": task_id,
+            "session_id": session_id,
+            "tool_execution_id": tool_execution_id,
+            "actor": actor,
+            "event": event,
+            "detail": clean(detail)[:10000],
+        }
+        prev = (head["hash"] if head and head["hash"] else GENESIS_PREV)
+        row["prev_hash"] = prev
+        row["hash"] = event_hash(prev, row)
+        db.execute(
+            "INSERT INTO events(seq,mission,at,event,detail,task_id,session_id,"
+            "tool_execution_id,actor,prev_hash,hash) "
+            "VALUES(:seq,:mission,:at,:event,:detail,:task_id,:session_id,"
+            ":tool_execution_id,:actor,:prev_hash,:hash)", row)
+        return row
+
+    def append_event(self, mission, event, detail="", **correlation):
+        """Append one chained event in a transaction of its own.
+
+        BEGIN IMMEDIATE, because reading the chain head and appending after it
+        must be one atomic step -- two concurrent appends that both read the
+        same head would fork the chain.
+        """
         with self.db() as db:
-            db.execute("INSERT INTO events(mission,at,event,detail) VALUES(?,?,?,?)", (mid, now(), event, clean(detail)[:10000]))
+            db.execute("BEGIN IMMEDIATE")
+            return self._append(db, mission=mission, event=event, detail=detail,
+                                **correlation)
+
+    def event(self, mid, event, detail="", **correlation):
+        """The name every existing call site uses. Now chained."""
+        return self.append_event(mid, event, detail, **correlation)
+
+    def verify_chain(self, *, mission=None):
+        """Recompute the chain and report what it proves.
+
+        Returns a report rather than a boolean, because "the chain is broken"
+        and "these rows predate the chain" are different facts and collapsing
+        them would misrepresent both.
+        """
+        with self.db() as db:
+            rows = [dict(r) for r in db.execute(
+                "SELECT * FROM events ORDER BY seq").fetchall()]
+        report = {"ok": True, "events": len(rows), "chained": 0, "unchained": 0,
+                  "first_chained_seq": None, "head": None, "head_seq": None,
+                  "problems": []}
+        prev_hash, prev_seq, started = None, None, False
+        for row in rows:
+            if not started:
+                if row["event"] == CHAIN_GENESIS:
+                    started = True
+                    report["first_chained_seq"] = row["seq"]
+                elif row.get("hash"):
+                    report["problems"].append(
+                        f"seq {row['seq']}: carries a hash before the chain genesis")
+                    report["ok"] = False
+                    continue
+                else:
+                    report["unchained"] += 1
+                    continue
+            if not row.get("hash"):
+                report["problems"].append(f"seq {row['seq']}: chained region has no hash")
+                report["ok"] = False
+                continue
+            expected_prev = GENESIS_PREV if prev_hash is None else prev_hash
+            if row.get("prev_hash") != expected_prev:
+                report["problems"].append(
+                    f"seq {row['seq']}: prev_hash does not match the previous row "
+                    "(a row was inserted, removed or reordered here)")
+                report["ok"] = False
+            if prev_seq is not None and row["seq"] != prev_seq + 1:
+                report["problems"].append(
+                    f"seq {row['seq']}: follows {prev_seq}, so the chain was truncated "
+                    "or renumbered")
+                report["ok"] = False
+            recomputed = event_hash(row.get("prev_hash"), row)
+            if recomputed != row["hash"]:
+                report["problems"].append(
+                    f"seq {row['seq']}: content does not match its hash (this row was "
+                    "modified after it was written)")
+                report["ok"] = False
+            report["chained"] += 1
+            prev_hash, prev_seq = row["hash"], row["seq"]
+        report["head"], report["head_seq"] = prev_hash, prev_seq
+        if not started and rows:
+            report["problems"].append("no chain genesis found; nothing is verifiable")
+            report["ok"] = False
+        return report
 
     def update(self, mid, **fields):
         allowed = {"state", "attempt", "error", "checkpoint", "artifacts", "receipt", "cancel_requested"}
@@ -375,13 +694,15 @@ class Store:
         with self.db() as db:
             db.execute("UPDATE missions SET " + ",".join(k + "=?" for k in fields) + " WHERE id=?", [*fields.values(), mid])
 
-    def finish_execution(self, mid, state, error):
+    def finish_execution(self, mid, state, error, **correlation):
         # Publish readiness with its final event only after the receipt exists.
         # Readers see either the previous state or this complete transaction.
         at = now()
         detail = error or "Execution finished. Inspect artifacts and diff, then Accept or Undo"
         with self.db() as db:
-            db.execute("INSERT INTO events(mission,at,event,detail) VALUES(?,?,?,?)", (mid, at, state, clean(detail)[:10000]))
+            db.execute("BEGIN IMMEDIATE")
+            self._append(db, mission=mid, event=state, detail=detail,
+                         actor=ACTOR_ORCHESTRATOR, at=at, **correlation)
             db.execute("UPDATE missions SET state=?,error=?,updated_at=? WHERE id=?", (state, error, at, mid))
             row = db.execute("SELECT * FROM missions WHERE id=?", (mid,)).fetchone()
         return self.unpack(row)
