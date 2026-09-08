@@ -248,9 +248,18 @@ def parser_gates(candidates: list[Path]) -> None:
         ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     print(f"PASS: Python parse ({len(python_files)} files)")
 
-    for path in json_files:
+    # Test fixtures under tests/fixtures/ are DATA, never installed, and some
+    # are deliberately malformed -- a conformance suite that proves the
+    # registry rejects an unparseable manifest has to contain one. Parsing
+    # them here would make "the gate passes" require that no test can
+    # describe a broken input.
+    parseable = [p for p in json_files
+                 if "/tests/fixtures/" not in p.as_posix()]
+    skipped = len(json_files) - len(parseable)
+    for path in parseable:
         json.loads(path.read_text(encoding="utf-8"))
-    print(f"PASS: JSON parse ({len(json_files)} files)")
+    print(f"PASS: JSON parse ({len(parseable)} files"
+          + (f"; {skipped} deliberately-invalid test fixtures skipped)" if skipped else ")"))
 
     for path in xml_files:
         ET.parse(path)
