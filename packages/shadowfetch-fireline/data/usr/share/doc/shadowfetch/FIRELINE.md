@@ -21,6 +21,12 @@ checkpoint is taken first; undo everything it did with:
 Servers: passport (read-only self-check), phoenix (read-only restore points),
 checkpoint (snapshot/diff/undo one workspace), fs (scoped read-only files).
 
+The fs server refuses to start unless SF_MCP_FS_ROOT names the one directory
+the agent may read. There is no default: it will not fall back to the working
+directory, and it rejects a scope that is a filesystem root, a top-level
+directory, your whole home directory, or a credential store. The configs
+printed above already carry the scope.
+
 ## Read the audit trail
 
     shadowfetch-firebreak log
