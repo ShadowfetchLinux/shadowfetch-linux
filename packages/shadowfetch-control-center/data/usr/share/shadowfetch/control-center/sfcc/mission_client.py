@@ -5,9 +5,35 @@ No shell, network, credentials or privileged operations live in the UI.
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, QProcess, QTimer
+
+
+def _load_redact():
+    """Borrow Mission Control's one secret redactor rather than growing a second.
+
+    Everything this transport shows the user is text a subprocess produced, and
+    a failing command quotes its own stderr. shadowfetch-control-center depends
+    on shadowfetch-missions at the same version, so the module is present on an
+    installed system; the sibling package satisfies it in a source tree.
+    """
+    locations = [Path("/usr/lib/shadowfetch/missions")]
+    locations += [parent / "packages/shadowfetch-missions/data/usr/lib/shadowfetch/missions"
+                  for parent in Path(__file__).resolve().parents]
+    for location in locations:
+        if (location / "sf_redact.py").is_file():
+            if str(location) not in sys.path:
+                sys.path.insert(0, str(location))
+            from sf_redact import redact
+            return redact
+    raise ImportError(
+        "sf_redact.py was not found. shadowfetch-control-center requires the "
+        "matching shadowfetch-missions package; repair the installation.")
+
+
+redact = _load_redact()
 
 # Resolved against system directories only, and NOT overridable from the
 # environment: SHADOWFETCH_MISSIONS_COMMAND / SHADOWFETCH_GROK_BOT_COMMAND
@@ -123,7 +149,10 @@ class JsonCommand(QObject):
             return
         self._done = True
         self.timer.stop()
-        self._callback(data, error)
+        # Single funnel for every error this transport reports, so the child's
+        # stderr and the engine's own "error" field are both redacted once,
+        # here, instead of at each of the call sites that display them.
+        self._callback(data, redact(error) if error else error)
         self.deleteLater()
 
 
