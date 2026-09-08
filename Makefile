@@ -292,6 +292,22 @@ iso: repo
 	@mkdir -p $(LB_DIR)/config/archives
 	@$(GPG) --dearmor < $(REPO_DIR)/shadowfetch.gpg.asc > $(LB_DIR)/config/archives/shadowfetch.key.chroot
 	@cp $(LB_DIR)/config/archives/shadowfetch.key.chroot $(LB_DIR)/config/archives/shadowfetch.key.binary
+# W-19: the apt source entries name the repository key by path
+# (signed-by=/usr/share/keyrings/shadowfetch.gpg) instead of trusting the
+# transport with [trusted=yes], so that file has to exist in the chroot
+# BEFORE live-build's first `apt-get update`, which runs inside
+# lb_chroot_archives -- earlier than hooks, includes.chroot or any package
+# install. config/archives/*.deb is the one live-build slot that installs
+# into the chroot ahead of that update ("Check local keyring packages"),
+# and the package it installs is also what carries the key into the
+# squashfs for the installed system. Same key, same path, one source of
+# truth: repo/shadowfetch.gpg.asc, which is what reprepro signs with.
+	@rm -rf $(BUILD_DIR)/archive-keyring
+	@mkdir -p $(BUILD_DIR)/archive-keyring/DEBIAN $(BUILD_DIR)/archive-keyring/usr/share/keyrings
+	@cp $(LB_DIR)/config/archives/shadowfetch.key.chroot $(BUILD_DIR)/archive-keyring/usr/share/keyrings/shadowfetch.gpg
+	@chmod 0644 $(BUILD_DIR)/archive-keyring/usr/share/keyrings/shadowfetch.gpg
+	@printf 'Package: shadowfetch-archive-keyring\nVersion: %s\nArchitecture: all\nSection: misc\nPriority: important\nMaintainer: Shadowfetch Project <signing@shadowfetch.com>\nDescription: GnuPG archive key for the Shadowfetch APT repository\n Ships /usr/share/keyrings/shadowfetch.gpg, the key named by signed-by=\n in every Shadowfetch apt source entry.\n' '$(VERSION)' > $(BUILD_DIR)/archive-keyring/DEBIAN/control
+	@dpkg-deb --root-owner-group --build $(BUILD_DIR)/archive-keyring $(LB_DIR)/config/archives/shadowfetch-archive-keyring.deb
 # Clean the prior live-build output.
 	@cd $(LB_DIR) && sudo lb clean
 	# live-build caches archives by package name and version. During release QA,
@@ -419,6 +435,8 @@ clean:
 	-cd $(LB_DIR) && sudo lb clean
 	-rm -rf $(BUILD_DIR)
 	-rm -f $(LB_DIR)/config/archives/shadowfetch.key.*
+	-rm -f $(LB_DIR)/config/archives/shadowfetch-archive-keyring.deb
+	-rm -rf $(BUILD_DIR)/archive-keyring
 
 distclean: clean
 	-rm -rf $(REPO_DIR)/db $(REPO_DIR)/dists $(REPO_DIR)/pool $(REPO_DIR)/conf

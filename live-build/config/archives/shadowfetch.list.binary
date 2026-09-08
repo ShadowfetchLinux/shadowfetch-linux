@@ -1,1 +1,1 @@
-deb https://www.shadowfetch.com/linux/apt umbra main
+deb [signed-by=/usr/share/keyrings/shadowfetch.gpg] https://www.shadowfetch.com/linux/apt umbra main

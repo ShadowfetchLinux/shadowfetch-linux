@@ -2,8 +2,15 @@
 # The shipped image must point at the PUBLIC signed repo, not the build-time localhost one.
 # lb's archives binary-remove pass early-exits (mirror guard), sealing the .chroot localhost
 # source into the squashfs. Fix it here, late in the chroot stage AFTER all package installs
-# (so build-time apt still uses the local repo). Signing key already in /etc/apt/trusted.gpg.d.
+# (so build-time apt still uses the local repo).
+#
+# W-19: the entry names the repository key by path rather than relying on
+# whatever happens to sit in /etc/apt/trusted.gpg.d, so this key can only
+# ever authenticate this one repository. The file is shipped by the
+# shadowfetch-archive-keyring package that `make iso` stages into
+# config/archives/ and live-build installs into the chroot.
 set -e
+test -s /usr/share/keyrings/shadowfetch.gpg
 rm -f /etc/apt/sources.list.d/shadowfetch.list
-echo 'deb https://www.shadowfetch.com/linux/apt umbra main' > /etc/apt/sources.list.d/shadowfetch.list
+echo 'deb [signed-by=/usr/share/keyrings/shadowfetch.gpg] https://www.shadowfetch.com/linux/apt umbra main' > /etc/apt/sources.list.d/shadowfetch.list
 echo "[shadowfetch] APT source -> public signed repo www.shadowfetch.com/linux/apt"

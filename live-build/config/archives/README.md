@@ -10,6 +10,21 @@ the final ISO, pointing at the public APT repo at
 `https://shadowfetch.com/linux/apt/`. End users get incremental updates
 through that URL.
 
-The matching `.key.chroot` / `.key.binary` files (GPG public key, armored)
-are copied here by `make iso` from `repo/shadowfetch.gpg.asc`. They're
-intentionally not committed — they're regenerable from the GPG keyring.
+Both entries carry `signed-by=/usr/share/keyrings/shadowfetch.gpg`. apt
+therefore accepts these repositories only against that one key, and only
+that key — never `[trusted=yes]`, which accepted the repository with no
+signature check at all (W-19).
+
+`make iso` stages three regenerable, uncommitted artifacts here from
+`repo/shadowfetch.gpg.asc` (the armored export of the key reprepro signs
+the repo with):
+
+* `shadowfetch.key.chroot` / `shadowfetch.key.binary` — dearmored public
+  key. live-build drops these into `/etc/apt/trusted.gpg.d/`; Phoenix's
+  apt recovery contract still checks for the binary one.
+* `shadowfetch-archive-keyring.deb` — a one-file package installing
+  `/usr/share/keyrings/shadowfetch.gpg`. live-build `dpkg -i`s any
+  `config/archives/*.deb` inside `lb_chroot_archives` *before* its first
+  `apt-get update`, which is the only point early enough for a
+  `signed-by=` path to resolve; it then persists into the squashfs, so the
+  installed system resolves the same path.
