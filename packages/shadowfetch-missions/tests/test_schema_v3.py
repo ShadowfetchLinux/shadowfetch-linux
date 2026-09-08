@@ -253,16 +253,34 @@ class ChainIsTamperEvident(MigrationHarness):
         self.assertTrue("truncated or renumbered" in problems
                         or "does not match the previous row" in problems, problems)
 
-    def test_a_truncated_chain_is_detected(self):
+    def test_a_truncated_chain_is_caught_only_by_the_external_anchor(self):
         """Deleting the TAIL is the case a per-row checksum cannot catch: every
-        surviving row is individually valid."""
+        surviving row is individually valid.
+
+        Both halves are asserted, because the interesting fact is WHERE the
+        finding comes from. The chain's own verdict on the surviving rows is
+        still "all agree" -- that is not a bug, it is what a chain is. The
+        detection is entirely the journald high-water mark from Step 4, which
+        the mission worker's uid cannot rewrite.
+        """
         self.raw_write("DELETE FROM events WHERE seq >= 5")
         report = self.store.verify_chain()
-        self.assertTrue(report["ok"], "per-row hashes still agree, as expected")
         self.assertEqual(report["head_seq"], 4)
-        # The chain alone cannot prove this. Only an external high-water mark
-        # can, which is exactly what the journald mirror is for -- so this test
-        # asserts the LIMITATION rather than pretending it is covered.
+
+        # (a) the chain by itself finds nothing: no row was altered
+        row_problems = [p for p in report["problems"] if "journal" not in p]
+        self.assertEqual(row_problems, [],
+                         "per-row hashes should still agree after a truncation")
+
+        # (b) the anchor is the whole finding
+        anchor = report["anchor"]
+        if not anchor["readable"]:
+            self.skipTest("journald is not readable here, so truncation is "
+                          "genuinely undetectable on this host -- which is the "
+                          "degraded state, reported rather than hidden")
+        self.assertEqual(anchor["verdict"], "truncated")
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("removed from the end" in p for p in report["problems"]))
 
     def test_an_inserted_row_is_detected(self):
         self.raw_write(

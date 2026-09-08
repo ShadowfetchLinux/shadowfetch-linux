@@ -114,6 +114,7 @@ MAX_OUTPUT = 2_000_000
 # rather than a plausible-looking record that was never emitted.
 TRUNCATION_NOTE = b"--- shadowfetch: output truncated; tail follows ---"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sf_audit
 import sf_redact
 from sf_providers import (LEGACY_KIND_CAPABILITY, CAPABILITY_LEGACY_KIND,
                          CAPABILITIES, Capability, ProviderRegistry,
@@ -541,6 +542,10 @@ class Store:
             """)
             self.migrate(db)
         self.db_path.chmod(0o600)
+        pending = getattr(self, "_pending_mirror", None)
+        if pending is not None:
+            self._pending_mirror = None
+            self.mirror(pending)
 
     def migrate(self, db):
         """Bring an existing database forward. Runs inside the caller's
@@ -609,6 +614,9 @@ class Store:
                         db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
             self.start_chain(db, from_version=version)
         db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        # Mirrored by __init__ once this transaction has committed; mirroring a
+        # row that a later failure rolls back would anchor an event that never
+        # existed.
 
     def start_chain(self, db, *, from_version=None):
         """Begin the hash chain, honestly.
@@ -633,8 +641,10 @@ class Store:
             digest.update(canonical({"seq": row["seq"], "mission": row["mission"],
                                      "at": row["at"], "event": row["event"],
                                      "detail": row["detail"]}))
-        self._append(db, mission="*", event=CHAIN_GENESIS, actor=ACTOR_ORCHESTRATOR,
+        genesis = self._append(db, mission="*", event=CHAIN_GENESIS,
+                     actor=ACTOR_ORCHESTRATOR,
                      detail=json.dumps({
+                         "chain_id": uuid.uuid4().hex,
                          "from_schema_version": from_version,
                          "to_schema_version": SCHEMA_VERSION,
                          "unchained_events": len(rows),
@@ -643,6 +653,7 @@ class Store:
                                   "not individually verifiable; this digest pins the "
                                   "set as it stood when the chain began"),
                      }, sort_keys=True))
+        self._pending_mirror = genesis
 
     @contextlib.contextmanager
     def db(self):
@@ -701,12 +712,56 @@ class Store:
         """
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
-            return self._append(db, mission=mission, event=event, detail=detail,
-                                **correlation)
+            row = self._append(db, mission=mission, event=event, detail=detail,
+                               **correlation)
+        # AFTER the commit, deliberately. The database row is the record of
+        # truth; mirroring inside the transaction would mean a journal failure
+        # could roll back an event that really happened.
+        self.mirror(row)
+        return row
 
     def event(self, mid, event, detail="", **correlation):
         """The name every existing call site uses. Now chained."""
         return self.append_event(mid, event, detail, **correlation)
+
+    def chain_id(self):
+        """This database's chain id, minted once at genesis and read from it.
+
+        Cached per Store instance, not per process: a test that opens several
+        stores must get several ids.
+        """
+        cached = getattr(self, "_chain_id", None)
+        if cached is not None:
+            return cached
+        with self.db() as db:
+            row = db.execute("SELECT detail FROM events WHERE event=? ORDER BY seq LIMIT 1",
+                             (CHAIN_GENESIS,)).fetchone()
+        value = None
+        if row:
+            try:
+                value = json.loads(row["detail"]).get("chain_id")
+            except (ValueError, TypeError, AttributeError):
+                value = None
+        self._chain_id = value
+        return value
+
+    def mirror(self, row):
+        """Best-effort external anchor. Never raises, never loses the row.
+
+        A failure is RECORDED rather than swallowed: verify_chain() reports the
+        audit as degraded, so "the anchor is not working" surfaces as a state a
+        person can see rather than as silence that looks like success.
+        """
+        state = sf_audit.MirrorState(self.root)
+        ok, reason = sf_audit.mirror(dict(row, chain=self.chain_id()))
+        if ok:
+            state.record_success(row["seq"])
+        else:
+            state.record_failure(reason or "unknown")
+        return ok
+
+    def mirror_state(self):
+        return sf_audit.MirrorState(self.root).read()
 
     def verify_chain(self, *, mission=None):
         """Recompute the chain and report what it proves.
@@ -762,6 +817,57 @@ class Store:
         if not started and rows:
             report["problems"].append("no chain genesis found; nothing is verifiable")
             report["ok"] = False
+
+        # -- the external anchor ------------------------------------------
+        # Kept as its own verdict. The chain being intact and the anchor
+        # agreeing are two different claims, and a caller that wants "is this
+        # log trustworthy" has to read both.
+        local = self.mirror_state()
+        external = sf_audit.read_head(self.chain_id())
+        anchor = {
+            "identifier": external["identifier"],
+            "chain": self.chain_id(),
+            "readable": external["available"],
+            "reason": external["reason"],
+            "journal_head_seq": external["head_seq"],
+            "database_head_seq": report["head_seq"],
+            "last_mirrored_seq": local.get("last_mirrored_seq"),
+            "mirror_failures": local.get("failures") or 0,
+            "last_mirror_error": local.get("last_error"),
+            "verdict": None,
+        }
+        if anchor["mirror_failures"]:
+            anchor["verdict"] = "degraded"
+            report["problems"].append(
+                f"the audit mirror has failed {anchor['mirror_failures']} time(s); "
+                f"last error: {anchor['last_mirror_error']}. Events are still "
+                "recorded in the database, but truncation is not externally "
+                "detectable while this persists")
+        elif not external["available"]:
+            anchor["verdict"] = "unverified"
+        elif external["head_seq"] is None:
+            anchor["verdict"] = "unverified"
+        elif report["head_seq"] is None:
+            anchor["verdict"] = "unverified"
+        elif external["head_seq"] > report["head_seq"]:
+            anchor["verdict"] = "truncated"
+            report["ok"] = False
+            report["problems"].append(
+                f"the journal records event {external['head_seq']} but the database "
+                f"stops at {report['head_seq']}: {external['head_seq'] - report['head_seq']} "
+                "event(s) were removed from the end of the log")
+        elif external["head_seq"] < report["head_seq"]:
+            # Normal: the mirror is asynchronous and the journal rotates.
+            anchor["verdict"] = "behind"
+        else:
+            anchor["verdict"] = "agrees"
+            if external["head_hash"] and external["head_hash"] != report["head"]:
+                anchor["verdict"] = "conflict"
+                report["ok"] = False
+                report["problems"].append(
+                    "the journal and the database disagree about the hash of event "
+                    f"{external['head_seq']}: the log was rewritten after it was mirrored")
+        report["anchor"] = anchor
         return report
 
     def update(self, mid, **fields):
@@ -828,9 +934,10 @@ class Store:
             db.execute(
                 "UPDATE missions SET " + ",".join(k + "=?" for k in assignments)
                 + " WHERE id=?", [*assignments.values(), mid])
-            self._append(db, mission=mid, event=event, actor=actor, at=at,
-                         detail=detail if detail is not None else reason)
+            row = self._append(db, mission=mid, event=event, actor=actor, at=at,
+                               detail=detail if detail is not None else reason)
             result = db.execute("SELECT * FROM missions WHERE id=?", (mid,)).fetchone()
+        self.mirror(row)
         return self.unpack(result)
 
     def finish_execution(self, mid, state, error, **correlation):
@@ -846,10 +953,11 @@ class Store:
             allowed, event, reason = transition_allowed(row["state"], state)
             if not allowed:
                 raise TransitionError(f"Refused {row['state']} -> {state}: {reason}")
-            self._append(db, mission=mid, event=event, detail=detail,
-                         actor=ACTOR_ORCHESTRATOR, at=at, **correlation)
+            appended = self._append(db, mission=mid, event=event, detail=detail,
+                                    actor=ACTOR_ORCHESTRATOR, at=at, **correlation)
             db.execute("UPDATE missions SET state=?,error=?,updated_at=? WHERE id=?", (state, error, at, mid))
             row = db.execute("SELECT * FROM missions WHERE id=?", (mid,)).fetchone()
+        self.mirror(appended)
         return self.unpack(row)
 
     def unpack(self, row):
@@ -1950,10 +2058,45 @@ def main(argv=None):
             command.add_argument("--decision", choices=("accept", "undo"), required=True)
     command = sub.add_parser("worker")
     command.add_argument("--once", action="store_true")
+    audit = sub.add_parser("audit")
+    audit_sub = audit.add_subparsers(dest="audit_command", required=True)
+    audit_sub.add_parser("verify")
     args = parser.parse_args(argv)
     try:
         if args.command == "capabilities":
             result = capabilities()
+        elif args.command == "audit":
+            store = Store()
+            result = store.verify_chain()
+            if not args.json:
+                anchor = result.get("anchor") or {}
+                print(f"events            {result['events']}")
+                print(f"  chained         {result['chained']}")
+                print(f"  unchained       {result['unchained']} "
+                      "(written before the chain existed; pinned by the genesis "
+                      "digest, not individually verifiable)")
+                print(f"chain             {'intact' if result['ok'] else 'BROKEN'}")
+                print(f"head              seq {result['head_seq']} "
+                      f"{(result['head'] or '')[:16]}")
+                print(f"external anchor   {anchor.get('verdict')} "
+                      f"({anchor.get('identifier')})")
+                if anchor.get("reason"):
+                    print(f"  note            {anchor['reason']}")
+                if anchor.get("journal_head_seq") is not None:
+                    print(f"  journal head    seq {anchor['journal_head_seq']}")
+                if anchor.get("mirror_failures"):
+                    print(f"  mirror failures {anchor['mirror_failures']} "
+                          f"(last: {anchor['last_mirror_error']})")
+                for problem in result["problems"]:
+                    print(f"PROBLEM           {problem}")
+                # 'unverified' is not a pass. It means the external anchor could
+                # not be read, so truncation remains undetectable, and saying
+                # "ok" there would be the false claim this phase exists to remove.
+                if not result["ok"]:
+                    return 1
+                if anchor.get("verdict") in ("unverified", "degraded"):
+                    return 2
+                return 0
         else:
             store = Store()
             if args.command == "list":
