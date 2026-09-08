@@ -4,12 +4,23 @@
 # (polkit action org.shadowfetch.phoenix.recovery-report).
 #
 # The bundle contains ONLY system-diagnostic material: this boot's error-level
-# journal (hostnames stripped), apt history, the Phoenix Point list, dmesg,
-# block-device layout, Btrfs usage, failed units, SMART summaries, and the
-# OS version. No user files, no network credentials, no serial numbers where
-# the tool offers a privacy switch (inxi runs with -z when present).
+# journal (hostnames stripped), apt history, the Phoenix Point list, redacted
+# dmesg, block-device layout, Btrfs usage, failed units, SMART summaries with
+# the drive serials stripped, and the OS version. No user files, no network
+# credentials, no hardware serial numbers (inxi also runs with -z).
 # Nothing is uploaded anywhere: the tarball lands on the local disk and the
 # user decides what to do with it.
+#
+# 4.0.0 (W-18), because this runs as root through pkexec:
+#   * the optional argument is a FILE NAME, not a path. It is reduced to its
+#     basename and always written inside the report directory, so a caller
+#     cannot steer a root-owned write to /etc/cron.d, a dotfile or a symlink.
+#   * the bundle is created 0600 in a 0700 directory (it was 0644: every local
+#     account could read another user's dmesg and SMART data).
+#   * dmesg is redacted (MAC addresses, device/drive serials, key=/psk= values)
+#     and smartctl's serial_number / WWN fields are stripped. Everything a boot
+#     failure is actually diagnosed from - the kernel command line, subsystem
+#     errors, the device topology, SMART health and error counters - is kept.
 
 set -u
 
@@ -19,12 +30,15 @@ case "${1:-}" in
 phoenix-recovery-report - export a privacy-safe diagnostic bundle.
 
 USAGE
-  phoenix-recovery-report [OUTPUT.tar.gz]
+  phoenix-recovery-report [NAME.tar.gz]
+
+NAME is a file name, not a path: the bundle is always written inside
+/var/lib/shadowfetch/recovery-reports/ (mode 0600), whose default name is
+  recovery-report-<timestamp>.tar.gz
 
 Collects: journalctl -b -p err (no hostnames), apt history.log, snapper
-list, dmesg, lsblk, btrfs filesystem usage, systemctl --failed, smartctl
-JSON summaries, os-release. Default output:
-  /var/lib/shadowfetch/recovery-reports/recovery-report-<timestamp>.tar.gz
+list, redacted dmesg, lsblk, btrfs filesystem usage, systemctl --failed,
+smartctl JSON summaries without drive serials, os-release.
 
 Nothing leaves this machine.
 
@@ -42,13 +56,50 @@ fi
 
 TS=$(date +%Y%m%d-%H%M%S)
 OUTDIR=/var/lib/shadowfetch/recovery-reports
-OUT="${1:-$OUTDIR/recovery-report-$TS.tar.gz}"
+
+# --- Output name: a basename inside $OUTDIR, never a caller-chosen path -----
+NAME="recovery-report-$TS.tar.gz"
+if [ -n "${1:-}" ]; then
+    NAME=${1##*/}                       # drop any directory part
+    case "$NAME" in
+      ''|.|..|-*)
+        echo "phoenix-recovery-report: '$1' is not a usable report name" >&2
+        echo "phoenix-recovery-report: reports are written inside $OUTDIR" >&2
+        exit 2 ;;
+    esac
+fi
+OUT="$OUTDIR/$NAME"
+if [ -L "$OUT" ]; then
+    echo "phoenix-recovery-report: refusing to write through the symlink $OUT" >&2
+    exit 1
+fi
+
+# Everything this tool writes is root-only from the instant it is created.
+umask 077
 
 WORK=$(mktemp -d /tmp/phoenix-report.XXXXXX)
 DIR="$WORK/recovery-report-$TS"
 mkdir -p "$DIR"
 cleanup() { rm -rf "$WORK"; }
 trap cleanup EXIT INT TERM
+
+redact() {
+    # Drop the identifiers, keep the diagnosis: the kernel command line,
+    # subsystem errors, timings and device topology all survive this.
+    sed -E \
+        -e 's/([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}/[mac redacted]/g' \
+        -e 's/([Ss]erial ?[Nn]umber[:=][[:space:]]*)[^[:space:],]+/\1[redacted]/g' \
+        -e 's/(ATA-[0-9]+: [^,]*,)[^,]*,/\1 [serial redacted],/' \
+        -e 's/((psk|password|passwd|passphrase|cryptkey)=)[^[:space:]"]+/\1[redacted]/gI'
+}
+
+redact_serials() {
+    # Key-driven strip for structured output (smartctl JSON, grep-able JSON).
+    sed -E \
+        -e 's/("?(serial_number|wwn|logical_unit_id|eui64|nguid)"?[[:space:]]*[:=][[:space:]]*)"[^"]*"/\1"[redacted]"/g' \
+        -e 's/("?(serial_number|wwn|logical_unit_id)"?[[:space:]]*[:=][[:space:]]*)[0-9]+/\1"[redacted]"/g' \
+        -e 's/([Ss]erial [Nn]umber:[[:space:]]*).*/\1[redacted]/'
+}
 
 collect() {
     # collect <outfile> <cmd...>: best-effort, never aborts the report.
@@ -60,6 +111,20 @@ collect() {
     fi
 }
 
+collect_redacted() {
+    # collect, with the redaction filter between the tool and the file.
+    out="$DIR/$1"; shift
+    if ! command -v "$1" >/dev/null 2>&1; then
+        echo "[phoenix-recovery-report: '$1' not installed]" > "$out"
+        return 0
+    fi
+    {
+        echo "[phoenix-recovery-report: MAC addresses, device serial numbers and"
+        echo " psk=/password= values are redacted from this file]"
+        "$@" 2>&1 | redact
+    } > "$out" || true
+}
+
 # --- System identity (version only, no hostname) ---------------------------
 collect os-release.txt cat /etc/os-release
 if [ -r /usr/share/shadowfetch/version ]; then
@@ -68,7 +133,7 @@ fi
 
 # --- Logs ------------------------------------------------------------------
 collect journal-errors.txt journalctl -b -p err --no-pager --no-hostname
-collect dmesg.txt dmesg --color=never
+collect_redacted dmesg.txt dmesg --color=never
 collect failed-units.txt systemctl --failed --no-pager --no-legend
 
 # --- Packages --------------------------------------------------------------
@@ -96,7 +161,8 @@ fi
 if command -v smartctl >/dev/null 2>&1 && command -v lsblk >/dev/null 2>&1; then
     lsblk -dn -o NAME,TYPE 2>/dev/null | while read -r name type; do
         [ "$type" = "disk" ] || continue
-        smartctl --json=c -a "/dev/$name" > "$DIR/smart-$name.json" 2>&1 || true
+        smartctl --json=c -a "/dev/$name" 2>&1 \
+            | redact_serials > "$DIR/smart-$name.json" || true
     done
 else
     echo "[smartctl not installed]" > "$DIR/smart-unavailable.txt"
@@ -107,19 +173,49 @@ if command -v inxi >/dev/null 2>&1; then
     inxi -Fzy > "$DIR/inxi.txt" 2>&1 || true
 fi
 
+# --- Strip this machine's hardware identifiers from everything collected ----
+#
+# The key-driven filters above catch the documented field names; this catches
+# the same strings wherever else a tool happened to print them (inxi, dmesg,
+# a wwn sub-object). Only plain, long-enough tokens are stripped, so DMI
+# placeholders ("None", "Default string") and sed metacharacters cannot turn
+# this into a shotgun over the whole report.
+serials=$(
+    {
+        lsblk -dn -o SERIAL 2>/dev/null || true
+        for idfile in /sys/class/dmi/id/product_serial \
+                      /sys/class/dmi/id/board_serial \
+                      /sys/class/dmi/id/chassis_serial \
+                      /sys/class/dmi/id/product_uuid; do
+            [ -r "$idfile" ] && cat "$idfile"
+        done
+    } 2>/dev/null | tr -d '\r' | sort -u
+)
+printf '%s\n' "$serials" | while IFS= read -r serial; do
+    [ "${#serial}" -ge 6 ] || continue
+    case "$serial" in *[!0-9A-Za-z._:-]*) continue ;; esac
+    for f in "$DIR"/*; do
+        [ -f "$f" ] || continue
+        sed -i "s|$serial|[serial redacted]|g" "$f" 2>/dev/null || true
+    done
+done
+
 # --- Manifest --------------------------------------------------------------
 {
     echo "Shadowfetch Phoenix recovery report - $TS"
     echo "Generated locally by phoenix-recovery-report. Nothing was uploaded."
+    echo "Hardware serial numbers are stripped; dmesg is redacted."
     echo ""
     echo "Contents:"
     ls -1 "$DIR" | sed 's/^/  /'
 } > "$DIR/README.txt"
 
 # --- Pack ------------------------------------------------------------------
-mkdir -p "$(dirname "$OUT")"
+mkdir -p "$OUTDIR"
+chmod 0700 "$OUTDIR" 2>/dev/null || true
 tar -C "$WORK" -czf "$OUT" "recovery-report-$TS"
-chmod 0644 "$OUT"
+# The bundle holds this boot's root-only logs: owner-readable only, always.
+chmod 0600 "$OUT"
 # When launched through pkexec, hand the file to the requesting user.
 if [ -n "${PKEXEC_UID:-}" ]; then
     case "$PKEXEC_UID" in
