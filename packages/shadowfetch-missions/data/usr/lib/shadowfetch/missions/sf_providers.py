@@ -550,10 +550,14 @@ def declared_executables(manifest) -> set:
     """
     block = (manifest or {}).get("executable") or {}
     kind = block.get("kind")
+    # A helper is declared, so it is allowed, and it is subject to the same
+    # trust classification as the main program -- verify_invocation() checks
+    # the tier separately and does not care which of the two it is looking at.
+    helpers = {str(Path(p).resolve()) for p in (block.get("helper_programs") or ())}
     if kind == "absolute":
-        return {str(Path(block["path"]).resolve())}
+        return {str(Path(block["path"]).resolve())} | helpers
     if kind != "candidates":
-        return set()
+        return helpers
     home = Path.home()
     found = set()
     for pattern in block.get("candidates") or ():
@@ -570,7 +574,7 @@ def declared_executables(manifest) -> set:
             continue
         for match in matches:
             found.add(str(match.resolve()))
-    return found
+    return found | helpers
 
 
 def resolve_executable(manifest):

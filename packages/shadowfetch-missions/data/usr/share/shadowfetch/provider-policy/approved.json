@@ -30,7 +30,7 @@
       "egress_allowlist": [],
       "executable_trust": "system",
       "interface_version": 1,
-      "manifest_sha256": "c6730894f10b2dd788c73bf1a88ce7cd9d1622922c04bfd16980311daabc9c2e",
+      "manifest_sha256": "35942dfcfaa94cc2ea3a0f3eb08c1ed8b3508af41fcbf6bbe8402fc516cf593a",
       "network_policy": "none",
       "package": "shadowfetch-missions",
       "trust": "distro-managed"

@@ -203,6 +203,15 @@
             "type": "string",
             "pattern": "^[@A-Za-z0-9._-]{1,64}$"
           }
+        },
+        "helper_programs": {
+          "description": "Other absolute programs this provider may execute, beyond the one its kind/path/candidates resolve to. NOT fallbacks -- a helper is a different tool used for a different step, the way an exporter runs ffprobe to inspect and ffmpeg to encode. Declaring one is how the provider gets permission to run it: verify_invocation() refuses any program that is neither the resolved one nor a declared helper, and a helper is classified for executable trust exactly like the main program. Keep the list minimal; each entry is a program the provider may run inside the sandbox with its credentials and network grant.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^/[^\\0]*$"
+          }
         }
       },
       "allOf": [

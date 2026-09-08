@@ -882,6 +882,47 @@ class ProviderConformanceTests(unittest.TestCase):
                 self.assertFalse(self.profile.turn_succeeded(events, 1),
                                  "a non-zero exit was reported as a successful turn")
 
+    def test_every_invocation_this_provider_builds_survives_verification(self):
+        """The orchestrator verifies what the adapter hands back. So must this.
+
+        run_process() calls verify_invocation() on every invocation before it
+        executes (sf_missions.py). A provider whose OWN build_invocation output
+        is refused there cannot run a single mission -- and every other
+        assertion in this suite would still pass, because they inspect the
+        invocation rather than verifying it. That is exactly how a P0 shipped:
+        offline-media runs ffprobe to inspect and ffmpeg to encode, declared
+        one of the two, and every media_export mission failed.
+        """
+        module = sys.modules[self.manifest["adapter_module"]]
+        with self.profile.invocation_context():
+            # Through the ADAPTER's own symbol, so the profile's stand-in binary
+            # is what we see -- the same object the adapter will use a moment
+            # later. An adapter that names its program directly has no such
+            # symbol, and the manifest's own declaration is then the truth.
+            through_adapter = getattr(module, "resolve_executable", None)
+            resolved = (through_adapter(self.manifest) if through_adapter
+                        else resolve_executable(self.manifest))
+        if resolved is None:
+            self.skipTest("this provider resolves no program on this machine")
+        # The profile substitutes the MAIN program with a fixture stand-in, so
+        # verify against what was actually resolved. helper_programs is carried
+        # over untouched -- that is the half this assertion exists to police,
+        # and swapping it out would make the test unable to catch its own bug.
+        effective = copy.deepcopy(self.manifest)
+        block = effective.get("executable") or {}
+        helpers = block.get("helper_programs")
+        effective["executable"] = {"kind": "absolute", "path": resolved,
+                                   "trust": block.get("trust", "system")}
+        if helpers:
+            effective["executable"]["helper_programs"] = helpers
+
+        for capability, index, request in self.each_request():
+            with self.subTest(capability=capability, request=index):
+                built = self.build(capability, request)
+                for part in (built if isinstance(built, (list, tuple)) else [built]):
+                    with self.profile.invocation_context():
+                        verify_invocation(part, effective)
+
     def test_a_program_the_manifest_does_not_declare_is_refused(self):
         """WHICH program, not merely what kind of program.
 
