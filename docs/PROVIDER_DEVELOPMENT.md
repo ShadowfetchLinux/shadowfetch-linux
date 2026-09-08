@@ -351,19 +351,27 @@ requires one of:
 /bin/  /sbin/  /opt/
 ```
 
-`trust: "user-runtime"` additionally permits a program under the user's home — it
-exists because the Codex CLI is genuinely an npm install — and then requires that the
-file be owned by the invoking user and not world-writable. **Declare
-`"user-runtime"` only if you must**, because it is the exception being made visible;
-prefer packaging your program into a system directory.
+`trust: "user-runtime"` additionally permits a program in the invoking user's own
+space — it exists because the Codex CLI is genuinely an npm install — provided no
+third party can substitute it. **Declare `"user-runtime"` only if you must**, because
+it is the exception being made visible; prefer packaging your program into a system
+directory. It also has to be approved: the policy entry carries its own
+`executable_trust`, and the narrower of manifest and policy applies.
+
+Being an absolute path is not enough and never was the test. Your program is
+classified from the ownership and mode of the file and of every directory above it —
+a root-owned binary in a directory someone else can write is a binary someone else
+can replace. `docs/PROVIDER_TRUST.md` has the four classes.
 
 The check runs twice: once when your adapter resolves the program, and again inside
-`verify_invocation()` at the moment of execution. A program outside the tier is
-refused with:
+`verify_invocation()` at the moment of execution. A program of a class your
+declaration does not accept is refused with the component that failed named:
 
 ```
-Provider executable /home/u/evil is outside the packaging-owned directories and its
-manifest does not declare a user-runtime executable. …
+Provider executable classifies as untrusted: /home/u/bin is world-writable, so the
+program can be substituted by someone other than root or the invoking user. Its
+manifest declares executable trust 'user-runtime', which accepts distro-managed,
+user-managed. Refusing to execute it.
 ```
 
 ### What the conformance suite forbids in your source
@@ -508,16 +516,20 @@ Guidance per field:
   you actually contact. The list is not enforced by the sandbox today (Firebreak
   speaks `none`/`allow`), but it is recorded so a reviewer can see what was permitted,
   and it is what a future egress filter will use.
-* **`workspace_mode`** — declare the *widest* mode any of your capabilities needs,
-  then narrow per invocation. `code_change` needs `workspace-write`; `sourced_report`
-  should be narrowed to `read-only`.
+* **`workspace_mode`** — enforced (`--ro-bind` when read-only). Declare the *widest*
+  mode any of your capabilities needs, then narrow per invocation. `code_change` needs
+  `workspace-write`; `sourced_report` should be narrowed to `read-only`. Do not rely
+  on your own program's `--read-only`-style flag for this: your argv is your choice,
+  and the sandbox must hold whatever you choose.
 * **`read_grants`** — the smallest absolute directories that let your program work.
   Each becomes an explicit `--read`; Firebreak's denylist still applies on top (no
   filesystem root, no whole home directory, no credential store).
-* **`memory_mb` / `processes`** — enforced. Ask for what you need.
-* **`cpu_seconds`** — declared, schema-bounded (10–7200), narrowable, checked by
-  `verify_invocation()`, and **not currently passed to Firebreak** (the mission's own
-  timeout is). Declare it honestly anyway.
+* **`memory_mb` / `processes`** — enforced as cgroup properties (`MemoryMax` with
+  `MemorySwapMax=0`, and `TasksMax`). Ask for what you need. The floors are 256 and 8,
+  matching Firebreak's own bounds.
+* **`cpu_seconds`** — enforced as `RLIMIT_CPU`, at the tighter of your declaration and
+  the mission timeout. It is per-PROCESS, so a provider that forks gets a fresh budget
+  for each child; a whole-session budget would need a cgroup, not an rlimit.
 * **`masked_paths`** — declared and checked, never forwarded. Do not rely on it for
   containment.
 

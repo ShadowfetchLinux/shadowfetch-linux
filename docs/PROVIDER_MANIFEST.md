@@ -204,6 +204,9 @@ the registry hands to the adapter, and `verify_invocation()` re-derives it from 
 manifest at execution time so nothing can widen it.
 
 #### `workspace_mode` — enum, **required**, `"read-only"` or `"workspace-write"`
+Passed to Firebreak as `--workspace-mode`. Enforced: `read-only` binds the workspace
+`--ro-bind`, so a write fails with `EROFS` no matter what the provider's own program
+does. `/tmp` stays a writable tmpfs, so a read-only task still has scratch space.
 `read-only` means the provider may not modify the mission workspace at all.
 `workspace-write` means it may write inside the workspace and nowhere else.
 **Wrong:** declaring `read-only` for a code-change provider makes its work
@@ -217,8 +220,11 @@ if read_only:
     sandbox = sandbox.narrow(workspace_mode="read-only")
 ```
 
-#### `memory_mb` — integer, **required**, 64 – 32768
-Passed to Firebreak as `--memory-mb`. Enforced.
+#### `memory_mb` — integer, **required**, 256 – 32768
+Passed to Firebreak as `--memory-mb`. Enforced as a `MemoryMax` cgroup property with
+`MemorySwapMax=0`, so the cap bounds the workload and not merely the resident set.
+The floor is 256 because Firebreak refuses anything lower; a schema that admitted 64
+let a manifest pass every static check and then die at run time.
 
 #### `cpu_seconds` — integer, **required**, 10 – 7200
 **Declared but not passed to the sandbox.** `Executor.run_process()` gives
@@ -285,35 +291,51 @@ the gate nor `resolve_executable()` can help you. Declare it.
 > The schema's own `executable.description` still describes a `"resolver"` kind. That
 > kind was removed from the `kind` enum during the hardening pass; the prose is stale.
 
-#### `trust` — enum, optional, `"system"` (default) or `"user-runtime"` **(hardening)**
-Where the program is allowed to live. `trusted_executable()` enforces it on whatever
-`resolve_executable()` returns, and again inside `verify_invocation()` at execution
-time.
+#### `trust` — enum, optional, `"system"` (default), `"user-runtime"` or `"developer"`
+How far outside the packaging system the program may live. This is a REQUIREMENT, not
+a description: at execution time the program is CLASSIFIED from the ownership and
+mode of the file **and of every directory above it**, and refused unless the class is
+one this declaration accepts. Absolute is not trusted — a root-owned binary inside a
+directory a third party can write is a binary a third party can replace, and renaming
+a directory entry is as good as editing the file.
 
-* `"system"` — the resolved path must start with one of
+| class | what it means |
+|---|---|
+| `distro-managed` | a packaging-owned path, root-owned every step from `/` down, nothing writable by anyone else |
+| `user-managed` | writable only by root and the invoking user |
+| `developer` | integrity fine, provenance unmanaged: root-owned, nobody else writable, outside the packaging-owned directories |
+| `untrusted` | somebody else can substitute it |
+
+* `"system"` accepts `distro-managed` only. The packaging-owned prefixes are
   `/usr/bin/`, `/usr/sbin/`, `/usr/libexec/`, `/usr/lib/`,
   `/usr/local/lib/shadowfetch/`, `/bin/`, `/sbin/`, `/opt/`.
-* `"user-runtime"` — additionally permits a program under the user's home, and then
-  requires it to be **owned by the invoking user** and **not world-writable**. This
-  exists because the Codex CLI is genuinely an npm install. Declaring it makes the
-  exception visible in review instead of universal.
+* `"user-runtime"` also accepts `user-managed`. This exists because the Codex CLI is
+  genuinely an npm install.
+* `"developer"` also accepts `developer`. Not for shipped providers.
 
-**Wrong:** a program outside the trusted prefixes with `trust` unset (or `"system"`)
-is refused at readiness time (the provider reports itself not installed) and again at
-execution time:
+`untrusted` is accepted by **no** declaration: no manifest may consent on the user's
+behalf to a program a third party controls.
+
+Group-writability is measured rather than waived. Debian gives each user a private
+group, so npm's 0775 under `$HOME` is writable by a group of one and is accepted; the
+same mode under a shared group like `staff` classifies `untrusted`. The sticky bit is
+honoured, so a world-writable `/tmp` in the path does not by itself condemn a program.
+
+**Wrong:** a program of a class the declaration does not accept is refused at
+readiness time (the provider reports itself not installed) and again at execution
+time, naming the component that failed:
 
 ```
-Provider executable /home/u/evil is outside the packaging-owned directories and its
-manifest does not declare a user-runtime executable. …
+Provider executable classifies as untrusted: /opt/vendor is writable by shared group
+gid 50, so the program can be substituted by someone other than root or the invoking
+user. Its manifest declares executable trust 'system', which accepts distro-managed.
+Refusing to execute it.
 ```
 
-A group-writable `user-runtime` program is currently accepted, because npm and nvm
-install 0775 under the user's personal group. That residual risk is named in
-`trusted_executable()`'s docstring.
-
-The release gate does **not** currently inspect `trust`; it only checks that
-`candidates` entries are absolute or `~/`-relative. Declaring `"user-runtime"` is
-therefore visible in review but is not gate-refused, so it is a judgement call at
+The approved-provider policy carries its own `executable_trust` ceiling and the
+NARROWER of the two applies, so a manifest asking for `user-runtime` runs only if a
+human approved that latitude for it. See `docs/PROVIDER_TRUST.md`. Declaring
+`"user-runtime"` is
 review time rather than a mechanical one.
 
 #### `candidates` — array of string, required when `kind` is `"candidates"`, ≥ 1, unique, `^(~/|/)[^\0]*$`

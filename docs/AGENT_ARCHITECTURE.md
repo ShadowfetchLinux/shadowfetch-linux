@@ -548,14 +548,27 @@ From an `Invocation`'s `SandboxSpec` it passes:
 | `read_grants` | one `--read` each | yes |
 | `account_mount` | `--codex-account` | yes |
 | declared credential names | one `--credential-env NAME` each | yes |
+| `cpu_seconds` | `--cpu-seconds` | yes, per process. `min(spec.cpu_seconds, mission timeout)` — the tighter of the two. `RLIMIT_CPU` is per-process, so a forking provider gets a fresh budget per child |
+| `workspace_mode` | `--workspace-mode` | yes. `--ro-bind` for `read-only`, `--bind` otherwise |
 | `egress_allowlist` | — | **no.** `firebreak_network` collapses `allowlist` → `allow`; the hosts are declared for audit and for a future egress filter |
-| `cpu_seconds` | — | **no.** `--cpu-seconds` is passed `config["timeout"]`, the mission's own budget, not the spec's |
 | `masked_paths` | — | **no.** Checked by `narrow()` and `verify_invocation()`, never forwarded |
+| *syscall profile* | — | **not representable.** No schema property, and no `bwrap --seccomp` anywhere |
 
-`SandboxSpec.firebreak_network` documents the first of these in the code. The
-`cpu_seconds` and `masked_paths` gaps are not documented anywhere in the source; they
-are recorded here because a provider author reading the manifest schema would
-reasonably assume all four are enforced.
+Two rows changed in Phase 2.5. `cpu_seconds` was passed the mission's own budget
+rather than the spec's; `workspace_mode` reached nothing at all, and the read-only
+restriction held only because the Codex adapter volunteered `--sandbox read-only` in
+its own argv — provider-supplied code enforcing its own restraint, which is what a
+sandbox boundary exists in order not to depend on.
+
+`memory_mb` is qualified. `MemoryMax` holds the resident set, and Phase 2.5 added
+`MemorySwapMax=0`; before that a process touched 4096 MiB under a 256 MiB cap and
+exited 0, the excess going to swap. The cap now bounds the workload rather than
+depending on host swap configuration.
+
+The two remaining gaps are recorded here, in
+`PHASE2_5_REMAINING_RISKS.md`, and in `test_sandbox_spec_audit.py`, whose table fails
+a build if a field's status drifts from what is actually enforced. They must not be
+described to users as controls.
 
 ---
 
@@ -601,10 +614,12 @@ are described here as history rather than as current state — see the commit
 2. **The registry is cached for the process lifetime** with no invalidation, so a
    newly installed provider needs a worker restart. This is the first thing a
    provider author will hit.
-3. **`trust: "user-runtime"` accepts a group-writable program.** npm and nvm install
-   0775 under the user's personal group, so only world-writability is refused. On a
-   machine whose users share a primary group, another member can replace the Codex
-   binary. Recorded in `PHASE2_REMAINING_RISKS.md`.
+3. **`trust: "user-runtime"` used to accept any group-writable program.** npm and
+   nvm install 0775 under the user's personal group, so only world-writability was
+   refused, and on a machine whose users share a primary group another member could
+   replace the Codex binary. Phase 2.5 measures the group instead of waiving it: a
+   group with no member but the owner is a private group and is accepted; a shared
+   one classifies the program `untrusted`. See `docs/PROVIDER_TRUST.md`.
 4. **`account_mount` is a closed enum** (`["codex-account"]`) matching Firebreak's
    only credential-mount flag, so a third-party provider needing a dedicated account
    directory requires both a schema and a Firebreak change.
