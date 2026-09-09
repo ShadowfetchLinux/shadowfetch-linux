@@ -146,12 +146,18 @@ def read_head(chain: str, *, identifier: str = AUDIT_IDENTIFIER,
               # /dev/log is a local datagram socket, "something else" is within
               # reach of the mission uid. This is reported rather than resolved:
               # picking a winner would mean deciding which forgery to believe.
-              "conflicts": {},
+              "conflicts": {}, "_when": {},
               # Chain ids the journal has seen for THIS store other than the one
               # the database claims. A database whose chain id is absent here
               # while other ids are present did not merely lose its history --
               # its history is attributed to a chain it is no longer claiming.
-              "other_chains": {}, "store": store, "chain": chain}
+              "other_chains": {},
+              # Every uid that has written to this identifier for this chain.
+              # More than one means somebody other than the mission user has
+              # been mirroring, which is worth seeing even though the common
+              # case -- the attacker holding the mission uid -- looks identical
+              # to the engine here.
+              "uids": set(), "store": store, "chain": chain}
     if not chain:
         result["reason"] = (
             "this database has no chain id, so its entries cannot be told apart "
@@ -159,7 +165,12 @@ def read_head(chain: str, *, identifier: str = AUDIT_IDENTIFIER,
         return result
     try:
         done = subprocess.run(
-            ["journalctl", "-t", identifier, "-o", "cat", "--no-pager",
+            # -o json, not -o cat. `cat` returns MESSAGE alone and discards
+            # everything journald knows about the writer, which left the
+            # ordering that "earliest wins" depends on resting on output order,
+            # and left the sender-supplied fields inside MESSAGE as the only
+            # thing to reason about.
+            ["journalctl", "-t", identifier, "-o", "json", "--no-pager",
              "-n", str(limit)],
             capture_output=True, text=True, timeout=30)
     except FileNotFoundError:
@@ -180,9 +191,34 @@ def read_head(chain: str, *, identifier: str = AUDIT_IDENTIFIER,
         if not raw.startswith("{"):
             continue
         try:
-            entry = json.loads(raw)
+            record = json.loads(raw)
         except ValueError:
             continue
+        message = record.get("MESSAGE")
+        if isinstance(message, list):        # journald returns bytes as a list
+            try:
+                message = bytes(message).decode("utf-8", "replace")
+            except (TypeError, ValueError):
+                continue
+        if not isinstance(message, str) or not message.strip().startswith("{"):
+            continue
+        try:
+            entry = json.loads(message)
+        except ValueError:
+            continue
+        # Trusted fields: journald sets these, the sender cannot. They cannot
+        # tell the engine from an attacker who holds the same uid -- the mirror
+        # runs as the mission user, so both write with _UID 1000 -- but they DO
+        # give an ordering the sender cannot forge, and they make a write from a
+        # different user visible.
+        entry["_uid"] = record.get("_UID")
+        entry["_boot"] = record.get("_BOOT_ID")
+        try:
+            entry["_mono"] = int(record.get("__MONOTONIC_TIMESTAMP") or 0)
+        except (TypeError, ValueError):
+            entry["_mono"] = 0
+        if entry.get("_uid") is not None:
+            result["uids"].add(entry["_uid"])
         if not isinstance(entry, dict) or not isinstance(entry.get("seq"), int):
             continue
         if entry.get("chain") != chain:
@@ -198,14 +234,23 @@ def read_head(chain: str, *, identifier: str = AUDIT_IDENTIFIER,
         if entry.get("hash"):
             seen = result["heads"].get(entry["seq"])
             if seen is None:
-                # FIRST line wins, not the last. journalctl emits oldest-first,
-                # so the first line for a sequence number is the one written
-                # when the event was appended; anything after it arrived later.
+                # EARLIEST wins, and "earliest" is now journald's own monotonic
+                # timestamp rather than the order journalctl happened to print.
+                # The sender cannot set that clock.
                 result["heads"][entry["seq"]] = entry["hash"]
+                result["_when"][entry["seq"]] = (entry.get("_boot"), entry["_mono"])
             elif seen != entry["hash"]:
+                previous = result["_when"].get(entry["seq"])
+                current = (entry.get("_boot"), entry["_mono"])
                 result["conflicts"].setdefault(entry["seq"], [seen]).append(entry["hash"])
+                if previous and previous[0] == current[0] and current[1] < previous[1]:
+                    # This line is genuinely older; it is the one to believe.
+                    result["heads"][entry["seq"]] = entry["hash"]
+                    result["_when"][entry["seq"]] = current
         if best is None or entry["seq"] > best["seq"]:
             best = entry
+    result["uids"] = sorted(result["uids"])
+    result.pop("_when", None)
     if best is not None:
         result["head_seq"] = best["seq"]
         result["head_hash"] = best.get("hash")

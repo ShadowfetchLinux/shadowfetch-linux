@@ -284,7 +284,8 @@ class ChainIsTamperEvident(MigrationHarness):
                           "degraded state, reported rather than hidden")
         self.assertEqual(anchor["verdict"], "truncated")
         self.assertFalse(report["ok"])
-        self.assertTrue(any("removed from the end" in p for p in report["problems"]))
+        self.assertTrue(any("a gap of" in p for p in report["problems"]),
+                        report["problems"])
 
     def test_an_inserted_row_is_detected(self):
         self.raw_write(

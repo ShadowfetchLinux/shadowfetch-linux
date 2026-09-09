@@ -1024,7 +1024,7 @@ def chain_truncate_mirror_forged():
             f"  {chain_line.strip()!r}",
             f"  {head_line.strip()!r}",
             f"  {journal_line.strip()!r}")
-        truncation_problems = [p for p in forged["problems"] if "removed from the end" in p]
+        truncation_problems = [p for p in forged["problems"] if "a gap of" in p]
         degraded_problems = [p for p in forged["problems"] if "audit mirror has failed" in p]
         note = Note()
         note.says(not plain["ok"] and not deleted["ok"] and not forged["ok"],

@@ -1754,6 +1754,13 @@ class Store:
             report["problems"].append("no chain genesis found; nothing is verifiable")
             report["ok"] = False
 
+        # The chain's own verdict, taken BEFORE the anchor section runs. It
+        # used to be copied from report["ok"] afterwards, so it carried anchor
+        # findings and the CLI printed "chain BROKEN" over a chain in which no
+        # hash problem had been raised. "the hashes verify" and "an external
+        # record agrees" are two facts and must not share one word.
+        report["chain_ok"] = report["ok"]
+
         # -- the external anchor ------------------------------------------
         # Kept as its own verdict. The chain being intact and the anchor
         # agreeing are two different claims, and a caller that wants "is this
@@ -1797,8 +1804,11 @@ class Store:
             report["ok"] = False
             report["problems"].append(
                 f"the journal records event {external['head_seq']} but the database "
-                f"stops at {report['head_seq']}: {external['head_seq'] - report['head_seq']} "
-                "event(s) were removed from the end of the log")
+                f"stops at {report['head_seq']}, a gap of "
+                f"{external['head_seq'] - report['head_seq']} event(s). Either those "
+                "events were removed from the database, or lines claiming them were "
+                "injected into the journal -- the mission uid can write both sides, "
+                "so this names the disagreement rather than the culprit")
         elif external["head_seq"] < report["head_seq"]:
             # Normal: the mirror is asynchronous and the journal rotates.
             anchor["verdict"] = "behind"
@@ -1950,7 +1960,6 @@ class Store:
         # with the log is a second question, and answering it took nothing new:
         # replaying each mission's events through MISSION_TRANSITIONS shows a
         # state SQL wrote and the engine never reached.
-        report["chain_ok"] = report["ok"]
         report["states"] = self.verify_states(
             rows, first_chained_seq=report["first_chained_seq"],
             chain_ok=report["chain_ok"])

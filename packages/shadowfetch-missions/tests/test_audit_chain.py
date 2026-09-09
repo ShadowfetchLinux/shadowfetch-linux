@@ -141,7 +141,12 @@ class ExternalAnchorVerdicts(MigrationHarness):
         report = self.anchor_with(head_seq=ahead, entries=ahead)
         self.assertEqual(report["anchor"]["verdict"], "truncated")
         self.assertFalse(report["ok"])
-        self.assertTrue(any("removed from the end" in p for p in report["problems"]))
+        # The message names the DISAGREEMENT, not a culprit: both the journal
+        # and the database are writable by the mission uid, so an injected
+        # journal line produces this too and the report must not accuse the
+        # database of a deletion it cannot distinguish.
+        self.assertTrue(any("a gap of" in p and "names the disagreement" in p
+                            for p in report["problems"]), report["problems"])
 
     def test_a_journal_behind_the_database_is_a_finding(self):
         """A journal behind the database is UNWITNESSED HISTORY, not lag.
@@ -205,14 +210,42 @@ class ChainIdentity(MigrationHarness):
             second = Store(self.root).chain_id()
         self.assertEqual(first, second)
 
+    @staticmethod
+    def journal_record(payload, *, uid="1000", mono=1000):
+        """One `journalctl -o json` record. read_head reads the trusted fields
+        alongside MESSAGE now, so a fixture that is bare payload JSON -- which
+        is what `-o cat` used to return -- no longer resembles the input."""
+        return json.dumps({"MESSAGE": json.dumps(payload),
+                           "SYSLOG_IDENTIFIER": sf_audit.AUDIT_IDENTIFIER,
+                           "_UID": uid, "_BOOT_ID": "b", "__MONOTONIC_TIMESTAMP": str(mono)})
+
     def test_read_head_ignores_another_databases_entries(self):
-        entries = [json.dumps({"chain": "theirs", "seq": 99, "hash": "x"}),
-                   json.dumps({"chain": "mine", "seq": 3, "hash": "y"})]
+        entries = [self.journal_record({"chain": "theirs", "seq": 99, "hash": "x"}, mono=1),
+                   self.journal_record({"chain": "mine", "seq": 3, "hash": "y"}, mono=2)]
         done = subprocess.CompletedProcess([], 0, stdout="\n".join(entries), stderr="")
         with mock.patch("subprocess.run", return_value=done):
             result = sf_audit.read_head("mine")
         self.assertEqual(result["head_seq"], 3, "another chain's head leaked in")
         self.assertEqual(result["entries"], 1)
+
+    def test_the_earliest_line_for_a_seq_wins_by_journald_clock(self):
+        """Not by the order journalctl printed them. The sender sets neither."""
+        entries = [self.journal_record({"chain": "mine", "seq": 4, "hash": "later"}, mono=90),
+                   self.journal_record({"chain": "mine", "seq": 4, "hash": "honest"}, mono=10)]
+        done = subprocess.CompletedProcess([], 0, stdout="\n".join(entries), stderr="")
+        with mock.patch("subprocess.run", return_value=done):
+            result = sf_audit.read_head("mine")
+        self.assertEqual(result["heads"][4], "honest")
+        self.assertIn(4, result["conflicts"],
+                      "two hashes for one seq is evidence, not something to resolve quietly")
+
+    def test_the_writing_uids_are_reported(self):
+        entries = [self.journal_record({"chain": "mine", "seq": 1, "hash": "a"}, uid="1000"),
+                   self.journal_record({"chain": "mine", "seq": 2, "hash": "b"}, uid="0")]
+        done = subprocess.CompletedProcess([], 0, stdout="\n".join(entries), stderr="")
+        with mock.patch("subprocess.run", return_value=done):
+            result = sf_audit.read_head("mine")
+        self.assertEqual(result["uids"], ["0", "1000"])
 
     def test_a_chain_with_no_id_refuses_to_compare(self):
         """Rather than comparing against somebody else's entries."""
