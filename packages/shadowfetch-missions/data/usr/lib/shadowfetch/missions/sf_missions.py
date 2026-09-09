@@ -1625,12 +1625,18 @@ class Store:
         person can see rather than as silence that looks like success.
         """
         state = sf_audit.MirrorState(self.root)
-        ok, reason = sf_audit.mirror(dict(row, chain=self.chain_id()))
+        ok, reason = sf_audit.mirror(dict(row, chain=self.chain_id(),
+                                          store=self.store_identity()))
         if ok:
             state.record_success(row["seq"])
         else:
             state.record_failure(reason or "unknown")
         return ok
+
+    def store_identity(self):
+        """This database's journald identity. Derived from its path, not from
+        anything inside it -- see sf_audit.store_identity()."""
+        return sf_audit.store_identity(self.db_path)
 
     def mirror_state(self):
         return sf_audit.MirrorState(self.root).read()
@@ -1708,7 +1714,7 @@ class Store:
         # agreeing are two different claims, and a caller that wants "is this
         # log trustworthy" has to read both.
         local = self.mirror_state()
-        external = sf_audit.read_head(self.chain_id())
+        external = sf_audit.read_head(self.chain_id(), store=self.store_identity())
         anchor = {
             "identifier": external["identifier"],
             "chain": self.chain_id(),
@@ -1774,6 +1780,24 @@ class Store:
         # claim about the same event, and only one of them can be the one that
         # was appended. Reported on its own, because it is evidence even when
         # the database happens to agree with whichever line arrived first.
+        # A chain id this store has used before and is no longer claiming. The
+        # genesis lives in the events table, so a uid that can write that table
+        # can mint a new chain id and re-chain everything; before this, the new
+        # id simply had no journal history and the verdict was 'unverified' --
+        # an absence of evidence, which reads far too much like a pass.
+        others = sorted((external.get("other_chains") or {}).items(),
+                        key=lambda kv: -kv[1])
+        anchor["other_chains_for_this_store"] = dict(others)
+        if others:
+            anchor["verdict"] = "conflict"
+            report["ok"] = False
+            report["problems"].append(
+                "this store has previously mirrored chain id(s) "
+                + ", ".join(cid[:12] + f" ({n} event(s))" for cid, n in others[:3])
+                + f", and now presents {str(self.chain_id())[:12]}. A chain id is "
+                "minted once at genesis, so the log was re-minted after those "
+                "events were recorded")
+
         conflicts = sorted((external.get("conflicts") or {}).items())
         anchor["mirror_conflicts"] = {str(seq): hashes for seq, hashes in conflicts}
         if conflicts:

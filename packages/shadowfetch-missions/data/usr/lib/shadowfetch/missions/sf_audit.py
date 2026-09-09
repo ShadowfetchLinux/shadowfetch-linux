@@ -20,6 +20,7 @@ Each of those is reported as what it is rather than folded into a boolean.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import socket
@@ -38,7 +39,23 @@ _PRIORITY = _FACILITY * 8 + _SEVERITY
 # A mirrored line is small on purpose: the sequence number and the hash are what
 # make truncation detectable, and copying the detail would duplicate content
 # that may be large and is already redacted-but-sensitive in the database.
-MIRRORED_FIELDS = ("chain", "seq", "hash", "mission", "event", "at")
+MIRRORED_FIELDS = ("store", "chain", "seq", "hash", "mission", "event", "at")
+
+
+def store_identity(db_path) -> str:
+    """A stable name for THIS database, derived from where it lives.
+
+    The chain id is minted into an events row, so a uid that can write the
+    events table can also mint a new one -- which is how deleting the genesis
+    and re-chaining produced a log that verified clean. This identifier is
+    derived from the absolute path the OPERATOR opened, so it is the one name in
+    the record that the database cannot restate about itself.
+
+    A database copied to a different path is a different store and will have no
+    journal history: that reports as unverified, which is the honest answer to
+    "I have never seen this before", and is not a pass.
+    """
+    return hashlib.sha256(str(db_path).encode("utf-8")).hexdigest()[:16]
 
 
 class MirrorState:
@@ -107,7 +124,7 @@ def mirror(row: dict, *, socket_path: str = SYSLOG_SOCKET) -> tuple:
 
 
 def read_head(chain: str, *, identifier: str = AUDIT_IDENTIFIER,
-              limit: int = 5000) -> dict:
+              limit: int = 5000, store: str = None) -> dict:
     """The highest sequence number journald has for us, or why we cannot tell.
 
     'Cannot tell' and 'nothing there' are different answers and are reported
@@ -129,7 +146,12 @@ def read_head(chain: str, *, identifier: str = AUDIT_IDENTIFIER,
               # /dev/log is a local datagram socket, "something else" is within
               # reach of the mission uid. This is reported rather than resolved:
               # picking a winner would mean deciding which forgery to believe.
-              "conflicts": {}, "chain": chain}
+              "conflicts": {},
+              # Chain ids the journal has seen for THIS store other than the one
+              # the database claims. A database whose chain id is absent here
+              # while other ids are present did not merely lose its history --
+              # its history is attributed to a chain it is no longer claiming.
+              "other_chains": {}, "store": store, "chain": chain}
     if not chain:
         result["reason"] = (
             "this database has no chain id, so its entries cannot be told apart "
@@ -164,7 +186,14 @@ def read_head(chain: str, *, identifier: str = AUDIT_IDENTIFIER,
         if not isinstance(entry, dict) or not isinstance(entry.get("seq"), int):
             continue
         if entry.get("chain") != chain:
-            continue                       # another database's chain
+            # Another chain id. If it was mirrored by THIS store, that is the
+            # signature of a re-minted chain and is recorded rather than
+            # skipped; if the store does not match it is simply a different
+            # database sharing the identifier, which is expected.
+            if store and entry.get("store") == store and entry.get("chain"):
+                seen = result["other_chains"].setdefault(entry["chain"], 0)
+                result["other_chains"][entry["chain"]] = seen + 1
+            continue
         result["entries"] += 1
         if entry.get("hash"):
             seen = result["heads"].get(entry["seq"])
