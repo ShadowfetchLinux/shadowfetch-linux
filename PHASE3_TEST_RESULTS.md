@@ -93,3 +93,34 @@ could be deleted without failing a test. Tests sharpened until they died.
   malformed-input attacks feed it directly.
 * Only `offline-media` and `codex` are wired. **No live cloud provider
   integration has been exercised end-to-end in this phase.**
+
+## End-to-end run
+
+One real `media_export` mission, `offline-media`, on this box:
+
+```
+state             waiting-review
+tasks             checkpoint succeeded, media succeeded
+session executable /usr/bin/ffprobe  (distro-managed)
+network           requested none / effective none
+enforcement       workspace_mode enforced, network enforced, memory_mb enforced,
+                  processes enforced, cpu_seconds partial,
+                  syscall_profile not_representable,
+                  every unused field not_applicable
+audit             ok, chain_ok, states agrees, anchor agrees
+declared_but_not_enforced  ["syscall_profile"]
+```
+
+`audit verify` on that database: `chain intact`, `mission states agrees
+(1 replayed against the transition table)`, `external anchor agrees`, journal
+head seq 26 = database head seq 26, exit 0.
+
+### One environment limitation, not hidden
+
+The first attempt failed with *"Cannot inspect media: in.mp4"*. The cause was
+**not** the engine: `/usr/bin/shadowfetch-firebreak` installed on this box
+predates the repo and rejects `--memory-mb`, which Phase 2.5 added. The run
+above used the repo's Fireline binary. Anyone reproducing this needs the
+current `shadowfetch-fireline` installed, or the packaged Firebreak on `PATH`
+ahead of the system one. `make package-gate` builds the current one; nothing
+installs it over the running system, and this phase did not.
