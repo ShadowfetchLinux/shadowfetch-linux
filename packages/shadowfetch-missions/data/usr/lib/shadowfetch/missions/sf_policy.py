@@ -67,14 +67,12 @@ POLICY_MEDIATION = {
     "credential_value": (FULLY_MEDIATED,
                          "values are resolved outside the sandbox and injected at "
                          "the boundary; no provider code sees the resolution"),
-    "path_masking": (OBSERVABLE_ONLY,
-                     # Not "there is no flag" -- --mask-path exists. It is
-                     # record-only, and Mission Control never passes it. The
-                     # conclusion was right and the reason was false, which made
-                     # the fix look like adding a flag that is already there.
-                     "Firebreak's --mask-path is record-only and reaches no bwrap "
-                     "argument, and Mission Control does not pass it; declared "
-                     "masks reach nothing. Phase 4"),
+    "path_masking": (FULLY_MEDIATED,
+                     "each declared path is mounted over inside the sandbox's own "
+                     "mount namespace -- an empty tmpfs over a directory, "
+                     "/dev/null over a file -- and Mission Control passes the "
+                     "spec's masks to Firebreak. By PATH: a hardlink to the same "
+                     "inode under an unmasked name is still readable"),
     "memory": (FULLY_MEDIATED, "systemd MemoryMax with MemorySwapMax=0"),
     "processes": (FULLY_MEDIATED, "systemd TasksMax"),
     "cpu_time": (PARTIALLY_MEDIATED,

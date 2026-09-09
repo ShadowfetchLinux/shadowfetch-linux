@@ -88,11 +88,13 @@ class PolicyDecisions(unittest.TestCase):
                 self.assertTrue(entry["mechanism"],
                                 "every row must say HOW, or it is an assertion")
 
-    def test_the_two_known_gaps_are_not_claimed_as_mediated(self):
+    def test_the_remaining_gaps_are_not_claimed_as_mediated(self):
+        """path_masking left this list in Stage E, having gained a real
+        mechanism. The other two have not, and must keep saying so."""
         matrix = pol.PolicyEngine.capability_matrix()
         self.assertEqual(matrix["network_destination"]["mediation"], pol.OBSERVABLE_ONLY)
-        self.assertEqual(matrix["path_masking"]["mediation"], pol.OBSERVABLE_ONLY)
         self.assertEqual(matrix["syscalls"]["mediation"], pol.NOT_OBSERVABLE)
+        self.assertEqual(matrix["path_masking"]["mediation"], pol.FULLY_MEDIATED)
 
 
 class ScopeContainment(unittest.TestCase):

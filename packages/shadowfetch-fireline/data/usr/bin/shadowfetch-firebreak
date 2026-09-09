@@ -407,10 +407,17 @@ def enforcement(argv, args, ws, grants, credentials, net):
         "masked_paths": (
             {"status": NOT_APPLICABLE, "mechanism": "no masked path was asked for"}
             if not masks else
-            {"status": NOT_ENFORCED,
-             "mechanism": "there is no masking flag. These paths are recorded and "
-                          "reach nothing; the sandbox reads them wherever they are "
-                          "otherwise visible to it"}),
+            _status(
+                all(applied(argv, "--tmpfs", str(Path(os.path.realpath(m))))
+                    or applied(argv, "--ro-bind", "/dev/null",
+                               str(Path(os.path.realpath(m))))
+                    for m in masks),
+                "bwrap mounts over each masked path in the sandbox's own mount "
+                "namespace: an empty tmpfs over a directory, /dev/null over a "
+                "file. No cooperation from the payload is involved. A HARDLINK "
+                "to the same inode under an unmasked name is still readable -- "
+                "masking is by path",
+                "a declared mask does not appear in the argv about to be spawned")),
         "memory_mb": _status(
             applied(argv, "--property=MemoryMax=" + str(args.memory_mb) + "M")
             and applied(argv, "--property=MemorySwapMax=0"),
@@ -483,6 +490,13 @@ def arguments(args, ws, sid):
     # read-only task still has scratch space.
     bind = "--ro-bind" if args.workspace_mode == "read-only" else "--bind"
     command += [bind, str(ws), str(ws), "--chdir", str(ws)]
+    # Masks go on AFTER the workspace, so they overlay it. A path that resolved
+    # outside the workspace is refused rather than quietly masked: masking
+    # something the sandbox could not see anyway is a claim with no content, and
+    # masking an arbitrary host path on request is a denial-of-service primitive.
+    for masked in mask_targets(args, ws):
+        command += masked
+    
     # EVERY session gets its own network namespace. 'allow' used to create
     # none at all, so a sandbox that wanted the internet also got the host's
     # loopback, its abstract AF_UNIX namespace and its LAN. Connectivity for
@@ -591,6 +605,42 @@ def terminate_nat(nat):
     except subprocess.TimeoutExpired:
         nat.kill()
         nat.wait(timeout=5)
+
+
+# What a mask actually is, per kind of thing being masked. bwrap has no
+# --mask-path -- which is what Firebreak's old comment meant -- but it does not
+# need one: an empty tmpfs hides a directory's contents and /dev/null over a
+# file makes every read return EOF. Both are mounts in the sandbox's own mount
+# namespace, so no cooperation from the payload is involved.
+def mask_targets(args, ws):
+    """The bwrap arguments that hide each declared path. Refuses paths outside
+    the workspace.
+
+    Returns a list of argument lists so the caller can extend argv in order.
+    """
+    out = []
+    for raw in (getattr(args, "mask_path", None) or []):
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            raise Error("A masked path must be absolute: " + redact(str(raw)))
+        # Resolved so a symlink cannot nominate a different target. The mount
+        # lands INSIDE the sandbox's own mount namespace, so it changes nothing
+        # on the host -- an earlier draft refused any path outside the workspace
+        # on the theory that it was a way to break the host, which was simply
+        # wrong, and would have refused every run of the shipped codex manifest,
+        # whose masks are /home/agent/.ssh and /etc/shadow.
+        resolved = Path(os.path.realpath(str(candidate)))
+        if resolved.is_dir():
+            # An empty tmpfs: the directory exists and is empty, which is what a
+            # build expecting the directory to be present needs.
+            out.append(["--tmpfs", str(resolved)])
+        else:
+            # /dev/null over the file: it opens, and reads return nothing.
+            # Also the right answer for a path that does not exist on the host --
+            # bwrap creates the mount point, so the sandbox sees an empty file
+            # where the payload expected a secret.
+            out.append(["--ro-bind", "/dev/null", str(resolved)])
+    return out
 
 
 def run(args):
@@ -817,9 +867,12 @@ def main(argv=None):
                               "there are two network postures and no destination filter, "
                               "so this reaches nothing and the session record says so")
     execute.add_argument("--mask-path", action="append", default=[], metavar="ABSOLUTE_PATH",
-                         help="Path the caller intends to hide. RECORDED ONLY: there is "
-                              "no masking flag, so this reaches nothing and the session "
-                              "record says so")
+                         help="Path inside the workspace to hide from the sandbox. A "
+                              "directory becomes an empty tmpfs, a file becomes "
+                              "/dev/null. Enforced by the mount namespace, not by the "
+                              "payload's cooperation. A path outside the workspace is "
+                              "refused. Masking is by path: a hardlink to the same "
+                              "inode under an unmasked name is still readable")
     execute.add_argument("--keep-secrets", action="store_true", help="Deprecated explicit provider credential pass-through")
     execute.add_argument("--no-checkpoint", action="store_true", help="For callers that already own a recovery checkpoint")
     execute.add_argument("--workspace-mode", choices=("workspace-write", "read-only"), default="workspace-write")

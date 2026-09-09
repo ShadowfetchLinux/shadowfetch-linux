@@ -242,8 +242,10 @@ class EnforcementTableIsHonest(unittest.TestCase):
                     self.assertEqual(status, P.NOT_ENFORCED)
 
     def test_the_unenforced_list_is_exactly_the_known_gaps(self):
+        """masked_paths left this list in Stage E. egress_allowlist stays: the
+        sandbox has its own namespace but nothing filters destinations yet."""
         self.assertEqual(P.unenforced_fields(),
-                         ["egress_allowlist", "masked_paths", "syscall_profile"])
+                         ["egress_allowlist", "syscall_profile"])
 
     def test_a_field_with_nothing_declared_is_not_applicable_rather_than_a_warning(self):
         spec = P.SandboxSpec(workspace_mode="workspace-write", network="none",

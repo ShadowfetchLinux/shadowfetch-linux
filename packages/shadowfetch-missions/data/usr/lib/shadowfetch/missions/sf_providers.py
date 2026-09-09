@@ -913,15 +913,17 @@ SANDBOX_ENFORCEMENT = {
                          "the sandbox reaches the internet through a NAT that "
                          "does not filter by destination, so the declared hosts "
                          "are recorded for audit and constrain nothing. Stage C"),
-    "masked_paths": (NOT_ENFORCED,
-                     # The reason matters as much as the verdict: Firebreak DOES
-                     # have --mask-path. It is record-only -- it reaches no bwrap
-                     # argument -- and run_process() never passes it, so the mask
-                     # is not even in the session record. Saying "there is no
-                     # flag" implied the fix was to add one that already exists.
-                     "Firebreak's --mask-path is record-only and reaches no bwrap "
-                     "argument, and Mission Control does not pass it at all; the "
-                     "paths are checked on widening and reach nothing. Phase 4"),
+    "masked_paths": (ENFORCED,
+                     # Stage E. --mask-path used to be record-only AND unpassed;
+                     # both halves are closed. Measured against the tricks that
+                     # matter -- direct open, absolute path, relative traversal,
+                     # symlink, nested file, and renaming the target -- every one
+                     # denied, and a masked directory lists empty.
+                     "bwrap mounts over each declared path inside the sandbox's "
+                     "own mount namespace: an empty tmpfs over a directory, "
+                     "/dev/null over a file. Enforced by the kernel, not by the "
+                     "payload's cooperation. Masking is BY PATH, so a hardlink to "
+                     "the same inode under an unmasked name is still readable"),
     "syscall_profile": (NOT_REPRESENTABLE,
                         "no schema property and no bwrap --seccomp anywhere"),
 }

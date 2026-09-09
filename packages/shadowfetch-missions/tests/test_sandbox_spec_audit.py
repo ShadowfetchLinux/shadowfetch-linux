@@ -177,20 +177,28 @@ AUDIT = (
         "declared": True,
         "validated": True,
         "narrowed": True,
-        "passed": False,
-        "firebreak_flag": None,
-        "enforced": "no",
-        "status": NOT_ENFORCED_PHASE_4,
+        "passed": True,
+        "firebreak_flag": "--mask-path",
+        "enforced": "yes",
+        "status": "ENFORCED",
         "looks_enforced_but_is_not": False,
-        "mechanism": "none. Firebreak has no masking flag; nothing tmpfs's or unbinds a "
-                     "declared path.",
+        "mechanism": "bwrap mounts over each declared path inside the sandbox's own "
+                     "mount namespace: an empty tmpfs over a directory, /dev/null over "
+                     "a file. No cooperation from the payload is involved.",
         "evidence": {
             "declared": "source", "validated": "executed", "narrowed": "executed",
             "passed": "executed", "enforced": "executed",
         },
-        "notes": "Already recorded in PHASE2_REMAINING_RISKS §2. narrow() and "
-                 "verify_invocation() police the inverted direction (a mask may be added, "
-                 "never dropped) on a value that reaches nothing.",
+        "notes": "STAGE E, and it was broken in BOTH halves. --mask-path was accepted "
+                 "and applied by nothing -- its own help text said RECORDED ONLY -- and "
+                 "run_process() never passed it at all, so a provider could declare "
+                 ".env masked, the receipt printed the declaration, and the agent read "
+                 "the file. Measured through the real Firebreak against the tricks that "
+                 "matter: direct open, absolute path, relative traversal, symlink, "
+                 "nested file and renaming the target are each denied, and a masked "
+                 "directory lists empty. Masking is BY PATH: a hardlink to the same "
+                 "inode under an unmasked name is still readable, which is stated "
+                 "wherever the mechanism is described rather than left to be found.",
     },
     {
         "field": "credential_ids",
@@ -483,7 +491,9 @@ class TableShapeTests(unittest.TestCase):
         not have, so they stay declared-but-unenforced until Phase 4 and must not
         be described to users as controls."""
         unenforced = sorted(r["field"] for r in AUDIT if r["status"] == NOT_ENFORCED_PHASE_4)
-        self.assertEqual(unenforced, ["egress_allowlist", "masked_paths"])
+        # masked_paths left this list in Stage E by gaining a real mechanism,
+        # which is the only way out of it.
+        self.assertEqual(unenforced, ["egress_allowlist"])
 
 
 # --------------------------------------------------------------------------- #
@@ -708,7 +718,8 @@ class PassedTests(unittest.TestCase):
         for host in ("api.openai.com", "chatgpt.com"):
             self.assertNotIn(host, joined, "egress_allowlist leaked into the argv")
         for mask in ("/home/agent/.ssh", "/etc/shadow"):
-            self.assertNotIn(mask, joined, "masked_paths leaked into the argv")
+            self.assertIn(mask, joined,
+                      "a declared mask is not passed to Firebreak")
 
     def test_passed_values_are_the_specs_own_values(self):
         argv = self.argv(self.spec(), env={"OPENAI_API_KEY": "unit-only-placeholder"})

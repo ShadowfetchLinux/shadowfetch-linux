@@ -3316,6 +3316,13 @@ class Executor:
             # One identity across the orchestrator and the sandbox. Firebreak
             # adopts this rather than minting its own, so a person holding a
             # systemd scope name or a .session file can get back to the mission.
+            # The declared masks, actually passed. Firebreak enforces them with
+            # mounts now; before Stage E it recorded them and applied nothing,
+            # and Mission Control did not even pass them -- so a provider could
+            # declare .env masked, the receipt printed the declaration, and the
+            # agent read the file.
+            for masked in (spec.masked_paths if spec else ()):
+                wrapper.extend(["--mask-path", str(masked)])
             if self.session_id:
                 wrapper.extend(["--session-id", self.session_id,
                                 "--mission", self.mid])
