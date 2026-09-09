@@ -14,6 +14,12 @@ Depends:
  python3,
  python3-pyqt6,
  flatpak
+# The Ignition model cards are rendered from the hwscan fact file, and Welcome
+# runs /usr/libexec/shadowfetch-hwscan itself to produce one. shadowfetch-hwscan
+# names this package as a consumer in its own description; nothing named it
+# back. Recommends, not Depends: Welcome's other pages work without it.
+Recommends:
+ shadowfetch-hwscan
 Description: Shadowfetch first-boot welcome experience
  A simple PyQt6 application launched on first login that walks the user
  through accent color selection, optional Flatpak application installs,

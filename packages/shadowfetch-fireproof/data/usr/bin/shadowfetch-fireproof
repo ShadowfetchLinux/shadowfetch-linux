@@ -70,7 +70,12 @@ GOLD = "#d8a24a"
 TEXT = "#f0eee9"
 MUTED = "#aaa69f"
 GREEN = "#72c69c"
-RED = "#e07a6a"
+# This window is mounted inside the Control Center, so its error colour has to
+# be the Control Center's. It was a paler, oranger red than sfcc/theme.py used,
+# so one failure message changed hue depending on which frame you were looking
+# at (ARCHITECTURE_AUDIT.md:246). tools/truth/palette.json now owns the
+# app-chrome surface, and tools/drift_gate.py fails on a third red.
+RED = "#e2533b"
 
 BUS_NAME = "org.shadowfetch.Fireproof1"
 OBJ_PATH = "/org/shadowfetch/Fireproof1"

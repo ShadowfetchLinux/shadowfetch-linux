@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -19,7 +20,20 @@ import sys
 import tarfile
 import tempfile
 
-import verify_acceptance_4_0_0 as acceptance
+# Stage Q: one implementation per gate family, under tools/release/. gate must
+# be imported first: it orders sys.path so tools/ precedes tools/release/.
+_RELEASE_DIR = Path(__file__).resolve().parent / "release"
+sys.path.insert(0, str(_RELEASE_DIR))
+import gate  # noqa: E402
+
+# Loaded under a distinct module name on purpose. tools/ also contains a PACKAGE
+# named `acceptance` (the VM acceptance harness); binding the bare top-level name
+# to this module would make `from acceptance import release_link` fail process-wide.
+_ACCEPTANCE_SPEC = importlib.util.spec_from_file_location(
+    "sf_release_acceptance", _RELEASE_DIR / "acceptance.py"
+)
+acceptance = importlib.util.module_from_spec(_ACCEPTANCE_SPEC)
+_ACCEPTANCE_SPEC.loader.exec_module(acceptance)
 
 
 VERSION = "4.0.0"
@@ -32,14 +46,18 @@ GENERATED = tuple(f"{stem}-{VERSION}{suffix}" for stem, suffix in (
 ))
 CHECKSUMS = f"release-evidence-{VERSION}.sha256"
 QA_SOURCES = (
-    "tools/build_release_evidence_4_0_0.py",
-    "tools/iso_gate_4_0_0.py",
+    "tools/release/gate.py",
+    "tools/release/evidence.py",
+    "tools/release/iso_gate.py",
+    "tools/release/source_gate.py",
+    "tools/release/package_gate.py",
+    "tools/release/acceptance.py",
+    "tools/release/versions/4.0.0.toml",
+    "tools/release/trusted-programs.toml",
     "tools/drkonqi_pickup_contract.py",
     "tools/package_release_evidence_4_0_0.py",
-    "tools/verify_acceptance_4_0_0.py",
     "tools/publish_release_4_0_0.py",
     "tools/pre_release_check.sh",
-    "tools/package_gate_4_0_0.py",
     "tools/build_drkonqi_pickup.sh",
     "tools/containers/drkonqi-build.Containerfile",
     "tools/qa_4_0_0/README.md",
@@ -181,7 +199,10 @@ def approve_inputs(root: Path, path: str) -> dict:
 
 
 def validate_prepublication(data: dict):
-    errors = acceptance.validate_manifest(data)
+    # Stage Q: the release identity a manifest must declare is version DATA, so
+    # the verifier is handed the same file the gates read instead of carrying a
+    # second transcription of "4.0.0"/"Fire and Ice"/"Umbra".
+    errors = acceptance.validate_manifest(data, gate.load_release(VERSION))
     for case in data.get("cases", []):
         if not isinstance(case, dict):
             continue

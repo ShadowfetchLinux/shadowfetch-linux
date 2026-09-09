@@ -5,6 +5,20 @@ A thin human/CLI front end over the same checkpoint engine the Shadowfetch MCP
 'checkpoint' server exposes to agents, so a person and an agent take and read
 the SAME restore points. Snapshots and undo touch only the named workspace
 under ~/Workspaces.
+
+Exit codes are part of the interface Firebreak and Mission Control read:
+
+  0  the action completed and, for undo, the workspace was VERIFIED against
+     the checkpoint afterwards
+  1  the action was refused; the message says so, and the workspace was left
+     as it was
+  2  usage error
+  3  the engine could not be imported
+  4  RECOVERY REQUIRED -- an undo was interrupted after the exchange. The
+     workspace needs `shadowfetch-checkpoint recover <workspace>` before
+     anything else touches it. This is deliberately NOT code 1: "nothing
+     happened" and "something is half done" are different facts and a script
+     that cannot tell them apart will do the wrong thing with both.
 """
 from __future__ import annotations
 import argparse, json, sys
@@ -25,6 +39,16 @@ try:
 except ImportError:
     sys.stderr.write("sf_mcp not found\n"); raise SystemExit(3)
 
+# Stage H: an undo that was interrupted after the exchange leaves the workspace
+# in a state a caller must not treat as a plain refusal.
+RECOVERY_PREFIX = "RECOVERY REQUIRED"
+EXIT_REFUSED = 1
+EXIT_RECOVERY = 4
+
+
+def _exit_for(message: str) -> int:
+    return EXIT_RECOVERY if message.startswith(RECOVERY_PREFIX) else EXIT_REFUSED
+
 
 def _call(srv, tool, **args):
     out = srv.tools[tool].handler(args)
@@ -32,6 +56,46 @@ def _call(srv, tool, **args):
         text = out.get("content", [{}])[0].get("text", "")
         return text, out.get("isError", False)
     return out, False
+
+
+# -- rendering for the actions the MCP surface does not offer ---------------- #
+# verify/prune/recover are operator tools: they exist to answer "can this
+# checkpoint still restore?", "is the store bounded?" and "what happened to the
+# undo that did not finish?". They are not added to the agent-facing server.
+def format_verify(result: dict) -> str:
+    if result["verified"]:
+        return (f"checkpoint {result['checkpoint']} verifies: "
+                f"{result['entries']} entries match the manifest recorded when "
+                "it was taken.")
+    lines = "\n".join(f"  {problem}" for problem in result["problems"])
+    return (f"checkpoint {result['checkpoint']} DOES NOT verify "
+            f"({result['method']}):\n{lines}")
+
+
+def format_prune(result: dict) -> str:
+    if not result["dropped"]:
+        return (f"nothing pruned for '{result['workspace']}'; "
+                f"{result['kept']} checkpoints, {result['bytes']} bytes.")
+    return (f"pruned {len(result['dropped'])} checkpoint(s) from "
+            f"'{result['workspace']}': " + ", ".join(result["dropped"]) +
+            f"\n{result['kept']} kept, {result['bytes']} bytes.")
+
+
+def format_recover(result: dict) -> str:
+    if result["result"] == "nothing-to-recover":
+        return f"workspace '{result['workspace']}' has no interrupted undo."
+    if result["result"] == "completed":
+        return (f"workspace '{result['workspace']}' was already restored to "
+                f"checkpoint {result['checkpoint']}; the interrupted undo is "
+                "now finished and verified.")
+    return (f"workspace '{result['workspace']}' is as it was before the "
+            f"interrupted undo of checkpoint {result['checkpoint']}. The undo "
+            "did NOT take effect; re-run it if you still want it. The pre-undo "
+            f"state is also checkpoint {result['safety']}.")
+
+
+LOCAL_FORMATTERS = {"verify": format_verify, "prune": format_prune,
+                    "recover": format_recover}
 
 
 def main(argv=None):
@@ -54,14 +118,23 @@ def main(argv=None):
     d.add_argument("workspace"); d.add_argument("checkpoint")
     u = sub.add_parser("undo", parents=[common], help="restore a workspace to a checkpoint")
     u.add_argument("workspace"); u.add_argument("checkpoint")
+    v = sub.add_parser("verify", parents=[common],
+                       help="check a checkpoint against its manifest (writes nothing)")
+    v.add_argument("workspace"); v.add_argument("checkpoint")
+    pr = sub.add_parser("prune", parents=[common],
+                        help="apply the retention policy to a workspace's store now")
+    pr.add_argument("workspace")
+    rc = sub.add_parser("recover", parents=[common],
+                        help="finish or reverse an undo that was interrupted")
+    rc.add_argument("workspace")
     a = p.parse_args(argv)
     if a.version:
         print(f"shadowfetch-checkpoint (Shadowfetch Linux) {sf_mcp.SERVER_VERSION}"); return 0
     if not a.cmd:
         p.print_help(); return 2
-    if a.cmd == "snapshot":
+    if a.cmd in ("snapshot",):
         call = {"workspace": a.workspace, "label": a.label}
-    elif a.cmd == "list":
+    elif a.cmd in ("list", "prune", "recover"):
         call = {"workspace": a.workspace}
     else:
         call = {"workspace": a.workspace, "checkpoint": a.checkpoint}
@@ -75,18 +148,34 @@ def main(argv=None):
             # of the tail of a traceback.
             print(json.dumps({"action": a.cmd, "error": str(exc)}, indent=2))
             sys.stderr.write(str(exc) + "\n")
-            return 1
+            return _exit_for(str(exc))
         print(json.dumps(result, indent=2))
         return 0
+    if a.cmd in LOCAL_FORMATTERS:
+        try:
+            result = sf_mcp.checkpoint_call(a.cmd, **call)
+        except sf_mcp._ToolError as exc:
+            sys.stderr.write(str(exc) + "\n")
+            return _exit_for(str(exc))
+        print(LOCAL_FORMATTERS[a.cmd](result))
+        # A checkpoint that does not verify is a failed check, not a report.
+        return 1 if a.cmd == "verify" and not result["verified"] else 0
     srv = sf_mcp.build_checkpoint()
-    if a.cmd == "snapshot":
-        text, err = _call(srv, "snapshot", workspace=a.workspace, label=a.label)
-    elif a.cmd == "list":
-        text, err = _call(srv, "list", workspace=a.workspace)
-    elif a.cmd == "diff":
-        text, err = _call(srv, "diff", workspace=a.workspace, checkpoint=a.checkpoint)
-    elif a.cmd == "undo":
-        text, err = _call(srv, "undo", workspace=a.workspace, checkpoint=a.checkpoint)
+    try:
+        if a.cmd == "snapshot":
+            text, err = _call(srv, "snapshot", workspace=a.workspace, label=a.label)
+        elif a.cmd == "list":
+            text, err = _call(srv, "list", workspace=a.workspace)
+        elif a.cmd == "diff":
+            text, err = _call(srv, "diff", workspace=a.workspace, checkpoint=a.checkpoint)
+        elif a.cmd == "undo":
+            text, err = _call(srv, "undo", workspace=a.workspace, checkpoint=a.checkpoint)
+    except sf_mcp._ToolError as exc:
+        # The CLI calls the tool handlers directly rather than over the
+        # protocol, so nothing had wrapped a refusal for it: `diff proj bogus`
+        # without --json printed a traceback and exited 1 by accident.
+        sys.stderr.write(str(exc) + "\n")
+        return _exit_for(str(exc))
     print(text)
     return 1 if err else 0
 

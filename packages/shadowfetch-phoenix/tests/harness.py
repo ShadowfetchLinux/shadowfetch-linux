@@ -17,6 +17,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -301,3 +302,107 @@ class SandboxTestCase(unittest.TestCase):
         self.sb = Sandbox(base)
         self.sb.build_volume()
         self.sb.build_boot()
+
+
+# =========================================================================
+# Stage T additions: the testable recovery package, and a REAL loopback Btrfs.
+# =========================================================================
+
+PHOENIX_LIB = PHOENIX / "usr/lib/shadowfetch"
+RECOVER = PHOENIX / "usr/libexec/phoenix-recover"
+
+
+def import_phoenix():
+    """Import the shipped recovery package from the source tree.
+
+    Same relative computation phoenix-recover does from its own installed
+    location (<prefix>/libexec -> <prefix>/lib/shadowfetch), so the tests
+    import exactly the modules the package installs.
+    """
+    if str(PHOENIX_LIB) not in sys.path:
+        sys.path.insert(0, str(PHOENIX_LIB))
+    import phoenix
+    return phoenix
+
+
+def _sudo_prefix() -> list:
+    """How to reach root, or None. Never interactive: `sudo -n` or nothing."""
+    if os.geteuid() == 0:
+        return []
+    probe = subprocess.run(["sudo", "-n", "true"], capture_output=True, check=False)
+    return ["sudo", "-n"] if probe.returncode == 0 else None
+
+
+def run_root(*argv: str, check: bool = True) -> subprocess.CompletedProcess:
+    prefix = _sudo_prefix()
+    if prefix is None:
+        raise unittest.SkipTest("no non-interactive root available")
+    return subprocess.run([*prefix, *argv], capture_output=True, text=True,
+                          check=check)
+
+
+class LoopbackBtrfs:
+    """A real Btrfs filesystem in a temp file, mounted at its top level.
+
+    Real mkfs.btrfs, a real loop device, real subvolumes and a real
+    renameat2(RENAME_EXCHANGE) between them. The scripts under test then do
+    genuine `btrfs subvolume snapshot` and `mv --exchange` work, which is the
+    only way to prove the root-subvolume exchange is correct - a stub can only
+    prove that the script called something.
+
+    Mounted with user_subvol_rm_allowed and chowned to the invoking user so
+    everything after the mount runs unprivileged; only mount and umount need
+    root.
+    """
+
+    SIZE_MB = 512          # comfortably over the Btrfs minimum
+
+    def __init__(self, base: Path, name: str = "volume"):
+        self.base = base
+        self.image = base / f"{name}.img"
+        self.mount = base / name
+        self._mounted = False
+
+    def __enter__(self) -> "LoopbackBtrfs":
+        for tool in ("/usr/sbin/mkfs.btrfs", "/sbin/mkfs.btrfs"):
+            if Path(tool).exists():
+                mkfs = tool
+                break
+        else:
+            raise unittest.SkipTest("mkfs.btrfs is not installed")
+        if _sudo_prefix() is None:
+            raise unittest.SkipTest("no non-interactive root available")
+        self.mount.mkdir(parents=True, exist_ok=True)
+        with open(self.image, "wb") as handle:
+            handle.truncate(self.SIZE_MB * 1024 * 1024)
+        made = subprocess.run([mkfs, "-q", "-f", str(self.image)],
+                              capture_output=True, text=True, check=False)
+        if made.returncode != 0:
+            raise unittest.SkipTest(f"mkfs.btrfs failed: {made.stderr.strip()}")
+        run_root("mount", "-o", "loop,user_subvol_rm_allowed,subvolid=5",
+                 str(self.image), str(self.mount))
+        self._mounted = True
+        run_root("chown", "%d:%d" % (os.getuid(), os.getgid()), str(self.mount))
+        return self
+
+    def __exit__(self, *exc):
+        if self._mounted:
+            subprocess.run([*(_sudo_prefix() or []), "umount", str(self.mount)],
+                           capture_output=True, check=False)
+            self._mounted = False
+        return False
+
+    # -- real subvolume operations ----------------------------------------
+    def btrfs(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(["/usr/bin/btrfs", *args], capture_output=True,
+                              text=True, check=True)
+
+    def subvolume(self, name: str) -> Path:
+        path = self.mount / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.btrfs("subvolume", "create", str(path))
+        return path
+
+    def snapshot(self, source: Path, target: Path) -> Path:
+        self.btrfs("subvolume", "snapshot", str(source), str(target))
+        return target

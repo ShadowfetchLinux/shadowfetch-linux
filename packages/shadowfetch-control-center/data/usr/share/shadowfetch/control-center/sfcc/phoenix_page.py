@@ -291,7 +291,7 @@ class PhoenixPage(QWidget):
             return
         dialog = ProcessDialog(
             self, f"Restoring Phoenix Point #{num}",
-            ["pkexec", busutil.PHOENIX_RESTORE, str(num)],
+            [busutil.PKEXEC, busutil.PHOENIX_RESTORE, str(num)],
             "The restore is crash-safe: at every instant a bootable system "
             "exists, even if power is lost.")
         dialog.completed.connect(lambda code: self._restore_done(code))
@@ -313,6 +313,20 @@ class PhoenixPage(QWidget):
     # ---- apt-snapshot toggle ----------------------------------------------
     def _toggle_apt_snapshots(self, checked: bool) -> None:
         argv = busutil.apt_snapshot_toggle_argv(enable=checked)
+        if argv is None:
+            # Stage V: the old code answered a missing root helper with
+            # `pkexec /bin/sh -c <script>`.  A missing helper is now an
+            # honest failure -- putting the switch back where it was -- and
+            # never a wider grant.
+            self.apt_toggle.blockSignals(True)
+            self.apt_toggle.setChecked(busutil.apt_snapshots_enabled())
+            self.apt_toggle.blockSignals(False)
+            QMessageBox.warning(
+                self, "Phoenix",
+                "This setting cannot be changed here: the Phoenix helper "
+                "that writes it (%s) is not installed."
+                % busutil.PHOENIX_APT_SNAPSHOT)
+            return
         proc = QProcess(self)
 
         def done(code, _status):
@@ -334,7 +348,7 @@ class PhoenixPage(QWidget):
         if os.access(busutil.PHOENIX_APT_REPAIR, os.X_OK):
             dialog = ProcessDialog(
                 self, "Repairing software sources",
-                ["pkexec", busutil.PHOENIX_APT_REPAIR],
+                [busutil.PKEXEC, busutil.PHOENIX_APT_REPAIR],
                 "Replaces the package source lists and signing keys with the "
                 "known-good copies shipped on this system, then validates "
                 "with apt-get update.")

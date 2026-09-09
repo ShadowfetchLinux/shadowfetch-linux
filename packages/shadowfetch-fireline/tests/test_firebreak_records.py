@@ -361,16 +361,38 @@ class RecordTests(unittest.TestCase):
                          ["api.example.com", "cdn.example.com"])
         self.assertEqual(start["enforcement"]["egress_allowlist"]["status"], "not_enforced")
 
-    def test_a_masked_path_changes_nothing_and_says_it_changes_nothing(self):
+    def test_a_masked_path_changes_the_sandbox_and_says_so(self):
+        """This asserted the opposite until Stage E, and it was right to.
+
+        --mask-path was accepted and applied by nothing -- its own help text
+        said RECORDED ONLY -- so a provider could declare .env masked, the
+        receipt printed the declaration, and the agent read the file. A file is
+        masked with /dev/null over it and a directory with an empty tmpfs, both
+        in the sandbox's own mount namespace. Measured through the real
+        Firebreak: direct open, absolute path, relative traversal, symlink,
+        nested file and renaming the target are each denied.
+        """
         secret = self.base / "private.txt"
         secret.write_text("private")
         _, plain = self.execute()
         _, masked = self.execute("--mask-path", str(secret))
-        self.assertEqual(plain.spawned, masked.spawned,
-                         "a masked path appeared to alter the sandbox")
+        self.assertNotEqual(plain.spawned, masked.spawned,
+                            "a masked path did not alter the sandbox at all")
+        self.assertIn("--ro-bind", masked.spawned)
+        joined = " ".join(masked.spawned)
+        self.assertIn("/dev/null " + str(secret), joined,
+                      "the mask does not reach bwrap")
         start = self.records()[2]
         self.assertEqual(start["masked_paths_requested"], [str(secret)])
-        self.assertEqual(start["enforcement"]["masked_paths"]["status"], "not_enforced")
+        self.assertEqual(start["enforcement"]["masked_paths"]["status"], "enforced")
+
+    def test_a_masked_directory_becomes_an_empty_tmpfs(self):
+        secret = self.base / "secrets"
+        secret.mkdir()
+        (secret / "token").write_text("token")
+        _, masked = self.execute("--mask-path", str(secret))
+        self.assertIn("--tmpfs", masked.spawned)
+        self.assertIn("--tmpfs " + str(secret), " ".join(masked.spawned))
 
     def test_no_field_names_a_restriction_firebreak_does_not_apply(self):
         """Only the REQUESTED list may be recorded. A bare `egress_allowlist`

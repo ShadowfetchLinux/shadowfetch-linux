@@ -73,10 +73,17 @@ LB_BUILD_LOG := $(BUILD_DIR)/live-build-$(VERSION).log
 LB_BUILD_MARKER := $(BUILD_DIR)/.live-build-$(VERSION)-started
 QA_EVIDENCE_DIR := $(ROOT)/work/qa-$(VERSION)/evidence
 ISO_GATE_LOG := $(QA_EVIDENCE_DIR)/iso/iso-gate.log
-SOURCE_GATE := $(ROOT)/tools/source_gate_$(VERSION_TOKEN).py
-PACKAGE_GATE := $(ROOT)/tools/package_gate_$(VERSION_TOKEN).py
-ISO_GATE := $(ROOT)/tools/iso_gate_$(VERSION_TOKEN).py
-ACCEPTANCE_TOOL := $(ROOT)/tools/verify_acceptance_$(VERSION_TOKEN).py
+# Stage Q: ONE implementation per gate family plus a version DATA file.
+# These used to be $(ROOT)/tools/<family>_$(VERSION_TOKEN).py, so cutting a
+# release meant copying four modules and hand-editing the version strings in
+# each. Everything that varies per release now lives in RELEASE_DATA, and every
+# gate is passed --version so a run can never silently gate the wrong release.
+RELEASE_TOOLS := $(ROOT)/tools/release
+RELEASE_DATA := $(RELEASE_TOOLS)/versions/$(VERSION).toml
+SOURCE_GATE := $(RELEASE_TOOLS)/source_gate.py
+PACKAGE_GATE := $(RELEASE_TOOLS)/package_gate.py
+ISO_GATE := $(RELEASE_TOOLS)/iso_gate.py
+ACCEPTANCE_TOOL := $(RELEASE_TOOLS)/acceptance.py
 ACCEPTANCE_MANIFEST := $(ROOT)/qa/$(VERSION)/acceptance.json
 RELEASE_DEBS := $(BUILD_DIR)/*_$(VERSION)-1_all.deb $(BUILD_DIR)/*_$(VERSION)-1_amd64.deb $(BUILD_DIR)/grub-btrfs_*_all.deb
 PACKAGES_STAMP := $(BUILD_DIR)/.packages-$(VERSION)
@@ -91,7 +98,7 @@ R2_REGION   ?= auto
 LINUX_HOST ?= shadowfetch-linux
 LINUX_PATH ?= ~/projects/shadowfetch-4.0.0
 
-.PHONY: all help test attacks source-gate package-gate iso-gate acceptance-audit acceptance-gate deps packages repo refresh-index check-index iso sign pre-release-check publish qemu clean distclean \
+.PHONY: all help test attacks release-data source-gate package-gate iso-gate acceptance-audit acceptance-gate deps packages repo refresh-index check-index iso sign pre-release-check publish qemu clean distclean \
         sync-from-linux deploy-worker ship stamp-version
 
 all: iso
@@ -105,6 +112,7 @@ help:
 	@echo "  make iso-gate   Validate the signed hybrid ISO and installed-image payload"
 	@echo "  make acceptance-audit Report on the release manifest (does NOT fail on pending)"
 	@echo "  make acceptance-gate  HARD gate: every required case must pass or be waived"
+	@echo "  make vm-acceptance    Run one VM acceptance case (VM_CASE=...) end to end"
 	@echo "  make packages   Build all .deb packages"
 	@echo "  make repo       Build local APT repository"
 	@echo "  make refresh-index Re-sign the APT indices in place (no rebuild)"
@@ -150,28 +158,61 @@ attacks:
 	python3 tools/attacks/attack_verifier.py
 	python3 tools/attacks/attack_domain.py
 
-source-gate:
+# release-data is a prerequisite of every gate: a missing version file must
+# fail here, naming the file to add, rather than inside a gate half a run later.
+release-data:
+	@test -f $(RELEASE_DATA) || { echo "Missing release data: $(RELEASE_DATA) -- cutting a release needs one version file, see tools/release/README.md" >&2; exit 1; }
+
+source-gate: release-data
 	@test -x $(SOURCE_GATE) || { echo "Missing source gate: $(SOURCE_GATE)" >&2; exit 1; }
-	$(SOURCE_GATE)
+	$(SOURCE_GATE) --version $(VERSION)
 
-package-gate: repo
+package-gate: repo release-data
 	@test -x $(PACKAGE_GATE) || { echo "Missing package gate: $(PACKAGE_GATE)" >&2; exit 1; }
-	$(PACKAGE_GATE)
+	$(PACKAGE_GATE) --version $(VERSION)
 
-acceptance-audit:
+acceptance-audit: release-data
 	@test -x $(ACCEPTANCE_TOOL) || { echo "Missing acceptance tool: $(ACCEPTANCE_TOOL)" >&2; exit 1; }
 	@test -f $(ACCEPTANCE_MANIFEST) || { echo "Missing acceptance manifest: $(ACCEPTANCE_MANIFEST)" >&2; exit 1; }
-	$(ACCEPTANCE_TOOL) --manifest $(ACCEPTANCE_MANIFEST) acceptance-audit
+	$(ACCEPTANCE_TOOL) --version $(VERSION) --manifest $(ACCEPTANCE_MANIFEST) acceptance-audit
 
 # The HARD gate. acceptance-audit reports and exits 0 even with pending
 # cases, which is how 4.0.0 was published with thirteen of eighteen required
 # cases unproven. This target refuses unless every required case is pass or
 # waived and every artifact field is recorded. A release must depend on this,
 # not on the audit.
-acceptance-gate:
+acceptance-gate: release-data
 	@test -x $(ACCEPTANCE_TOOL) || { echo "Missing acceptance tool: $(ACCEPTANCE_TOOL)" >&2; exit 1; }
 	@test -f $(ACCEPTANCE_MANIFEST) || { echo "Missing acceptance manifest: $(ACCEPTANCE_MANIFEST)" >&2; exit 1; }
-	$(ACCEPTANCE_TOOL) --manifest $(ACCEPTANCE_MANIFEST) acceptance-gate
+	$(ACCEPTANCE_TOOL) --version $(VERSION) --manifest $(ACCEPTANCE_MANIFEST) acceptance-gate
+
+# Stage R: automated VM acceptance. The harness boots the artifact under test in
+# QEMU/KVM, executes one case against the running machine, captures evidence,
+# binds it to the artifact digest and appends a hash-chained receipt -- in ONE
+# workflow. There is deliberately no target that marks a case passed: recording
+# is a switch on the run, reachable only at the end of a run that happened and
+# only for a PASS. That gap between "ran the test" and "wrote PASS in the
+# manifest" is how thirteen required cases went unproven.
+# Exit status: 0 PASS, 1 FAIL, 2 harness error, 3 BLOCKED. BLOCKED is not a pass.
+.PHONY: vm-acceptance vm-acceptance-list vm-acceptance-status vm-acceptance-verify
+VM_ACCEPTANCE := $(ROOT)/tools/acceptance/vm_acceptance.py
+VM_CASE ?= live-boot
+VM_ACCEPTANCE_ARGS ?=
+
+vm-acceptance: release-data
+	@test -x $(VM_ACCEPTANCE) || { echo "Missing VM acceptance harness: $(VM_ACCEPTANCE)" >&2; exit 1; }
+	@test -f $(ROOT)/$(ISO_NAME) || { echo "Missing artifact: $(ROOT)/$(ISO_NAME)" >&2; exit 1; }
+	$(VM_ACCEPTANCE) --version $(VERSION) run --case $(VM_CASE) --artifact $(ROOT)/$(ISO_NAME) $(VM_ACCEPTANCE_ARGS)
+
+vm-acceptance-list:
+	@$(VM_ACCEPTANCE) list
+
+vm-acceptance-status:
+	@$(VM_ACCEPTANCE) --version $(VERSION) status
+
+# Re-reads every receipt, every evidence byte and the chain that links the runs.
+vm-acceptance-verify:
+	@$(VM_ACCEPTANCE) --version $(VERSION) verify --all
 
 deps:
 	sudo apt-get update
@@ -411,10 +452,10 @@ iso: repo
 	@$(MAKE) sign
 	@$(MAKE) iso-gate
 
-iso-gate:
+iso-gate: release-data
 	@mkdir -p $(dir $(ISO_GATE_LOG))
 	@test -x $(ISO_GATE) || { echo "Missing ISO gate: $(ISO_GATE)" >&2; exit 1; }
-	@set -o pipefail; $(ISO_GATE) 2>&1 | tee $(ISO_GATE_LOG)
+	@set -o pipefail; $(ISO_GATE) --version $(VERSION) 2>&1 | tee $(ISO_GATE_LOG)
 
 # Detached GPG signature so downloaders can verify with: gpg --verify <iso>.asc
 sign:

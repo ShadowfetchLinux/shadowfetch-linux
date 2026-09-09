@@ -4,7 +4,7 @@ cursorSize=24
 
 [ksplashrc][KSplash]
 Engine=KSplashQML
-Theme=org.shadowfetch.dark
+Theme=org.shadowfetch.ice
 
 [kwinrc][org.kde.kdecoration2]
 library=org.kde.breeze
@@ -16,12 +16,12 @@ ButtonsOnRight=IAX
 
 [kdeglobals][General]
 ColorScheme=ShadowfetchIce
-Name=Shadowfetch Umbra
+Name=Shadowfetch Ice
 AccentColor=74,162,216
 accentColorFromWallpaper=false
 
 [kdeglobals][KDE]
-LookAndFeelPackage=org.shadowfetch.dark
+LookAndFeelPackage=org.shadowfetch.ice
 widgetStyle=Breeze
 AnimationDurationFactor=0.85
 

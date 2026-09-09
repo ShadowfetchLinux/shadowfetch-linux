@@ -123,7 +123,13 @@ class Lab:
             SHADOWFETCH_FIREBREAK_STATE=str(self.fb),
             SHADOWFETCH_MCP_STATE=str(self.mcp),
         )
+        # The EXPLICIT development override, not PATH. Mission Control
+        # resolves its own tools from trusted directories only now, so a build
+        # tree on PATH is correctly ignored -- and every fixture mission here
+        # then ran the stale installed Firebreak and died before its encode.
         self.env["PATH"] = str(FIREBREAK_BIN) + os.pathsep + self.env.get("PATH", "")
+        self.env["SHADOWFETCH_FIREBREAK_TEST_BIN"] = str(FIREBREAK_BIN / "shadowfetch-firebreak")
+        self.env["SHADOWFETCH_CHECKPOINT_BIN"] = str(CHECKPOINT_CLI)
         self._saved = {}
 
     def __enter__(self):

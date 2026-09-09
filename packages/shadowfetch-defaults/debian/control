@@ -10,6 +10,13 @@ Package: shadowfetch-defaults
 Architecture: all
 Depends:
  ${misc:Depends},
+# /usr/bin/shadowfetch-workbench (this package) reads its package records from
+# /usr/share/shadowfetch/welcome/catalog/workbench-*.json and installs them
+# through /usr/libexec/shadowfetch-bundle-install -- both shipped by
+# shadowfetch-welcome, which nothing here named. Every profile the Workbench
+# offers exits with 'Profile package record is unavailable' on an install that
+# has this package and not that one, so the relation is Depends, not Recommends.
+ shadowfetch-welcome (= ${binary:Version}),
  ca-certificates,
  curl,
  fastfetch,
@@ -31,9 +38,24 @@ Depends:
 Recommends:
  shadowfetch-themes,
  shadowfetch-branding,
+# /usr/bin/shadowfetch-passport (this package) runs shadowfetch-hwscan for the
+# hardware section of the Passport and omits that section when it is absent.
+# Undeclared until now.
+ shadowfetch-hwscan,
  papirus-icon-theme,
  snapper,
  grub-btrfs
+# /usr/bin/shadowfetch-doctor (this package) diagnoses the pillars: it runs
+# shadowfetch-firebreak and shadowfetch-checkpoint, reads the mission engine's
+# module directory and Phoenix's apt-recovery payload. Its own rule is that a
+# check it could not perform reports SKIP and never PASS, so none of these is a
+# Depends -- but the reach was undeclared, and a diagnostic tool that quietly
+# skips half the system because the graph never said what it inspects is the
+# failure mode it exists to prevent.
+Suggests:
+ shadowfetch-fireline,
+ shadowfetch-missions,
+ shadowfetch-phoenix
 Description: Shadowfetch default user configuration
  Ships the Shadowfetch defaults applied to new user accounts (via
  /etc/skel): kdeglobals, kwinrc, konsole profile, fastfetch config.

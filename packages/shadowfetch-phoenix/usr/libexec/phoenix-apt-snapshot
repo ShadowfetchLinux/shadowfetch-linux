@@ -1,0 +1,158 @@
+#!/bin/sh
+# phoenix-apt-snapshot - turn the pre-apt Phoenix Point on or off.
+# Part of Shadowfetch Linux. Run via pkexec
+# (polkit action org.shadowfetch.phoenix.apt-snapshot).
+#
+# WHY THIS FILE EXISTS (Stage V, privileged-operations review):
+# The Control Center's "Point before every software change" switch had no
+# helper, so sfcc/busutil.py fell back to
+#
+#     pkexec /bin/sh -c "<sed script>"
+#
+# and that fallback was the ONLY path taken on a real install, because none
+# of the two helper names it probed for was ever shipped. Two defects, not
+# one:
+#
+#   1. A generic shell escalation. The polkit action actually authorised was
+#      org.freedesktop.policykit.exec on /bin/sh, so the authentication
+#      dialog said "run a program as another user" and named /bin/sh. The
+#      grant is not scoped to the operation at all - it is scoped to "a
+#      shell, as root, with whatever argv the caller passed". The script text
+#      happened to be constant, but nothing in the authorization mechanism
+#      required that, and nothing an auditor could see recorded it.
+#   2. The switch silently did nothing useful to reason about: the operation
+#      had no name, no argument grammar and no test.
+#
+# So the operation gets its own executable, its own polkit action pinned to
+# this path, and exactly two verbs. There is no third verb and no free-form
+# argument: everything this tool can do is enumerable from its argv grammar.
+
+set -u
+
+TARGET=/etc/default/snapper
+VERSION_FILE=/usr/share/shadowfetch/version
+
+usage() {
+    cat <<'SFHELP'
+phoenix-apt-snapshot - control the automatic Phoenix Point taken before apt runs.
+
+USAGE
+  phoenix-apt-snapshot enable    take a Point before every apt transaction
+  phoenix-apt-snapshot disable   stop taking that Point
+  phoenix-apt-snapshot status    print "enabled" or "disabled" (no root needed)
+
+The only file written is /etc/default/snapper, and the only key written is
+DISABLE_APT_SNAPSHOT. Every other line of that file is preserved byte for
+byte. No other argument is accepted.
+
+Part of Shadowfetch Linux. https://www.shadowfetchlinux.org/
+SFHELP
+}
+
+die() {
+    echo "phoenix-apt-snapshot: $*" >&2
+    exit 1
+}
+
+# ---- argv grammar: exactly one word, from a closed set ----------------------
+# Checked BEFORE the root check so --help and a mistyped verb are answered
+# without an authentication prompt.
+[ $# -eq 1 ] || { usage >&2; exit 2; }
+
+case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --version)
+        echo "phoenix-apt-snapshot (Shadowfetch Linux) $(cat "$VERSION_FILE" 2>/dev/null || echo unknown)"
+        exit 0 ;;
+    enable)  VALUE=no ;;         # DISABLE_APT_SNAPSHOT="no"  => snapshots ON
+    disable) VALUE=yes ;;        # DISABLE_APT_SNAPSHOT="yes" => snapshots OFF
+    status)
+        # Read-only, so it deliberately does not require root: the Control
+        # Center reads the same file directly and this keeps the CLI honest.
+        # Parsed in the shell, with no external binary, for the same reason
+        # the write path below uses no external binary: this file has to be
+        # readable as "nothing here is resolved through PATH".
+        state=enabled
+        if [ -r "$TARGET" ]; then
+            while IFS= read -r line || [ -n "$line" ]; do
+                case "$line" in
+                    DISABLE_APT_SNAPSHOT=*)
+                        value=${line#DISABLE_APT_SNAPSHOT=}
+                        value=$(printf '%s' "$value" | tr -d '"'"'"'\047 ')
+                        case "$value" in
+                            yes|true|1|YES|True|TRUE) state=disabled ;;
+                            *) state=enabled ;;
+                        esac ;;
+                esac
+            done < "$TARGET"
+        fi
+        echo "$state"
+        exit 0 ;;
+    *)
+        die "unrecognised argument: $1 (verbs are enable, disable, status)" ;;
+esac
+
+if [ "$(id -u)" -ne 0 ]; then
+    die "must run as root (use pkexec phoenix-apt-snapshot $1)"
+fi
+
+# ---- the write target must be a real file this package owns ----------------
+# A root helper that follows a symlink is a root-write primitive: whoever can
+# replace /etc/default/snapper with a link to /etc/sudoers.d/x chooses what
+# root writes. /etc is root-owned on a sane system, but a root helper does not
+# get to assume that about its own target.
+[ ! -L "$TARGET" ] || die "$TARGET is a symlink; refusing to write through it"
+[ -f "$TARGET" ] || die "$TARGET does not exist (is snapper installed?)"
+
+# -O is "owned by the effective uid", and the effective uid is root by the
+# check above -- so this is "owned by root" without resolving `stat` through
+# PATH.
+[ -O "$TARGET" ] || die "$TARGET is not owned by root; refusing to write"
+
+# ---- rewrite, atomically ---------------------------------------------------
+# The three external binaries this helper runs as root are named by absolute
+# path and checked before use. A root helper that resolves its tools through
+# PATH is a root escalation, and pkexec's PATH sanitisation is not a reason to
+# leave the question open in the source.
+MKTEMP=/usr/bin/mktemp
+CHMOD=/usr/bin/chmod
+MV=/usr/bin/mv
+for tool in "$MKTEMP" "$CHMOD" "$MV"; do
+    [ -x "$tool" ] || die "required tool is missing: $tool"
+done
+
+# mktemp in the same directory so the replace is a rename, not a copy: a power
+# cut leaves either the old file or the new one, never a truncated one. O_EXCL
+# on a random name also means a symlink pre-planted at a guessable temp name in
+# /etc/default cannot capture the root write.
+tmp=$("$MKTEMP" "$TARGET.phoenix.XXXXXX") || die "mktemp failed"
+trap 'rm -f "$tmp"' EXIT INT TERM HUP
+
+# Preserve the live mode rather than inventing one.
+"$CHMOD" --reference="$TARGET" "$tmp" 2>/dev/null || "$CHMOD" 0644 "$tmp"
+
+replaced=0
+while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+        DISABLE_APT_SNAPSHOT=*)
+            printf 'DISABLE_APT_SNAPSHOT="%s"\n' "$VALUE"
+            replaced=1 ;;
+        *)
+            printf '%s\n' "$line" ;;
+    esac
+done < "$TARGET" > "$tmp" || die "could not rewrite $TARGET"
+
+if [ "$replaced" -eq 0 ]; then
+    printf 'DISABLE_APT_SNAPSHOT="%s"\n' "$VALUE" >> "$tmp" \
+        || die "could not append to $TARGET"
+fi
+
+"$MV" -f "$tmp" "$TARGET" || die "could not replace $TARGET"
+trap - EXIT INT TERM HUP
+
+if [ "$VALUE" = "no" ]; then
+    echo "phoenix-apt-snapshot: a Phoenix Point will be taken before apt runs"
+else
+    echo "phoenix-apt-snapshot: no Phoenix Point will be taken before apt runs"
+fi
+exit 0

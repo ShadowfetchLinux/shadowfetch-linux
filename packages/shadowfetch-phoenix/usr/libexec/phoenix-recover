@@ -1,0 +1,273 @@
+#!/usr/bin/python3
+"""phoenix-recover - inspect, resume and bound-collect Phoenix restore state.
+
+Part of Shadowfetch Linux 4.0.0 "Umbra". Run as root; phoenix-postboot runs
+`phoenix-recover resume` on every boot.
+
+  phoenix-recover inspect      say what is on the volume and what is in flight
+  phoenix-recover resume       finish or undo an interrupted restore, then
+                               collect leftovers (the boot-time pass)
+  phoenix-recover gc           collect leftovers only
+
+Everything is a plan first: `--dry-run` prints exactly what `resume` would do
+and changes nothing, and `inspect` never mutates under any flag.
+
+The import path is derived from this script's own installed location
+(/usr/libexec/phoenix-recover -> /usr/lib/shadowfetch), never from PYTHONPATH
+or the working directory: a root tool must not be steerable into importing
+somebody else's module. For the same reason every external program it runs is
+resolved through the absolute-path table in phoenix/trusted.py.
+
+--mount and --boot exist so the test suite can point the tool at a loopback
+volume. They are not a privilege boundary and are not treated as one: the tool
+already refuses to run as anyone but root, and a root caller can reach any path
+with or without them. Unlike an environment variable they are visible in argv
+and in the journal.
+"""
+
+import argparse
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+# Derived from the script's own path: <prefix>/libexec/phoenix-recover ->
+# <prefix>/lib/shadowfetch. True both installed and in the source tree.
+_LIB = Path(__file__).resolve().parent.parent / "lib" / "shadowfetch"
+sys.path.insert(0, str(_LIB))
+
+from phoenix import IntentJournal, Layout, RestoreTransaction, TrustedExecutor  # noqa: E402
+from phoenix import gc as gcmod                                                # noqa: E402
+from phoenix.journal import JOURNAL_NAME                                       # noqa: E402
+from phoenix.layout import mount_fstype                                        # noqa: E402
+from phoenix.trusted import ExecutableError, ExecutableTrust                   # noqa: E402
+
+VERSION_FILE = Path("/usr/share/shadowfetch/version")
+
+
+def out(line=""):
+    print(line, flush=True)
+
+
+def root_device():
+    """The block device / is on, from /proc/self/mountinfo (no findmnt)."""
+    try:
+        lines = Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    source = None
+    for line in lines:
+        head, sep, tail = line.partition(" - ")
+        if not sep:
+            continue
+        head_fields, tail_fields = head.split(" "), tail.split(" ")
+        if len(head_fields) < 5 or len(tail_fields) < 2:
+            continue
+        if head_fields[4] != "/" or tail_fields[0] != "btrfs":
+            continue
+        source = tail_fields[1]
+    return source
+
+
+class MountedTopLevel:
+    """Mount the volume top-level (subvolid=5), or use one already mounted."""
+
+    def __init__(self, executor, explicit=None):
+        self.executor = executor
+        self.explicit = Path(explicit) if explicit else None
+        self.path = None
+        self._mounted = False
+
+    def __enter__(self):
+        if self.explicit is not None:
+            self.path = self.explicit
+            return self
+        device = root_device()
+        if not device:
+            raise SystemExit("phoenix-recover: / is not a Btrfs volume - nothing to do")
+        self.path = Path(tempfile.mkdtemp(prefix="phoenix-recover.", dir="/run"))
+        self.executor.run("mount", "-t", "btrfs", "-o", "subvolid=5",
+                          device, str(self.path))
+        self._mounted = True
+        return self
+
+    def __exit__(self, *exc):
+        if self._mounted and self.path is not None:
+            try:
+                self.executor.run("umount", str(self.path), check=False)
+            except ExecutableError:
+                pass
+            try:
+                self.path.rmdir()
+            except OSError:
+                pass
+        return False
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="phoenix-recover", add_help=True,
+        description="Inspect, resume and bound-collect Phoenix restore state.")
+    parser.add_argument("verb", nargs="?", default="resume",
+                        choices=("inspect", "resume", "gc"))
+    parser.add_argument("--dry-run", "-n", action="store_true",
+                        help="print the plan and change nothing")
+    parser.add_argument("--keep", type=int, default=gcmod.DEFAULT_KEEP,
+                        help="how many previous roots and kernel backups to keep")
+    parser.add_argument("--mount", default=None,
+                        help="an already-mounted volume top-level (subvolid=5)")
+    parser.add_argument("--boot", default="/boot",
+                        help="the external /boot filesystem (default /boot)")
+    parser.add_argument("--json", action="store_true",
+                        help="machine-readable report (inspect only)")
+    parser.add_argument("--version", action="store_true")
+    return parser
+
+
+def report_json(layout, state, previous_plan, kernel_plan):
+    import json
+    return json.dumps({
+        "volume": str(layout.mount),
+        "fstype": layout.fstype,
+        "ok": layout.ok,
+        "problems": [{"level": p.level, "code": p.code, "detail": p.detail}
+                     for p in layout.problems],
+        "previous_roots": [item.name for item in layout.previous],
+        "staging": layout.staging.name if layout.staging else None,
+        "restore": {
+            "decision": state.decision.value,
+            "run": state.run,
+            "point": state.point,
+            "phase": state.phase,
+            "exchanged": state.exchanged,
+            "evidence": state.evidence,
+            "boot_rollback": state.boot_rollback,
+            "steps": [{"kind": s.kind, "detail": s.detail} for s in state.steps],
+        },
+        "gc": {
+            "previous": [{"path": str(d.path), "action": d.action,
+                          "reason": d.reason} for d in previous_plan.decisions],
+            "kernel_archives": [{"path": str(d.path), "action": d.action,
+                                 "reason": d.reason}
+                                for d in kernel_plan.decisions],
+            "rescues": [{"kernel": r.kernel, "file": r.source.name}
+                        for r in kernel_plan.rescues],
+        },
+    }, indent=2)
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    if args.version:
+        version = "unknown"
+        try:
+            version = VERSION_FILE.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+        out(f"phoenix-recover (Shadowfetch Linux) {version}")
+        return 0
+
+    if os.geteuid() != 0:
+        print("phoenix-recover: must run as root", file=sys.stderr)
+        return 1
+    # Same guards as phoenix-postboot: never collect the real volume while the
+    # user is riding a Point deciding what to keep, and never on live media.
+    if Path("/run/phoenix-overlay").is_file():
+        out("phoenix-recover: overlay session - the real volume is left alone")
+        return 0
+    if Path("/run/live/medium").exists() or Path("/run/live/rootfs").exists():
+        out("phoenix-recover: live media - nothing installed to recover")
+        return 0
+
+    executor = TrustedExecutor()
+    btrfs_path, btrfs_trust = executor.trust("btrfs")
+    if btrfs_trust is not ExecutableTrust.DISTRO_MANAGED:
+        print("phoenix-recover: refusing to act - %s is %s"
+              % (btrfs_path or "btrfs", btrfs_trust.value), file=sys.stderr)
+        return 1
+
+    # /boot only participates when it is its OWN filesystem: inside the root
+    # subvolume it travels with the exchange and there is nothing to reconcile.
+    # An explicit --mount means the caller named the pair to work on, so the
+    # --boot they gave is taken at face value.
+    boot = Path(args.boot)
+    if args.mount is None and not os.path.ismount(boot):
+        boot = None
+
+    try:
+        with MountedTopLevel(executor, args.mount) as volume:
+            return run(args, executor, volume.path, boot)
+    except ExecutableError as exc:
+        print(f"phoenix-recover: {exc}", file=sys.stderr)
+        return 1
+
+
+def run(args, executor, mount, boot):
+    if mount_fstype(mount) not in ("btrfs", None):
+        print(f"phoenix-recover: {mount} is not a Btrfs volume", file=sys.stderr)
+        return 1
+
+    layout = Layout.probe(mount)
+    journal = IntentJournal(Path(mount) / JOURNAL_NAME)
+    transaction = RestoreTransaction(layout, journal, boot=boot)
+    state = transaction.inspect()
+
+    previous_plan = gcmod.plan_previous_roots(layout, keep=max(0, args.keep))
+    root_modules = (layout.root.path / "lib/modules") if layout.root else Path("/nonexistent")
+    kernel_plan = (gcmod.plan_kernel_archives(boot, root_modules, keep=max(0, args.keep))
+                   if boot is not None
+                   else gcmod.KernelArchivePlan(rescues=(), decisions=()))
+
+    if args.json:
+        out(report_json(layout, state, previous_plan, kernel_plan))
+        return 0 if layout.ok else 1
+
+    for line in layout.describe():
+        out(line)
+    out()
+    for line in state.describe():
+        out(line)
+
+    if args.verb == "inspect":
+        out()
+        for decision in previous_plan.decisions:
+            out(f"gc previous:  {decision}")
+        for rescue in kernel_plan.rescues:
+            out(f"gc rescue:    {rescue.source.name} -> {rescue.target}")
+        for decision in kernel_plan.decisions:
+            out(f"gc kernels:   {decision}")
+        return 0 if layout.ok else 1
+
+    if not layout.ok:
+        print("phoenix-recover: the volume layout is not one this tool may"
+              " change - nothing was touched", file=sys.stderr)
+        return 1
+
+    out()
+    if args.verb == "resume":
+        for outcome in transaction.resume(state, executor, dry_run=args.dry_run):
+            out(f"resume:       {outcome}")
+        # The layout changed under us; re-probe so collection sees the truth.
+        layout = Layout.probe(mount)
+        previous_plan = gcmod.plan_previous_roots(layout, keep=max(0, args.keep))
+
+    for path, done, detail in gcmod.apply_previous_roots(
+            previous_plan, executor, dry_run=args.dry_run):
+        out(f"gc previous:  {'ok  ' if done else 'skip'} {path.name}: {detail}")
+    for decision in previous_plan.refusals:
+        out(f"gc previous:  {decision}")
+    if boot is not None:
+        for path, done, detail in gcmod.apply_kernel_archives(
+                kernel_plan, dry_run=args.dry_run):
+            out(f"gc kernels:   {'ok  ' if done else 'skip'} {path.name}: {detail}")
+        for decision in kernel_plan.refusals:
+            out(f"gc kernels:   {decision}")
+
+    # Bounded: the journal is append-only and read every boot.
+    if not args.dry_run and journal.rotate():
+        out("journal:      rotated to the newest records")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

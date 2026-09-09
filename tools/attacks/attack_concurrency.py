@@ -91,10 +91,17 @@ AFFIRMATIVE = {"enforced", "fully_mediated", "partially_mediated", "partial",
 # one field that exists to raise the alarm.
 NOT_A_CLAIM = {"relied_on"}
 
-# The three fields under attack, in each vocabulary that names them. Spelled out
+# The fields under attack, in each vocabulary that names them. Spelled out
 # rather than derived, so a rename cannot silently empty this list.
-GAP_FIELDS_SANDBOX = ("egress_allowlist", "masked_paths", "syscall_profile")
-GAP_FIELDS_POLICY = ("network_destination", "path_masking", "syscalls")
+#
+# masked_paths / path_masking LEFT this list in Stage E, by gaining a mechanism
+# and a proof rather than by being excused: bwrap mounts an empty tmpfs over a
+# masked directory and /dev/null over a masked file, in the sandbox's own mount
+# namespace, and direct open, absolute path, relative traversal, symlink,
+# nested file and rename are each denied through the real Firebreak. Leaving it
+# here would make these probes hunt for an honest claim.
+GAP_FIELDS_SANDBOX = ("egress_allowlist", "syscall_profile")
+GAP_FIELDS_POLICY = ("network_destination", "syscalls")
 
 ENV_KEYS = ("SHADOWFETCH_AGENT_WORKSPACES", "SHADOWFETCH_MISSIONS_STATE",
             "SHADOWFETCH_FIREBREAK_STATE", "SHADOWFETCH_MCP_STATE", "PATH")
@@ -123,7 +130,12 @@ class Bench:
         os.environ["SHADOWFETCH_MISSIONS_STATE"] = str(self.tmp / "state")
         os.environ["SHADOWFETCH_FIREBREAK_STATE"] = str(self.tmp / "fb")
         os.environ["SHADOWFETCH_MCP_STATE"] = str(self.tmp / "mcp")
+        # The EXPLICIT development override, not PATH: Mission Control
+        # resolves its own tools from trusted directories only, so a build tree
+        # on PATH is (correctly) ignored and the stale installed Firebreak wins.
         os.environ["PATH"] = str(FIREBREAK_BIN) + os.pathsep + os.environ.get("PATH", "")
+        os.environ["SHADOWFETCH_FIREBREAK_TEST_BIN"] = str(FIREBREAK_BIN / "shadowfetch-firebreak")
+        os.environ["SHADOWFETCH_CHECKPOINT_BIN"] = str(FIREBREAK_BIN / "shadowfetch-checkpoint")
         (self.tmp / "ws").mkdir(parents=True, exist_ok=True)
         for path in (MISSIONS_LIB, DESKTOP_LIB):
             if str(path) not in sys.path:
@@ -945,12 +957,17 @@ def attack_declared_masks_are_disclosed(bench, report):
     relied = decision.mediation["path_masking"]["relied_on"]
     listed = "path_masking" in decision.advisory_fields
     status = providers.sandbox_enforcement(spec)["masked_paths"]["status"]
-    passed = listed and relied
+    # INVERTED at Stage E. This probe used to demand that a declared mask be
+    # DISCLOSED as relied-on-but-unenforced, which was the honest thing to say
+    # while masking reached nothing. Masking is enforced now, so the advisory
+    # list must NOT name it: an advisory that cries wolf about a control which
+    # actually works teaches people to ignore the list.
+    passed = status == "enforced" and not listed
     report(name,
-           "a sandbox that declares masked_paths produces a decision whose "
-           "'relied on and NOT enforced' list names path_masking -- that list is "
-           "the one surface built to disclose an unenforced control a mission "
-           "depends on",
+           "a sandbox that declares masked_paths is enforced, and the "
+           "'relied on and NOT enforced' advisory list therefore does NOT name "
+           "path_masking -- an advisory that names a working control teaches "
+           "people to ignore the list",
            f"sandbox.masked_paths = {spec.masked_paths}\n"
            f"decision.advisory_fields = {list(decision.advisory_fields)}\n"
            f"decision.mediation['path_masking'] = "
@@ -961,8 +978,10 @@ def attack_declared_masks_are_disclosed(bench, report):
            + repr([line.strip() for line in source.splitlines()
                    if "path_masking" in line or "set by the caller" in line]),
            passed,
-           note=("path_masking is disclosed" if passed else
-                 "NOTHING CLAIMS MASKING IS ENFORCED -- sandbox_enforcement() and "
+           note=("masking is enforced and is not advertised as a gap" if passed else
+                 "the surfaces disagree about masking: enforcement says "
+                 f"{status!r} while the advisory list "
+                 f"{'names' if listed else 'omits'} it -- "
                  "Firebreak both say not_enforced, and the mask itself is not "
                  "applied, which is Phase 4. The defect is DISCLOSURE: "
                  "sf_policy.Scope carries no masked_paths, so _mediation_for() "
@@ -1117,23 +1136,30 @@ def attack_mask_reaches_nothing(bench, report):
     record = next((r for r in bench.firebreak_records().values()
                    if r.get("masked_paths_requested")), None)
     status = (record or {}).get("enforcement", {}).get("masked_paths", {})
-    passed = status.get("status") == "not_enforced"
+    # INVERTED at Stage E. This probe used to pass when the canary WAS read and
+    # every surface honestly refused to call masking a control. The control
+    # exists now, so the canary must not be readable AND the record must say
+    # enforced -- either half alone would be the failure this probe hunts.
+    passed = (not leaked) and status.get("status") == "enforced"
     report(name,
-           "a --mask-path is recorded as reaching nothing, and the session record "
-           "says so rather than presenting it as a control",
+           "a --mask-path actually hides the file from the sandboxed process, "
+           "and the session record describes it as the control it now is",
            f"$ shadowfetch-firebreak run --mask-path {canary} -- /usr/bin/cat {canary}\n"
            f"rc = {proc.returncode}   stdout = {proc.stdout.strip()!r}\n"
-           f"the sandboxed process read the 'masked' file: {leaked}\n"
+           f"the sandboxed process read the masked file: {leaked}\n"
            f".session masked_paths_requested = "
            f"{json.dumps((record or {}).get('masked_paths_requested'))}\n"
            f".session enforcement.masked_paths = {json.dumps(status, sort_keys=True)}",
            passed,
-           note=("THE ACTION WAS NOT PREVENTED: the sandboxed process read the "
-                 "file the caller asked to mask, in full. This PASSES only "
-                 "because every surface refused to call it a control -- Firebreak "
-                 "records not_enforced and states the reason. Masking is Phase 4."
+           note=("the canary was masked and the record says so: bwrap mounts "
+                 "/dev/null over the file inside the sandbox's own mount "
+                 "namespace, so no cooperation from the payload is involved"
                  if passed else
-                 "the mask was described as applied and was not"))
+                 ("THE MASK DID NOT HOLD: the sandboxed process read the file "
+                  "the caller asked to mask, in full"
+                  if leaked else
+                  "the file was hidden but the record does not describe masking "
+                  f"as enforced -- it says {status.get('status')!r}")))
 
 
 def attack_allowlist_reaches_elsewhere(bench, report):

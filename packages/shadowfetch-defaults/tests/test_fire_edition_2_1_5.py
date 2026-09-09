@@ -196,10 +196,9 @@ class FireEdition215Tests(unittest.TestCase):
         self.assertIn("sha256sum --check", iso)
         self.assertIn("--verify $(ROOT)/$(ISO_NAME).asc", makefile)
         self.assertIn("@$(MAKE) iso-gate", iso)
-        self.assertIn(
-            "ISO_GATE := $(ROOT)/tools/iso_gate_$(VERSION_TOKEN).py",
-            makefile,
-        )
+        # The gate families were consolidated: one implementation plus a
+        # per-version data file, instead of a module copied per release.
+        self.assertIn("ISO_GATE := $(RELEASE_TOOLS)/iso_gate.py", makefile)
         self.assertIn("ISO_GATE_LOG", makefile)
 
     def test_first_boot_uses_utc_rtc_and_network_time(self):

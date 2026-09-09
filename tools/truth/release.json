@@ -1,0 +1,38 @@
+{
+  "schema": 2,
+  "_note": [
+    "Stage X truth file. It holds ONLY the facts that have no other home.",
+    "",
+    "The version, edition, subtitle, codename, display codename and signing",
+    "fingerprint used to live here too. Stage Q landed",
+    "tools/release/versions/<version>.toml as the per-release gate data, so",
+    "keeping a second copy here would have been the exact defect this stage",
+    "exists to remove. tools/drift_gate.py now reads that TOML as the",
+    "authority for all six."
+  ],
+
+  "authority": "tools/release/versions/<version>.toml  ([release] table)",
+
+  "urls": {
+    "public_site": "https://www.shadowfetchlinux.org",
+    "artifact_base": "https://www.shadowfetch.com/linux",
+    "_note": "Also stated in the Makefile as PUBLIC_SITE / ARTIFACT_BASE."
+  },
+
+  "release_pointer": {
+    "status": "NOT IMPLEMENTED",
+    "_note": [
+      "ADR-0009 specifies releases/CURRENT.json, written LAST by the release",
+      "publisher and read by the artifact worker, replacing latestRelease()'s",
+      "sort of an unpaginated 100-object R2 listing by upload time",
+      "(web/shadowfetch-linux-worker/src/index.js:618). Until that lands,",
+      "re-uploading an old ISO silently promotes it to 'current'.",
+      "Recorded here so the contract has one written home; the release-pointer",
+      "check reports it as BLOCKED rather than claiming a control that does",
+      "not exist."
+    ],
+    "key": "releases/CURRENT.json",
+    "written_by": "tools/publish_release_4_0_0.py",
+    "read_by": "web/shadowfetch-linux-worker/src/index.js"
+  }
+}

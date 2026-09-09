@@ -49,17 +49,28 @@ class PickupContractTests(unittest.TestCase):
                 contract.validate_upstream_unit(path, b"[Service]\nExecStart=/bin/true\n")
 
     def test_package_and_iso_gates_share_exact_payload_contract(self):
-        def load(name):
-            spec = importlib.util.spec_from_file_location(name, TOOLS / (name + ".py"))
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            return module
-        package_gate = load("package_gate_4_0_0")
-        iso_gate = load("iso_gate_4_0_0")
-        self.assertEqual(package_gate.EXPECTED_BINARIES[contract.PACKAGE], contract.VERSION)
-        self.assertIn(contract.PACKAGE, package_gate.EXPECTED_SOURCES)
-        self.assertIn(contract.PACKAGE, package_gate.SMOKE_INSTALL)
-        self.assertEqual(iso_gate.EXPECTED_CUSTOM_PACKAGES[contract.PACKAGE], contract.VERSION)
+        # Stage Q collapsed the version-copied gate families. The package
+        # allowlist, the source set and the smoke set are version DATA now, so
+        # this reads the same file the gates read rather than three separate
+        # transcriptions inside two copied modules.
+        release_dir = TOOLS / "release"
+        if str(release_dir) not in sys.path:
+            sys.path.insert(0, str(release_dir))
+        import gate
+
+        spec = importlib.util.spec_from_file_location(
+            "drkonqi_iso_gate", release_dir / "iso_gate.py"
+        )
+        iso_gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(iso_gate)
+
+        release = gate.load_release("4.0.0")
+        self.assertEqual(release.binary_versions[contract.PACKAGE], contract.VERSION)
+        self.assertIn(contract.PACKAGE, release.source_packages)
+        self.assertIn(contract.PACKAGE, release.smoke_install)
+        self.assertEqual(
+            iso_gate.image_packages(release)[contract.PACKAGE], contract.VERSION
+        )
         self.assertEqual(set(iso_gate.CRITICAL_PACKAGE_PAYLOADS[contract.PACKAGE]),
                          {contract.HELPER, contract.DROPIN})
         self.assertLessEqual(set(contract.UPSTREAM_UNITS), iso_gate.REQUIRED_ROOT_FILES)

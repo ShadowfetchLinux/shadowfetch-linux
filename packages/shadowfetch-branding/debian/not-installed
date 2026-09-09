@@ -1,0 +1,13 @@
+# Two wallpaper sets that have been in this data tree since 2.1.4 and have
+# never been in shadowfetch-branding.install. Nothing in the tree references
+# either id -- not the look-and-feel defaults, not Welcome, not the element
+# themes -- so shipping them now would add 2.6 MB of unreferenced payload to
+# an image that is already close to the 4 GiB squashfs ceiling. They are
+# declared unshipped here rather than left silent; dh_missing reads this file,
+# and so does tools/ship_list_check.py.
+data/usr/share/wallpapers/UmbraEmblem/*
+data/usr/share/wallpapers/UmbraEmblem/*/*
+data/usr/share/wallpapers/UmbraEmblem/*/*/*
+data/usr/share/wallpapers/UmbraVault/*
+data/usr/share/wallpapers/UmbraVault/*/*
+data/usr/share/wallpapers/UmbraVault/*/*/*

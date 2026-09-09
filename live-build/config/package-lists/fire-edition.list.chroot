@@ -21,7 +21,15 @@ torsocks
 onionshare
 onionshare-cli
 
-# The Fire Edition debs themselves (built into the umbra repo by this same make run)
+# The Fire Edition debs themselves (built into the umbra repo by this same make run).
+# Every name below is now also a Depends of shadowfetch-desktop, which is what
+# shadowfetch-desktop-kde.list.chroot installs. Until 4.0.0 this list was the
+# ONLY thing that put them in the image: the package graph did not describe the
+# product, and `apt install shadowfetch-desktop` on any other machine got a
+# Plasma desktop with no Mission Control, no Phoenix, no Fireproof and no
+# Firewatch. Keeping them here is belt and braces for the chroot, not the
+# declaration -- tools/ship_list_check.py fails if a package list ever again
+# supplies a Shadowfetch package the graph does not reach.
 shadowfetch-ember
 shadowfetch-firewatchd
 shadowfetch-phoenix

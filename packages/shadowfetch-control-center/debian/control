@@ -17,7 +17,18 @@ Depends:
  shadowfetch-missions (= ${binary:Version})
 Recommends:
  shadowfetch-ember,
+# software_page.py imports sfcc.fireproof_page, a module shadowfetch-fireproof
+# drops into this package's own sfcc directory. The import is guarded and falls
+# back to an honest card, so this is Recommends and not Depends -- but it was
+# not declared at all, in either direction, and Software & Updates without it
+# is a page that cannot update anything.
+ shadowfetch-fireproof,
  shadowfetch-firewatchd,
+# busutil.py runs /usr/libexec/shadowfetch-hwscan and reads the fact file it
+# writes; the Agents and Drivers pages are built out of it. Undeclared until
+# now, so a Control Center installed without it showed "unknown" hardware with
+# nothing in the graph explaining why.
+ shadowfetch-hwscan,
  shadowfetch-phoenix,
  shadowfetch-welcome,
  snapper,

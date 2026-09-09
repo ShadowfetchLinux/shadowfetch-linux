@@ -137,24 +137,43 @@ def publish(client, objects):
         raise ValueError("R2 ISO bytes do not match the accepted artifact")
     print("R2_RELEASE_BYTES_VERIFIED", flush=True)
 
+# These three decide whether the shipped ISO's signature and digest are
+# genuine. They were invoked by bare name, so PATH decided which program
+# answered -- and on the build host ~/.local/bin precedes /usr/bin and is
+# writable by the builder. Absolute paths, and TRUSTED_SUBPROCESS_PATH so the
+# programs' own helpers cannot be swapped either.
+GPG = "/usr/bin/gpg"
+GPGV = "/usr/bin/gpgv"
+SHA256SUM = "/usr/bin/sha256sum"
+TRUSTED_SUBPROCESS_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+def trusted_env(**extra):
+    return dict(os.environ, PATH=TRUSTED_SUBPROCESS_PATH, **extra)
+
+
 def verify_signatures(root):
     key = root / "repo/shadowfetch.gpg.asc"
-    fingerprints = subprocess.check_output(["gpg", "--batch", "--with-colons", "--show-keys", str(key)], text=True)
+    fingerprints = subprocess.check_output([GPG, "--batch", "--with-colons", "--show-keys", str(key)], text=True, env=trusted_env())
     if FINGERPRINT not in [row.split(":")[9] for row in fingerprints.splitlines() if row.startswith("fpr:")]:
         raise ValueError("Repository key differs from the official release fingerprint")
     with tempfile.TemporaryDirectory(prefix="shadowfetch-publication-key-") as temporary:
         keyring = Path(temporary) / "release.gpg"
-        subprocess.run(["gpg", "--batch", "--yes", "--dearmor", "--output", str(keyring), str(key)], check=True)
-        subprocess.run(["gpgv", "--keyring", str(keyring), str(root / (ISO + ".asc")), str(root / ISO)], check=True)
-        subprocess.run(["gpgv", "--keyring", str(keyring), str(root / "repo/dists/umbra/InRelease")], check=True)
+        subprocess.run([GPG, "--batch", "--yes", "--dearmor", "--output", str(keyring), str(key)], check=True, env=trusted_env())
+        subprocess.run([GPGV, "--keyring", str(keyring), str(root / (ISO + ".asc")), str(root / ISO)], check=True, env=trusted_env())
+        subprocess.run([GPGV, "--keyring", str(keyring), str(root / "repo/dists/umbra/InRelease")], check=True, env=trusted_env())
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
-    subprocess.run([sys.executable, str(ROOT / "tools/verify_acceptance_4_0_0.py"), "verify"], check=True)
+    subprocess.run(
+        [sys.executable, str(ROOT / "tools/release/acceptance.py"),
+         "--version", "4.0.0", "verify"],
+        check=True,
+    )
     subprocess.run([str(ROOT / "tools/pre_release_check.sh")], check=True, env=dict(os.environ, ROOT=str(ROOT), REPO_MIN_VALID_FOR_SECONDS=str(7 * 86400)))
-    subprocess.run(["sha256sum", "--check", ISO + ".sha256"], cwd=ROOT, check=True)
+    subprocess.run([SHA256SUM, "--check", ISO + ".sha256"], cwd=ROOT, check=True, env=trusted_env())
     verify_signatures(ROOT)
     plan = publication_plan(ROOT)
     if not args.apply:

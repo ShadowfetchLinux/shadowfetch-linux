@@ -34,4 +34,22 @@
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/phoenix-recovery-report</annotate>
   </action>
+  <!-- Stage V: the "Point before every software change" switch used to be
+       pkexec /bin/sh -c "<sed script>" from the Control Center, i.e. a
+       generic root shell authorised by org.freedesktop.policykit.exec. The
+       operation now has its own executable and its own action, so the
+       authentication dialog names the change, and the grant covers exactly
+       two verbs on exactly one file. -->
+  <action id="org.shadowfetch.phoenix.apt-snapshot">
+    <description>Change whether a Phoenix Point is taken before software changes</description>
+    <message>Authentication is required to change the automatic Phoenix Point setting</message>
+    <icon_name>shadowfetch</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/phoenix-apt-snapshot</annotate>
+  </action>
+
 </policyconfig>

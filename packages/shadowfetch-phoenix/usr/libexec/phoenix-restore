@@ -15,8 +15,20 @@
 #   5. mv @new @_prev_<timestamp>  (the swapped-out old root, kept once)
 #   6. flag file -> phoenix-postboot runs update-grub on the next boot
 #
-# A crash after step 4 merely leaves @new (the old root) for phoenix-postboot
-# to rename/GC. A crash before step 4 leaves @ untouched.
+# A crash after step 4 merely leaves @new (the old root) for phoenix-recover
+# to park. A crash before step 4 leaves @ untouched.
+#
+# 4.0.0 Stage T, two changes that make an interrupted restore RECOVERABLE
+# rather than merely survivable:
+#   * the update-grub flag is written into @new BEFORE the exchange, so the
+#     restored root cannot come up against a stale GRUB menu, and so its
+#     date=<TS> is durable evidence of which subvolume was prepared for this
+#     run. That is what lets phoenix-recover tell "the exchange happened, @new
+#     is the old root" from "it did not, @new is a throwaway copy" - a
+#     distinction phoenix-postboot previously could not make and guessed at.
+#   * every journal line carries run=<TS> and phase=<phase> from a closed
+#     vocabulary, so the phase an interrupted restore reached is machine
+#     readable. See /usr/lib/shadowfetch/phoenix/journal.py.
 #
 # When /boot is its OWN filesystem it is not covered by that exchange, so it is
 # staged separately (prepare_external_boot) before step 4. 4.0.0 (W-11): the
@@ -55,6 +67,9 @@ Reboot after a successful restore.
 An interrupted restore is journalled to phoenix-restore.journal on the
 volume top-level (mount -o subvolid=5) and, before the exchange, to
 /var/lib/shadowfetch/phoenix-restore.journal in the root being replaced.
+`phoenix-recover inspect` reads that journal back and says what an
+interrupted restore left behind; `phoenix-recover resume` finishes or
+undoes it. Both run automatically on the next boot.
 
 Part of Shadowfetch Linux. https://www.shadowfetchlinux.org/
 SFHELP
@@ -126,23 +141,65 @@ fi
 TS=$(date +%Y%m%d%H%M%S)
 BOOT_ARCHIVE=
 RESTORE_KERNEL=
-BOOT_EXCHANGED=0     # the external /boot has been staged for the restored Point
+BOOT_EXCHANGED=0     # kernels were archived out of the external /boot
+BOOT_TOUCHED=0       # /boot content or grubenv changed at all; the rollback
+                     # must rebuild the menu even when nothing was archived
+                     # (folding old backups back in is already a change)
 ROOT_EXCHANGED=0     # the renameat2 exchange completed: @ IS the restored Point
 CLEANED=0
 
-rollback_external_boot() {
-    # Undo prepare_external_boot. BOOT_EXCHANGED guards it both ways: it fires
-    # only when the /boot exchange actually happened, and exactly once - the
-    # error paths call it directly and the EXIT trap calls it again.
-    [ "$BOOT_EXCHANGED" = 1 ] || return 0
-    BOOT_EXCHANGED=0
-    echo "phoenix-restore: restoring the running system's kernels in /boot" >&2
-    if [ -n "$BOOT_ARCHIVE" ] && [ -d "$BOOT_ARCHIVE" ]; then
-        for boot_file in "$BOOT_ARCHIVE"/*; do
-            [ -e "$boot_file" ] || continue
+unarchive_kernels() {
+    # Fold every earlier kernel backup back into /boot before a kernel is
+    # chosen. Two defects close here. /boot is the smallest filesystem on the
+    # machine and grew by one full kernel set per successful restore, because
+    # nothing ever collected phoenix-kernel-backup-*. And once a kernel had
+    # been archived it was no longer in /boot, so a later restore to the Point
+    # that needs it reported "no kernel shared with the external /boot
+    # filesystem" and refused: archiving made going back impossible, which is
+    # the one direction a recovery tool must never close.
+    found=0
+    for archive_dir in /boot/phoenix-kernel-backup-*; do
+        [ -d "$archive_dir" ] || continue
+        if [ "$DRY_RUN" = 1 ]; then
+            echo "  folded back into /boot: $archive_dir"
+            found=1
+            continue
+        fi
+        # Set BEFORE the first mv: an interrupt part way through must still
+        # take the rollback path, which rebuilds the menu.
+        if [ "$found" = 0 ]; then
+            found=1
+            BOOT_TOUCHED=1
+            journal boot-unarchived "folding earlier kernel backups back into /boot"
+        fi
+        for boot_file in "$archive_dir"/*; do
+            [ -f "$boot_file" ] || continue
+            [ -e "/boot/${boot_file##*/}" ] && continue
             mv -- "$boot_file" /boot/ || true
         done
-        rmdir "$BOOT_ARCHIVE" 2>/dev/null || true
+        rmdir "$archive_dir" 2>/dev/null || true
+    done
+    return 0
+}
+
+rollback_external_boot() {
+    # Undo prepare_external_boot. BOOT_TOUCHED guards it both ways: it fires
+    # only when /boot was actually changed, and exactly once - the error paths
+    # call it directly and the EXIT trap calls it again. BOOT_EXCHANGED is the
+    # narrower flag: it says kernels were moved OUT, which is the part that
+    # needs undoing rather than merely re-describing.
+    [ "$BOOT_TOUCHED" = 1 ] || return 0
+    BOOT_TOUCHED=0
+    echo "phoenix-restore: restoring the running system's kernels in /boot" >&2
+    if [ "$BOOT_EXCHANGED" = 1 ]; then
+        BOOT_EXCHANGED=0
+        if [ -n "$BOOT_ARCHIVE" ] && [ -d "$BOOT_ARCHIVE" ]; then
+            for boot_file in "$BOOT_ARCHIVE"/*; do
+                [ -e "$boot_file" ] || continue
+                mv -- "$boot_file" /boot/ || true
+            done
+            rmdir "$BOOT_ARCHIVE" 2>/dev/null || true
+        fi
     fi
     if command -v update-grub >/dev/null 2>&1; then
         update-grub >/dev/null 2>&1 || true
@@ -157,17 +214,26 @@ MNT=$(mktemp -d /run/phoenix-restore.XXXXXX)
 
 journal() {
     # Intent journal, written before every mutation so an interrupted restore
-    # can be diagnosed and finished by hand. Two durable copies:
+    # can be diagnosed, and now FINISHED, by machine. Two durable copies:
     #   <volume top-level>/phoenix-restore.journal  - survives the exchange,
     #     read with: mount -o subvolid=5 <dev> /mnt; cat /mnt/phoenix-restore.journal
     #   @/var/lib/shadowfetch/phoenix-restore.journal - plain /var/lib/... on the
     #     root that keeps booting if the exchange never happened.
+    #
+    # Stage T grammar, parsed by /usr/lib/shadowfetch/phoenix/journal.py:
+    #   <iso8601Z> pid=<pid> point=<N> run=<TS> phase=<phase> <free text>
+    # $1 is the phase, from that module's closed vocabulary; run=<TS> is this
+    # attempt's own timestamp, the same one that names @_prev_<TS> and appears
+    # as date= in the update-grub flag, so records of two attempts can never be
+    # read as one. The free text is unchanged and still for humans.
+    phase=$1
+    shift
     [ "$DRY_RUN" = 1 ] && return 0
     mountpoint -q "$MNT" 2>/dev/null || return 0
     for jdir in "$MNT" "$MNT/@/var/lib/shadowfetch"; do
         [ -d "$jdir" ] || continue
-        printf '%s pid=%s point=%s %s\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$SNAP" "$*" \
+        printf '%s pid=%s point=%s run=%s phase=%s %s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$SNAP" "$TS" "$phase" "$*" \
             >> "$jdir/phoenix-restore.journal" 2>/dev/null || true
     done
 }
@@ -182,9 +248,10 @@ cleanup() {
     # of an external /boot; if the exchange never completed, that staging has to
     # be undone or the machine boots the OLD root against the NEW /boot - less
     # recoverable than before the restore was attempted.
-    if [ "$ROOT_EXCHANGED" = 0 ] && [ "$BOOT_EXCHANGED" = 1 ]; then
-        journal "interrupted before the atomic exchange - rolling /boot back"
+    if [ "$ROOT_EXCHANGED" = 0 ] && [ "$BOOT_TOUCHED" = 1 ]; then
+        journal aborted "interrupted before the atomic exchange - rolling /boot back"
         rollback_external_boot
+        journal rolled-back "/boot is back as the running system left it"
     fi
     if mountpoint -q "$MNT" 2>/dev/null; then
         btrfs filesystem sync "$MNT" >/dev/null 2>&1 || true
@@ -219,7 +286,7 @@ if ! btrfs subvolume show "$SRC" >/dev/null 2>&1; then
     exit 1
 fi
 
-journal "restore requested for Point #$SNAP on $DEV (overlay=$OVERLAY)"
+journal requested "restore requested for Point #$SNAP on $DEV (overlay=$OVERLAY)"
 
 prepare_external_boot() {
     # If /boot lives inside @, the restored Point carries its own matching
@@ -229,6 +296,8 @@ prepare_external_boot() {
             echo "  /boot:                inside the Point (nothing external to exchange)"
         return 0
     fi
+
+    unarchive_kernels
 
     RESTORE_KERNEL=$(
         for module_dir in "$SRC"/lib/modules/*; do
@@ -280,9 +349,10 @@ prepare_external_boot() {
     fi
 
     # next_entry is pinned: /boot now needs rolling back if anything goes wrong.
+    BOOT_TOUCHED=1
     BOOT_EXCHANGED=1
     BOOT_ARCHIVE="/boot/phoenix-kernel-backup-$TS"
-    journal "external /boot staged for kernel $RESTORE_KERNEL, archive $BOOT_ARCHIVE"
+    journal boot-staged "external /boot staged for kernel $RESTORE_KERNEL, archive $BOOT_ARCHIVE"
     mkdir -p "$BOOT_ARCHIVE"
     for prefix in vmlinuz initrd.img config System.map; do
         for boot_file in "/boot/$prefix-"*; do
@@ -309,7 +379,7 @@ if [ -d "$MNT/@new" ]; then
         echo "  leftover @new:        parked as @_prev_${TS}_recovered first"
     else
         echo "phoenix-restore: parking leftover @new from an interrupted restore as @_prev_${TS}_recovered"
-        journal "parking leftover @new as @_prev_${TS}_recovered"
+        journal leftover-parked "parking leftover @new as @_prev_${TS}_recovered"
         mv "$MNT/@new" "$MNT/@_prev_${TS}_recovered"
     fi
 fi
@@ -331,7 +401,7 @@ if [ "$DRY_RUN" = 1 ]; then
 fi
 
 # --- Snapshot-aside, sync, atomic exchange ---------------------------------
-journal "creating writable copy @new from @snapshots/$SNAP/snapshot"
+journal staging-created "creating writable copy @new from @snapshots/$SNAP/snapshot"
 echo "phoenix-restore: creating writable copy of Point #$SNAP as @new ..."
 if ! btrfs subvolume snapshot "$SRC" "$MNT/@new" >/dev/null; then
     echo "phoenix-restore: snapshot of Point #$SNAP failed" >&2
@@ -343,12 +413,30 @@ btrfs filesystem sync "$MNT" >/dev/null 2>&1 || true
 
 if ! prepare_external_boot; then
     btrfs subvolume delete "$MNT/@new" >/dev/null 2>&1 || true
-    journal "aborted: the external /boot could not be prepared"
+    journal aborted "aborted: the external /boot could not be prepared"
     exit 1
 fi
 
+# The update-grub flag goes into @new, BEFORE the exchange - not into @ after
+# it. It closes two things at once. A power cut in the window between the
+# exchange and the old flag write left the restored root booting against a GRUB
+# menu that still described the root it had replaced. And date=$TS makes the
+# flag durable evidence of WHICH subvolume was prepared for this run, so
+# phoenix-recover can tell an exchange that happened (the flag is in @) from
+# one that did not (it is in @new) instead of parking both cases identically.
+mkdir -p "$MNT/@new/var/lib/shadowfetch"
+{
+    echo "restored=$SNAP"
+    echo "date=$TS"
+    echo "previous=@_prev_${TS}"
+    [ -n "$RESTORE_KERNEL" ] && echo "kernel=$RESTORE_KERNEL"
+    [ -n "$BOOT_ARCHIVE" ] && echo "boot_archive=$BOOT_ARCHIVE"
+} > "$MNT/@new/var/lib/shadowfetch/phoenix-update-grub"
+sync
+btrfs filesystem sync "$MNT" >/dev/null 2>&1 || true
+
 echo "phoenix-restore: atomically exchanging @new and @ ..."
-journal "exchanging @new <-> @; the old root becomes @_prev_${TS}"
+journal exchange-begin "exchanging @new <-> @; the old root becomes @_prev_${TS}"
 # Critical section. The exchange is one renameat2, but a shell only notices a
 # signal between commands: without this an interrupt could land in the window
 # where @ is already the restored Point while ROOT_EXCHANGED is still 0, and the
@@ -359,24 +447,20 @@ if ! mv --exchange --no-target-directory "$MNT/@new" "$MNT/@"; then
     echo "phoenix-restore: atomic exchange failed - your current root is untouched" >&2
     btrfs subvolume delete "$MNT/@new" >/dev/null 2>&1 || true
     rollback_external_boot
-    journal "exchange FAILED - root untouched, /boot rolled back"
+    journal rolled-back "exchange FAILED - root untouched, /boot rolled back"
     exit 1
 fi
 ROOT_EXCHANGED=1
-# From here on the restored Point IS @. The old root sits in @new.
-mv "$MNT/@new" "$MNT/@_prev_${TS}" 2>/dev/null || true
+# From here on the restored Point IS @ - and it already carries the update-grub
+# flag, because that was written into @new above. A power cut anywhere below
+# this line leaves a bootable, correctly-flagged system whose only loose end is
+# an unparked @new, which phoenix-recover finishes on the next boot.
+journal exchange-complete "@ is now Point #$SNAP; the root it replaced is in @new"
+if mv "$MNT/@new" "$MNT/@_prev_${TS}" 2>/dev/null; then
+    journal previous-parked "the replaced root is kept as @_prev_${TS}"
+fi
 
-# --- Flag: run update-grub on the next boot of the restored root -----------
-mkdir -p "$MNT/@/var/lib/shadowfetch"
-{
-    echo "restored=$SNAP"
-    echo "date=$TS"
-    echo "previous=@_prev_${TS}"
-    [ -n "$RESTORE_KERNEL" ] && echo "kernel=$RESTORE_KERNEL"
-    [ -n "$BOOT_ARCHIVE" ] && echo "boot_archive=$BOOT_ARCHIVE"
-} > "$MNT/@/var/lib/shadowfetch/phoenix-update-grub"
-
-journal "restore complete: @ is Point #$SNAP, previous root kept as @_prev_${TS}"
+journal complete "restore complete: @ is Point #$SNAP, previous root kept as @_prev_${TS}"
 btrfs filesystem sync "$MNT" >/dev/null 2>&1 || true
 
 echo ""

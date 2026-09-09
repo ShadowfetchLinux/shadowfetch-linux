@@ -63,8 +63,15 @@ EMBER_HELPER_CANDIDATES = (
     "/usr/libexec/ember-duration",
 )
 
+# Stage V: pkexec decides whether a privileged operation happened at all,
+# so it is named by absolute path.  Resolved through PATH it is a
+# session-local process that can swallow the operation while reporting
+# success, or imitate the authentication dialog.
+PKEXEC = "/usr/bin/pkexec"
+
 PHOENIX_RESTORE = "/usr/libexec/phoenix-restore"
 PHOENIX_APT_REPAIR = "/usr/libexec/phoenix-apt-repair"
+PHOENIX_APT_SNAPSHOT = "/usr/libexec/phoenix-apt-snapshot"
 BUNDLE_INSTALL = "/usr/libexec/shadowfetch-bundle-install"
 HWSCAN_CLI = "/usr/libexec/shadowfetch-hwscan"
 HWSCAN_JSON = "/var/lib/shadowfetch/hwscan.json"
@@ -491,24 +498,27 @@ def apt_snapshots_enabled() -> bool:
     return True
 
 
-# Fixed scripts (no interpolation, ever) for the DISABLE_APT_SNAPSHOT toggle.
-_TOGGLE_SCRIPT = (
-    "if grep -q '^DISABLE_APT_SNAPSHOT=' /etc/default/snapper; then "
-    "sed -i 's/^DISABLE_APT_SNAPSHOT=.*/DISABLE_APT_SNAPSHOT=\"{value}\"/' "
-    "/etc/default/snapper; else "
-    "printf 'DISABLE_APT_SNAPSHOT=\"{value}\"\\n' >> /etc/default/snapper; fi"
-)
+def apt_snapshot_toggle_argv(enable: bool) -> list[str] | None:
+    """The pkexec command that flips DISABLE_APT_SNAPSHOT, or None when the
+    root helper for it is not installed.
 
-
-def apt_snapshot_toggle_argv(enable: bool) -> list[str]:
-    """The pkexec command that flips DISABLE_APT_SNAPSHOT.  Prefers a
-    phoenix helper when one is installed; otherwise a fixed sed script."""
-    for helper in ("/usr/libexec/phoenix-apt-snapshot",
-                   "/usr/libexec/phoenix-snapshot-toggle"):
-        if os.access(helper, os.X_OK):
-            return ["pkexec", helper, "enable" if enable else "disable"]
-    script = _TOGGLE_SCRIPT.format(value="no" if enable else "yes")
-    return ["pkexec", "/bin/sh", "-c", script]
+    Stage V (privileged-operations review).  When no helper was found this
+    used to fall back to running a shell as root -- pkexec on the system
+    shell, with -c and a fixed sed script -- and no helper was ever shipped
+    under either name it probed, so on a real install the fallback was the
+    only path.  That authorises org.freedesktop.policykit.exec on a shell: a
+    generic root shell, not this operation.  The script text being constant
+    was a property of THIS file, not of the authorization, and not of
+    what the user was asked to approve: the prompt named a shell rather than
+    the setting being changed.  shadowfetch-phoenix now ships
+    /usr/libexec/phoenix-apt-snapshot with a two-verb grammar and its own
+    polkit action (org.shadowfetch.phoenix.apt-snapshot), and there is no
+    fallback: a missing helper must never widen the grant, so the switch
+    reports that it cannot change the setting instead.
+    """
+    if os.access(PHOENIX_APT_SNAPSHOT, os.X_OK):
+        return [PKEXEC, PHOENIX_APT_SNAPSHOT, "enable" if enable else "disable"]
+    return None
 
 
 # ---- hwscan ----------------------------------------------------------------

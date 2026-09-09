@@ -18,6 +18,26 @@ Depends:
  shadowfetch-fireline (= ${binary:Version}),
  shadowfetch-missions (= ${binary:Version}),
  shadowfetch-drkonqi-pickup (= ${binary:Version}),
+# The pillars below were supplied only by live-build/config/package-lists
+# (fire-edition.list.chroot). A package list is a build-time seed, not a
+# dependency: the ISO had Mission Control, Ember, Firewatch, Phoenix, Fireproof,
+# hwscan and the launcher because the chroot was told to install them by name,
+# while 'apt install shadowfetch-desktop' anywhere else produced a Plasma
+# desktop with none of them and no error. The graph now says what the product
+# is, and tools/ship_list_check.py fails if a package list ever again supplies
+# a Shadowfetch package this closure does not reach.
+#
+# shadowfetch-ember is Architecture: amd64 and this metapackage is
+# Architecture: all, which is deliberate: the umbra archive is amd64-only
+# (repo/conf/distributions), so there is no port for an arch-independent
+# desktop to be installable on.
+ shadowfetch-control-center (= ${binary:Version}),
+ shadowfetch-ember (= ${binary:Version}),
+ shadowfetch-firewatchd (= ${binary:Version}),
+ shadowfetch-fireproof (= ${binary:Version}),
+ shadowfetch-hwscan (= ${binary:Version}),
+ shadowfetch-menus (= ${binary:Version}),
+ shadowfetch-phoenix (= ${binary:Version}),
  kde-plasma-desktop,
  sddm,
  pipewire,
@@ -29,8 +49,11 @@ Depends:
 Description: Shadowfetch creative workstation (KDE Plasma edition)
  Shadowfetch is a Debian-based Linux distribution for visual artists,
  musicians, and video creators. This metapackage installs the full
- Shadowfetch desktop experience, including the KDE Plasma session,
- the creative-app baseline, themes, branding, and the welcome tool.
+ Shadowfetch desktop experience: the KDE Plasma session, the creative-app
+ baseline, themes, branding and the welcome tool, and the Shadowfetch
+ pillars themselves -- Mission Control, Firebreak and the mission engine,
+ Phoenix Recovery, Fireproof updates, Firewatch telemetry, Ember Mode, the
+ hardware scanner and the seven-category launcher.
 
 Package: shadowfetch-creative-base
 Architecture: all

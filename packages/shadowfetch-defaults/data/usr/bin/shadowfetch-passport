@@ -20,6 +20,12 @@ import json
 import os
 import re
 import shutil
+
+# Only root-owned directories. PATH belongs to whoever launched us, and on a
+# stock install ~/.local/bin precedes /usr/bin and is writable by the desktop
+# user, so a program resolved through it cannot be trusted to report a security
+# fact about the machine.
+TRUSTED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 import subprocess
 import sys
 import time
@@ -79,7 +85,7 @@ def _read_json(path: Path) -> dict | None:
 
 
 def _facts_command() -> list[str] | None:
-    installed = shutil.which("shadowfetch-facts")
+    installed = shutil.which("shadowfetch-facts", path=TRUSTED_PATH)
     if installed:
         return [installed, "--json"]
     sibling = Path(__file__).with_name("shadowfetch-facts")
@@ -90,7 +96,9 @@ def _facts_command() -> list[str] | None:
 
 def _hwscan_command() -> list[str] | None:
     for candidate in (
-        shutil.which("shadowfetch-hwscan"),
+        # /usr/libexec first; PATH never. These hardware facts are half of
+        # the attestation the Passport publishes.
+        shutil.which("shadowfetch-hwscan", path=TRUSTED_PATH),
         "/usr/libexec/shadowfetch-hwscan",
     ):
         if candidate and os.access(candidate, os.X_OK):

@@ -12,6 +12,7 @@ Depends:
  ${misc:Depends},
  btrfs-progs,
  coreutils (>= 9.5),
+ python3,
  snapper,
  pkexec,
  polkitd
@@ -28,6 +29,11 @@ Description: Shadowfetch Phoenix Recovery (safety pillar)
  80snapper), and restores any Point crash-atomically: snapshot-aside, then
  a single renameat2(RENAME_EXCHANGE) swap, so an @ subvolume exists at
  every instant and a power cut can never leave the machine unbootable.
+ An interrupted restore is journalled by phase and is finished, or undone,
+ on the next boot: phoenix-recover reads that journal and the volume itself,
+ decides whether the exchange completed, repairs an external /boot staged
+ for a generation that never landed, and collects previous roots and kernel
+ backups under a bound.
  Restore is supported from inside the "Last Known Good Flame" read-only
  snapshot session. Also ships the user-scope Plasma desktop reset (personal
  files untouched, undoable by construction) and the privacy-safe recovery

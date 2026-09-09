@@ -1,0 +1,5 @@
+# Maintainer documentation for the catalog format, deliberately not shipped:
+# the install line is catalog/*.json and every runtime reader of that
+# directory globs *.json. Declared here so the reverse manifest can tell a
+# file nobody ships from a file somebody forgot.
+data/usr/share/shadowfetch/welcome/catalog/README

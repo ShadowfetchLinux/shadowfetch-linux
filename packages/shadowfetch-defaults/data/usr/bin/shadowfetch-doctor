@@ -1,0 +1,2277 @@
+#!/usr/bin/env python3
+"""shadowfetch-doctor - structured diagnosis, support bundles, release check.
+
+WHY THIS EXISTS AND WHY IT IS NOT shadowfetch-health
+----------------------------------------------------
+``shadowfetch-health`` answers "is this machine unwell right now" in eight
+lines of printf. ``shadowfetch-facts`` answers "what hardware is this".
+``shadowfetch-passport`` answers "will Shadowfetch run here" before install.
+None of them can answer the question support actually receives, which is
+"the sandbox will not start" / "the agent cannot reach its provider" /
+"apt stopped working" -- because none of them looks at Firebreak, the
+credential broker boundary, the provider registry, the APT trust chain or
+the difference between what this release DECLARED and what the kernel is
+actually ENFORCING.
+
+This tool answers that question, and it does it in a shape a machine can
+read, because the eventual consumer is a bug report and a release gate, not
+a human squinting at colour codes.
+
+THE ONE RULE THAT MATTERS MOST HERE
+-----------------------------------
+A check that could not be performed reports SKIP, never PASS.
+
+A diagnostic tool that prints a green tick when it could not find the thing
+it was supposed to inspect is worse than no tool: it converts ignorance into
+a positive assurance, and someone then ships on it. Every collector in this
+file distinguishes:
+
+    PASS  the thing was inspected and is as it should be
+    WARN  inspected, works, but is degraded or unusual
+    FAIL  inspected, and it is wrong
+    INFO  inspected; a fact worth reporting that is not a verdict
+    SKIP  NOT inspected -- missing tool, no permission, not applicable
+
+and ``--release-check`` treats SKIP as a failure, because a release may not
+be signed off on facts nobody established.
+
+TRUSTED PATHS (permanent invariant, do not relax)
+-------------------------------------------------
+Every executable whose OUTPUT decides a security question here is invoked
+through an explicit absolute path from ``TRUSTED_TOOLS`` and is classified
+before it runs. There is no ``shutil.which`` in this file and no PATH lookup
+anywhere, and ``test_doctor.py`` asserts that by reading this source.
+
+This is not theoretical. ``journalctl`` resolved through a user-writable
+PATH can forge a clean audit; ``systemctl --failed`` resolved the same way
+can report an empty list on a machine where everything is down; a
+``nvidia-smi`` in ``/usr/local/bin`` can claim any driver version it likes.
+When a tool does not classify as distro-managed, the check that needed it
+reports SKIP with the reason. It never falls back to a PATH lookup and it
+never reports PASS on an unverifiable answer.
+
+The classification is deliberately a second implementation of the one in
+``sf_providers.classify_executable``. It is NOT a second redactor -- see
+below -- and the duplication is bounded and tested: ``test_doctor.py``
+imports the missions module when it is present and asserts the two agree on
+a fixture set, so they cannot drift. The copy exists because a diagnostic
+tool has to work on a machine where ``shadowfetch-missions`` is broken,
+half-installed or absent, which is exactly when someone runs a doctor.
+
+SUPPORT BUNDLES: PRIVACY IS THE DESIGN, NOT A FILTER ON TOP
+-----------------------------------------------------------
+``--support`` writes a tar.gz for a bug report. Three structural controls,
+in this order:
+
+  1. ALLOWLIST. A collector may only read CONTENT from a path under
+     ``COLLECT_ROOTS`` (plus ``HOME_READ_SUBPATHS``). ``DENY_PREFIXES`` is a
+     second, redundant refusal for paths that must never be touched even if
+     someone later widens the allowlist by accident. Metadata probes -- does
+     this exist, what mode is it -- are governed separately and more loosely,
+     because "is there a broker binary" has to be answerable and answering it
+     exposes nothing; the home-directory rule and the never-collect list hold
+     for probes too. Both policies live in ``Host``; there is no other
+     file-reading path in the bundle builder.
+  2. ONE WRITE PATH. Everything entering the archive goes through
+     ``Bundle.add``, which applies the shared redactor to every byte with no
+     opt-out, including the MANIFEST itself.
+  3. FAIL CLOSED. If the shared redactor cannot be loaded from a trusted
+     location, ``--support`` REFUSES to write a bundle. It does not fall
+     back to a weaker local redactor, because a second redactor is exactly
+     the thing that drifts and then silently stops catching a shape the
+     real one catches. ``sf_redact`` is the one implementation; on a
+     Shadowfetch install ``shadowfetch-desktop`` pulls in the package that
+     ships it.
+
+Environment variables contribute NAMES ONLY, never values, with a narrow
+allowlist of posture variables whose values are informative. That mirrors
+``sf_redact``'s reasoning: credential IDENTITIES are the audit trail and
+must survive; credential VALUES must not exist here at all.
+
+The MANIFEST lists exactly what was collected, what was skipped and why,
+and the standing refusals. Hashes in it are of the bytes actually in the
+archive -- that is, post-redaction -- so the manifest describes the file
+the user is about to send, not a file that never existed.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime
+import hashlib
+import io
+import json
+import os
+import pwd
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Mapping, Sequence
+
+VERSION = "1.0"
+SCHEMA_VERSION = 1
+
+# Same file every other Shadowfetch tool reports from, so a bug report cannot
+# cite a version the system itself disagrees with.
+VERSION_FILE = "/usr/share/shadowfetch/version"
+
+
+# --------------------------------------------------------------------------- #
+# Executable trust. See the module docstring: this decides whether an answer
+# is admissible, not merely whether a program exists.
+# --------------------------------------------------------------------------- #
+
+class Trust:
+    """What a program's location proves about who is able to change it.
+
+    Value-identical to ``sf_providers.ExecutableTrust`` on purpose; the test
+    suite pins the agreement so the two cannot drift into different verdicts
+    for the same file.
+    """
+
+    DISTRO_MANAGED = "distro-managed"   # packaged path, root-owned all the way up
+    USER_MANAGED = "user-managed"       # this user's own space, nobody else writable
+    DEVELOPER = "developer"             # integrity fine, provenance unmanaged
+    UNTRUSTED = "untrusted"             # somebody else can substitute it
+    MISSING = "missing"                 # not there at all
+
+
+PACKAGED_EXEC_PREFIXES = ("/usr/bin/", "/usr/sbin/", "/usr/libexec/",
+                          "/usr/lib/", "/usr/local/lib/shadowfetch/",
+                          "/bin/", "/sbin/", "/opt/")
+
+
+def _private_group(gid: int, uid: int) -> bool:
+    """True if gid is a per-user group whose only member is that user.
+
+    Debian gives each user a group of their own name, so 0775 under $HOME is
+    group-writable by a group of one. That is materially different from 0775
+    under a shared group like ``staff`` or ``adm``, and the difference decides
+    whether "group-writable" means a third party can swap the binary.
+    """
+    try:
+        import grp
+        user = pwd.getpwuid(uid)
+        group = grp.getgrgid(gid)
+    except (ImportError, KeyError, OSError):
+        return False
+    if set(group.gr_mem) - {user.pw_name}:
+        return False
+    return group.gr_gid == user.pw_gid or group.gr_name == user.pw_name
+
+
+def _substitutable_by_others(info: os.stat_result, uid: int):
+    """Why a third party could replace this inode, or None if none could."""
+    mode = info.st_mode
+    if info.st_uid not in (0, uid):
+        return "owned by uid %d" % info.st_uid
+    if stat.S_ISDIR(mode) and mode & stat.S_ISVTX:
+        # Sticky: only an entry's own owner may replace it, so a world-writable
+        # /tmp does not let anyone substitute another user's file.
+        return None
+    if mode & 0o002:
+        return "world-writable"
+    if mode & 0o020 and not _private_group(info.st_gid, uid):
+        return "writable by shared group gid %d" % info.st_gid
+    return None
+
+
+def classify_executable(path, *, uid: int | None = None) -> tuple[str, str]:
+    """Return (Trust value, human reason) for a program.
+
+    The walk covers every directory above the file as well as the file itself:
+    replacing a directory entry is as good as replacing its target, so a check
+    that stops at the file's own mode misses the more likely attack.
+    """
+    uid = os.getuid() if uid is None else uid
+    try:
+        resolved = Path(path).resolve()
+    except OSError as exc:
+        return Trust.UNTRUSTED, "%s cannot be resolved: %s" % (path, exc)
+    if not resolved.is_absolute():
+        return Trust.UNTRUSTED, "%s is not an absolute path" % resolved
+    try:
+        info = resolved.stat()
+    except FileNotFoundError:
+        return Trust.MISSING, "%s does not exist" % resolved
+    except OSError as exc:
+        return Trust.UNTRUSTED, "%s cannot be inspected: %s" % (resolved, exc)
+    if not stat.S_ISREG(info.st_mode):
+        return Trust.UNTRUSTED, "%s is not a regular file" % resolved
+    if not os.access(str(resolved), os.X_OK):
+        return Trust.UNTRUSTED, "%s is not executable" % resolved
+
+    root_owned_throughout = True
+    for component in (resolved, *resolved.parents):
+        try:
+            cinfo = component.stat()
+        except OSError as exc:
+            return Trust.UNTRUSTED, "%s cannot be inspected: %s" % (component, exc)
+        problem = _substitutable_by_others(cinfo, uid)
+        if problem is not None:
+            return (Trust.UNTRUSTED,
+                    "%s is %s, so the program can be substituted by someone "
+                    "other than root or the invoking user" % (component, problem))
+        if cinfo.st_uid != 0:
+            root_owned_throughout = False
+
+    if str(resolved).startswith(PACKAGED_EXEC_PREFIXES):
+        if root_owned_throughout:
+            return (Trust.DISTRO_MANAGED,
+                    "%s is root-owned throughout a packaging-owned directory" % resolved)
+        return (Trust.USER_MANAGED,
+                "%s is in a packaging-owned directory but part of its path is "
+                "owned by uid %d rather than root" % (resolved, uid))
+    if root_owned_throughout:
+        return (Trust.DEVELOPER,
+                "%s is root-owned and nobody else can write it, but it is outside "
+                "the packaging-owned directories, so nothing vouches for where it "
+                "came from" % resolved)
+    return Trust.USER_MANAGED, "%s is writable only by root and uid %d" % (resolved, uid)
+
+
+#: Every executable this tool may run, by logical name, with the ABSOLUTE
+#: candidate paths tried in order. There is no PATH lookup: a program that is
+#: not at one of these paths does not exist as far as this tool is concerned,
+#: and the check that wanted it reports SKIP.
+#:
+#: Every entry requires DISTRO_MANAGED. That is not excessive caution -- each
+#: of these answers a question this tool then reports as fact, and a program a
+#: third party can substitute can answer anything. A user-managed nvidia-smi
+#: gets us "GPU state unverifiable", which is a true statement; accepting it
+#: would get us a false one.
+TRUSTED_TOOLS: dict[str, tuple[str, ...]] = {
+    "systemctl": ("/usr/bin/systemctl", "/bin/systemctl"),
+    "journalctl": ("/usr/bin/journalctl", "/bin/journalctl"),
+    "dpkg": ("/usr/bin/dpkg", "/bin/dpkg"),
+    "dpkg-query": ("/usr/bin/dpkg-query", "/bin/dpkg-query"),
+    "bwrap": ("/usr/bin/bwrap", "/bin/bwrap"),
+    "slirp4netns": ("/usr/bin/slirp4netns", "/bin/slirp4netns"),
+    "nvidia-smi": ("/usr/bin/nvidia-smi",),
+    "true": ("/usr/bin/true", "/bin/true"),
+    "firebreak": ("/usr/bin/shadowfetch-firebreak",),
+    "checkpoint": ("/usr/bin/shadowfetch-checkpoint",),
+    "missions": ("/usr/bin/shadowfetch-missions",),
+}
+
+#: Required trust class per tool. Uniform today; kept as a table so a future
+#: exception has to be written down here rather than argued at the call site.
+REQUIRED_TRUST = {name: (Trust.DISTRO_MANAGED,) for name in TRUSTED_TOOLS}
+
+
+@dataclass
+class Tool:
+    name: str
+    path: str | None
+    trust: str
+    reason: str
+
+    @property
+    def usable(self) -> bool:
+        return self.path is not None and self.trust in REQUIRED_TRUST[self.name]
+
+
+def resolve_tool(name: str) -> Tool:
+    """First candidate absolute path that classifies acceptably, else why not.
+
+    Candidates are tried in order and the first one that exists is the answer,
+    even when it classifies badly. Skipping a badly-classified /usr/bin/foo to
+    "find" an acceptable /bin/foo would report on a program that is not the one
+    that would actually run -- a more misleading answer than the bad one.
+    """
+    for candidate in TRUSTED_TOOLS[name]:
+        trust, reason = classify_executable(candidate)
+        if trust == Trust.MISSING:
+            continue
+        return Tool(name, candidate, trust, reason)
+    return Tool(name, None, Trust.MISSING,
+                "none of %s exists" % ", ".join(TRUSTED_TOOLS[name]))
+
+
+# --------------------------------------------------------------------------- #
+# Findings
+# --------------------------------------------------------------------------- #
+
+PASS, WARN, FAIL, INFO, SKIP = "pass", "warn", "fail", "info", "skip"
+STATUSES = (PASS, WARN, FAIL, INFO, SKIP)
+
+CATEGORIES = ("system", "gpu", "drivers", "ai", "firebreak", "broker",
+              "apt", "services", "recovery", "security", "development")
+
+
+@dataclass
+class Evidence:
+    """Where a finding's claim came from. Never decoration.
+
+    A doctor that cannot show its source produces advice nobody can check,
+    and the person receiving it has to trust the tool instead of the reading.
+    """
+
+    kind: str            # "file" | "exec" | "probe" | "none"
+    source: str          # absolute path, or the exact argv
+    ok: bool
+    note: str = ""
+    trust: str = ""      # executable trust class, for kind == "exec"
+
+    def as_dict(self) -> dict:
+        out = {"kind": self.kind, "source": self.source, "ok": self.ok}
+        if self.note:
+            out["note"] = self.note
+        if self.trust:
+            out["trust"] = self.trust
+        return out
+
+
+@dataclass
+class Finding:
+    id: str
+    category: str
+    title: str
+    status: str
+    summary: str
+    detail: dict = field(default_factory=dict)
+    remedy: str = ""
+    evidence: list[Evidence] = field(default_factory=list)
+    #: True when this finding participates in --release-check. A release may
+    #: not be signed off on a SKIP, so gated checks that could not run fail
+    #: the gate rather than being quietly dropped.
+    gated: bool = False
+
+    def as_dict(self) -> dict:
+        out = {
+            "id": self.id,
+            "category": self.category,
+            "title": self.title,
+            "status": self.status,
+            "summary": self.summary,
+            "gated": self.gated,
+        }
+        if self.detail:
+            out["detail"] = self.detail
+        if self.remedy:
+            out["remedy"] = self.remedy
+        if self.evidence:
+            out["evidence"] = [item.as_dict() for item in self.evidence]
+        return out
+
+
+# --------------------------------------------------------------------------- #
+# Host access. Every read and every exec in this file goes through here, which
+# is what makes the allowlist a control rather than a convention.
+# --------------------------------------------------------------------------- #
+
+#: Prefixes a collector may read. Anything else raises. Widening this list is
+#: a privacy decision and should be argued in review, which is why it is one
+#: table rather than a habit of passing absolute paths around.
+COLLECT_ROOTS = (
+    "/etc/os-release",
+    "/etc/apt/",
+    "/etc/sysctl.d/",
+    "/etc/modprobe.d/",
+    "/etc/shadowfetch/",
+    "/proc/",
+    "/sys/",
+    "/usr/share/shadowfetch/",
+    "/usr/share/keyrings/",
+    "/usr/lib/shadowfetch/",
+    "/var/lib/apt/lists/",
+    "/var/log/journal",
+    # Existence-only reads. Nothing collects content from either: /.snapshots is
+    # listed to count rollback points, /usr/local/bin is probed because a copy
+    # there shadows the packaged tool on a default PATH.
+    "/.snapshots",
+    "/usr/local/bin/",
+)
+
+#: Refused even if a future edit widens COLLECT_ROOTS to cover them. These are
+#: the paths whose exposure in a support bundle would be the incident. The
+#: overlap with COLLECT_ROOTS being empty today is the point: this is the
+#: second lock, not the first.
+DENY_PREFIXES = (
+    "/etc/shadow",
+    "/etc/gshadow",
+    "/etc/ssl/private/",
+    "/etc/ssh/",
+    "/root/",
+    "/var/lib/sudo/",
+    "/proc/self/environ",
+    "/proc/1/environ",
+)
+
+#: Inside a home directory, these are the only subtrees this tool may look at
+#: AT ALL -- even to ask whether a file exists. Everything else under a home
+#: -- dotfiles, keys, browser profiles, shell history, documents -- is out of
+#: scope by construction, not by a pattern match someone has to keep current.
+HOME_PROBE_SUBPATHS = (
+    ".local/state/shadowfetch",
+)
+
+#: And of those, the only subtree whose CONTENT may be read. Metadata (does it
+#: exist, what mode is it, how big) is a weaker exposure than content and is
+#: what the permission and audit-directory checks need; content is what ends up
+#: in a support bundle. Keeping them as two lists means widening one does not
+#: silently widen the other.
+HOME_READ_SUBPATHS = (
+    ".local/state/shadowfetch/firebreak",
+)
+
+
+class Refused(Exception):
+    """A collector asked for a path the privacy policy does not permit."""
+
+
+@dataclass
+class Outcome:
+    ok: bool
+    stdout: str
+    stderr: str
+    code: int
+    evidence: Evidence
+
+
+class Host:
+    """The machine under inspection.
+
+    ``root`` exists so the support bundle can be built against a synthetic
+    tree in a test without the shipped program growing an environment
+    variable that relocates its reads. A relocatable diagnostic is a
+    diagnostic someone can point at a directory they prepared.
+
+    When ``root`` is not "/" no subprocess runs at all: there is no honest way
+    to ask the real ``journalctl`` about a synthetic tree, so those collectors
+    report SKIP with that reason instead of quietly describing this machine.
+    """
+
+    def __init__(self, root: str | Path = "/", env: Mapping[str, str] | None = None,
+                 timeout: int = 8):
+        self.root = Path(root).resolve()
+        self.synthetic = self.root != Path("/")
+        self.env = dict(os.environ if env is None else env)
+        self.timeout = timeout
+        self._tools: dict[str, Tool] = {}
+
+    # ---- paths -------------------------------------------------------- #
+
+    @staticmethod
+    def _under(absolute: str, base: str) -> bool:
+        return absolute == base.rstrip("/") or absolute.startswith(base.rstrip("/") + "/")
+
+    def _probe_permitted(self, absolute: str) -> None:
+        """May this tool look at this path's metadata at all?
+
+        Weaker than the read policy on purpose: "does /usr/bin/shadowfetch-brokerd
+        exist" is a question this tool must be able to ask, and answering it
+        exposes nothing. The two rules that hold here regardless are the
+        never-collect list and the home-directory rule -- a diagnostic tool has
+        no business stat()ing someone's Documents folder either.
+        """
+        if not absolute.startswith("/"):
+            raise Refused("%s is not an absolute path" % absolute)
+        if ".." in Path(absolute).parts:
+            raise Refused("%s contains a parent traversal" % absolute)
+        for deny in DENY_PREFIXES:
+            if self._under(absolute, deny):
+                raise Refused("%s is on the never-collect list" % absolute)
+        home = self.home()
+        homes = [str(home)] if home is not None else []
+        homes.append("/home")
+        for base in homes:
+            if not self._under(absolute, base):
+                continue
+            if home is not None and any(
+                    self._under(absolute, str(home / leaf)) for leaf in HOME_PROBE_SUBPATHS):
+                return
+            raise Refused("%s is inside a home directory and outside the "
+                          "Shadowfetch state subtree" % absolute)
+
+    def _read_permitted(self, absolute: str) -> None:
+        """May this tool read this path's CONTENT? Allowlist, not deny-list.
+
+        Everything whose bytes could reach a support bundle comes through here.
+        """
+        self._probe_permitted(absolute)
+        if absolute.startswith(COLLECT_ROOTS):
+            return
+        home = self.home()
+        if home is not None and any(self._under(absolute, str(home / leaf))
+                                    for leaf in HOME_READ_SUBPATHS):
+            return
+        raise Refused("%s is outside the collection allowlist" % absolute)
+
+    def resolve(self, absolute: str) -> Path:
+        """Map an absolute system path in, after the CONTENT policy check."""
+        self._read_permitted(absolute)
+        return self.root / absolute.lstrip("/")
+
+    def probe_path(self, absolute: str) -> Path:
+        """Map an absolute system path in, after the METADATA policy check."""
+        self._probe_permitted(absolute)
+        return self.root / absolute.lstrip("/")
+
+    def home(self) -> Path | None:
+        """This user's home from the passwd database, never from $HOME.
+
+        $HOME is ambient -- a desktop session, a user unit or a container image
+        sets it for reasons unrelated to this program. Firebreak resolves its
+        audit directory from passwd for exactly this reason, and a tool that
+        inspects that directory has to agree with it about where it is.
+        """
+        try:
+            entry = pwd.getpwuid(os.geteuid())
+        except KeyError:
+            return None
+        path = (entry.pw_dir or "").strip()
+        if not path.startswith("/"):
+            return None
+        return Path(path)
+
+    def read_text(self, absolute: str, limit: int = 1 << 20) -> tuple[str | None, Evidence]:
+        path = self.resolve(absolute)
+        try:
+            with path.open("rb") as handle:
+                data = handle.read(limit)
+        except FileNotFoundError:
+            return None, Evidence("file", absolute, False, "does not exist")
+        except PermissionError:
+            return None, Evidence("file", absolute, False, "permission denied")
+        except OSError as exc:
+            return None, Evidence("file", absolute, False, str(exc))
+        return (data.decode("utf-8", "replace"),
+                Evidence("file", absolute, True, "%d bytes" % len(data)))
+
+    def read_bytes(self, absolute: str, limit: int = 1 << 22) -> tuple[bytes | None, Evidence]:
+        text, evidence = self.read_text(absolute, limit)
+        return (None if text is None else text.encode("utf-8", "replace")), evidence
+
+    # Refused deliberately PROPAGATES out of these. Swallowing it into a False
+    # would report "that file does not exist" when the truth is "this tool
+    # refused to look", and a diagnostic tool that confuses the two invents
+    # findings. diagnose() turns an escaped Refused into a visible FAIL naming
+    # the path, which is a bug report about this tool rather than about the
+    # machine.
+    def exists(self, absolute: str) -> bool:
+        return self.probe_path(absolute).exists()
+
+    def is_dir(self, absolute: str) -> bool:
+        return self.probe_path(absolute).is_dir()
+
+    def glob(self, absolute_dir: str, pattern: str) -> list[str]:
+        base = self.probe_path(absolute_dir)
+        if not base.is_dir():
+            return []
+        prefix = absolute_dir.rstrip("/")
+        return sorted(prefix + "/" + child.name for child in base.glob(pattern))
+
+    def stat(self, absolute: str) -> os.stat_result | None:
+        """Metadata, or None when the path genuinely is not there."""
+        try:
+            return self.probe_path(absolute).lstat()
+        except OSError:
+            return None
+
+    def readlink(self, absolute: str) -> str:
+        """Link target basename, or "" -- metadata, so the probe policy applies."""
+        try:
+            return os.path.basename(os.readlink(str(self.probe_path(absolute))))
+        except OSError:
+            return ""
+
+    # ---- executables --------------------------------------------------- #
+
+    def tool(self, name: str) -> Tool:
+        if name not in self._tools:
+            self._tools[name] = resolve_tool(name)
+        return self._tools[name]
+
+    def _child_env(self) -> dict[str, str]:
+        """A minimal environment for a trusted tool.
+
+        The caller's environment is NOT passed through. It can hold credential
+        values, and a diagnostic tool has no business handing those to a
+        subprocess whose output it is about to print. PATH is set only because
+        some tools re-exec helpers; nothing in this file resolves a program
+        through it.
+        """
+        home = self.home()
+        env = {"LC_ALL": "C", "LANG": "C", "PATH": "/usr/bin:/bin"}
+        if home is not None:
+            env["HOME"] = str(home)
+        return env
+
+    def run(self, name: str, args: Sequence[str], timeout: int | None = None) -> Outcome:
+        """Run a trusted tool. Never falls back to a PATH lookup.
+
+        A tool that is missing or does not classify as required produces
+        ok=False with the reason, and the caller must turn that into SKIP.
+        """
+        argv_display = "%s %s" % (name, " ".join(args))
+        if self.synthetic:
+            return Outcome(False, "", "", -1,
+                           Evidence("exec", argv_display, False,
+                                    "not run: inspecting a synthetic root at %s" % self.root))
+        chosen = self.tool(name)
+        if chosen.path is None:
+            return Outcome(False, "", "", -1,
+                           Evidence("exec", argv_display, False,
+                                    "no trusted path: " + chosen.reason, chosen.trust))
+        if not chosen.usable:
+            return Outcome(False, "", "", -1,
+                           Evidence("exec", chosen.path, False,
+                                    "refused, classifies as %s: %s" % (chosen.trust, chosen.reason),
+                                    chosen.trust))
+        argv = [chosen.path, *args]
+        try:
+            result = subprocess.run(argv, capture_output=True, text=True,
+                                    timeout=self.timeout if timeout is None else timeout,
+                                    check=False, env=self._child_env())
+        except (OSError, subprocess.SubprocessError) as exc:
+            return Outcome(False, "", "", -1,
+                           Evidence("exec", " ".join(argv), False, str(exc), chosen.trust))
+        return Outcome(result.returncode == 0, result.stdout.strip(), result.stderr.strip(),
+                       result.returncode,
+                       Evidence("exec", " ".join(argv), True,
+                                "exit %d" % result.returncode, chosen.trust))
+
+
+# --------------------------------------------------------------------------- #
+# Small helpers shared by the checks
+# --------------------------------------------------------------------------- #
+
+def _kv(text: str) -> dict[str, str]:
+    """Parse ``key=value`` / ``key: value`` config text, ignoring comments."""
+    out: dict[str, str] = {}
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        for sep in ("=", ":"):
+            if sep in line:
+                key, value = line.split(sep, 1)
+                out[key.strip()] = value.strip().strip('"')
+                break
+    return out
+
+
+def _skip(id_, category, title, reason, evidence=None, gated=False) -> Finding:
+    """The honest shape of "I could not look".
+
+    Kept as a helper so that "not inspected" is one line at every call site
+    and nobody is tempted to write PASS because the code path was awkward.
+
+    A skip still carries provenance. "I could not look, and here is what I
+    tried" is a checkable statement; "I could not look" on its own is not, and
+    a reader has no way to tell a missing file from a bug in this tool.
+    """
+    return Finding(id=id_, category=category, title=title, status=SKIP,
+                   summary="Not inspected: " + reason,
+                   evidence=list(evidence) if evidence
+                            else [Evidence("none", "no readable source", False, reason)],
+                   gated=gated)
+
+
+# --------------------------------------------------------------------------- #
+# Checks: system
+# --------------------------------------------------------------------------- #
+
+def check_system(host: Host) -> list[Finding]:
+    out: list[Finding] = []
+
+    text, ev = host.read_text("/proc/version")
+    if text:
+        out.append(Finding("sys.kernel", "system", "Kernel", INFO,
+                           text.strip().split(" (")[0], evidence=[ev]))
+    else:
+        out.append(_skip("sys.kernel", "system", "Kernel", ev.note, [ev]))
+
+    text, ev = host.read_text(VERSION_FILE)
+    if text and text.strip():
+        out.append(Finding("sys.release", "system", "Shadowfetch release", PASS,
+                           text.strip(), detail={"version": text.strip()},
+                           evidence=[ev], gated=True))
+    else:
+        out.append(Finding("sys.release", "system", "Shadowfetch release", FAIL,
+                           "No release version at " + VERSION_FILE,
+                           remedy="Reinstall shadowfetch-branding; every tool reports "
+                                  "its version from this file.",
+                           evidence=[ev], gated=True))
+
+    # Disk. A full root is the single most common cause of "everything broke
+    # at once" in support, and it breaks apt, snapshots and the sandbox alike.
+    for mount in ("/", "/home", "/var"):
+        try:
+            usage = shutil.disk_usage(str(host.root / mount.lstrip("/")))
+        except OSError as exc:
+            out.append(_skip("sys.disk" + mount.replace("/", "."), "system",
+                             "Disk %s" % mount, str(exc)))
+            continue
+        used = round(usage.used / usage.total * 100) if usage.total else 0
+        free_gib = usage.free / 1024 ** 3
+        status = FAIL if free_gib < 1 else (WARN if used >= 90 else PASS)
+        out.append(Finding("sys.disk" + mount.replace("/", "."), "system",
+                           "Disk %s" % mount, status,
+                           "%d%% used, %.1f GiB free" % (used, free_gib),
+                           detail={"percent_used": used, "free_bytes": usage.free},
+                           remedy="Free space before an update or a sandbox run."
+                                  if status != PASS else "",
+                           evidence=[Evidence("probe", "statvfs " + mount, True)]))
+
+    text, ev = host.read_text("/proc/meminfo")
+    if text:
+        meminfo = {k: int(v.split()[0]) for k, v in
+                   (line.split(":", 1) for line in text.splitlines() if ":" in line)}
+        available = meminfo.get("MemAvailable", 0) / 1024 ** 2
+        total = meminfo.get("MemTotal", 0) / 1024 ** 2
+        out.append(Finding("sys.memory", "system", "Memory",
+                           WARN if available < 1 else PASS,
+                           "%.1f GiB available of %.1f GiB" % (available, total),
+                           detail={"available_gib": round(available, 2),
+                                   "total_gib": round(total, 2)},
+                           evidence=[ev]))
+    else:
+        out.append(_skip("sys.memory", "system", "Memory", ev.note, [ev]))
+
+    text, ev = host.read_text("/proc/mounts")
+    if text:
+        rootfs = ""
+        for line in text.splitlines():
+            parts = line.split()
+            if len(parts) >= 3 and parts[1] == "/":
+                rootfs = parts[2]
+                break
+        out.append(Finding("sys.rootfs", "system", "Root filesystem", INFO,
+                           rootfs or "unknown", detail={"fstype": rootfs},
+                           evidence=[ev]))
+    else:
+        out.append(_skip("sys.rootfs", "system", "Root filesystem", ev.note, [ev]))
+
+    # Clock. A wrong clock breaks TLS and makes a valid APT index look expired,
+    # and the resulting symptom ("apt is broken") points nowhere near the cause.
+    now = datetime.datetime.now(datetime.timezone.utc)
+    plausible = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc) <= now
+    out.append(Finding("sys.clock", "system", "System clock",
+                       PASS if plausible else FAIL,
+                       now.isoformat(timespec="seconds"),
+                       remedy="" if plausible else
+                              "Set the clock: TLS and APT metadata validity both depend on it.",
+                       evidence=[Evidence("probe", "clock_gettime(CLOCK_REALTIME)", True)]))
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Checks: GPU and drivers, read from sysfs rather than a parsed lspci
+# --------------------------------------------------------------------------- #
+
+PCI_CLASS_DISPLAY = "0x03"
+
+
+def _pci_devices(host: Host) -> list[dict]:
+    devices = []
+    for slot in host.glob("/sys/bus/pci/devices", "*"):
+        entry = {"slot": slot.rsplit("/", 1)[-1]}
+        for field_name in ("class", "vendor", "device"):
+            value, _ = host.read_text(slot + "/" + field_name, 64)
+            entry[field_name] = (value or "").strip()
+        entry["driver"] = host.readlink(slot + "/driver")
+        devices.append(entry)
+    return devices
+
+
+def check_gpu(host: Host) -> list[Finding]:
+    out: list[Finding] = []
+    devices = _pci_devices(host)
+    if not devices:
+        return [_skip("gpu.devices", "gpu", "Graphics devices",
+                      "/sys/bus/pci/devices is empty or unreadable")]
+
+    display = [d for d in devices if d.get("class", "").startswith(PCI_CLASS_DISPLAY)]
+    out.append(Finding("gpu.devices", "gpu", "Graphics devices",
+                       PASS if display else WARN,
+                       "%d display device(s)" % len(display),
+                       detail={"devices": [{"slot": d["slot"], "vendor": d["vendor"],
+                                            "device": d["device"], "driver": d["driver"]}
+                                           for d in display]},
+                       evidence=[Evidence("file", "/sys/bus/pci/devices/*/{class,vendor,device,driver}", True)]))
+
+    unbound = [d["slot"] for d in display if not d["driver"]]
+    if display:
+        out.append(Finding("gpu.driver", "gpu", "Graphics driver bound",
+                           FAIL if unbound else PASS,
+                           "no driver bound to %s" % ", ".join(unbound) if unbound
+                           else "every display device has a kernel driver",
+                           detail={"unbound": unbound},
+                           remedy="Run shadowfetch-gpu." if unbound else "",
+                           evidence=[Evidence("file", "/sys/bus/pci/devices/*/driver", True)]))
+
+    modules, ev = host.read_text("/proc/modules")
+    if modules is None:
+        out.append(_skip("gpu.modules", "gpu", "Graphics kernel modules", ev.note, [ev]))
+    else:
+        loaded = {line.split()[0] for line in modules.splitlines() if line.split()}
+        nvidia = "nvidia" in loaded
+        nouveau = "nouveau" in loaded
+        if nvidia and nouveau:
+            status, summary = FAIL, "nvidia and nouveau are both loaded"
+        elif nvidia:
+            status, summary = PASS, "nvidia is loaded"
+        elif nouveau:
+            status, summary = INFO, "nouveau is loaded (open driver)"
+        else:
+            status, summary = INFO, "neither nvidia nor nouveau is loaded"
+        out.append(Finding("gpu.modules", "gpu", "Graphics kernel modules", status, summary,
+                           detail={"nvidia": nvidia, "nouveau": nouveau,
+                                   "amdgpu": "amdgpu" in loaded, "i915": "i915" in loaded},
+                           remedy="Blacklist nouveau and rebuild the initramfs."
+                                  if (nvidia and nouveau) else "",
+                           evidence=[ev]))
+
+    # nvidia-smi is asked for a fact that is then reported; it is therefore
+    # resolved through the trusted table and refused if substitutable.
+    if any(d["vendor"] == "0x10de" for d in display):
+        smi = host.run("nvidia-smi",
+                       ["--query-gpu=name,driver_version,memory.total",
+                        "--format=csv,noheader"])
+        if smi.ok and smi.stdout:
+            out.append(Finding("gpu.nvidia", "gpu", "NVIDIA runtime", PASS,
+                               smi.stdout.splitlines()[0].strip(),
+                               detail={"query": smi.stdout.splitlines()},
+                               evidence=[smi.evidence]))
+        else:
+            out.append(Finding("gpu.nvidia", "gpu", "NVIDIA runtime",
+                               SKIP if not smi.evidence.ok else FAIL,
+                               "Not inspected: " + smi.evidence.note if not smi.evidence.ok
+                               else "nvidia-smi failed: " + (smi.stderr or "no output"),
+                               remedy="An NVIDIA display device is present but the "
+                                      "userspace driver did not answer; run shadowfetch-gpu.",
+                               evidence=[smi.evidence]))
+    return out
+
+
+def check_drivers(host: Host) -> list[Finding]:
+    out: list[Finding] = []
+    devices = _pci_devices(host)
+    if devices:
+        # Bridges and legacy classes have no driver by design; reporting them
+        # would bury the two devices that actually matter in forty that do not.
+        ignorable = ("0x06", "0x08", "0x0c05", "0x11")
+        unbound = [d for d in devices
+                   if not d["driver"] and not d.get("class", "").startswith(ignorable)]
+        out.append(Finding("drv.unbound", "drivers", "PCI devices without a driver",
+                           WARN if unbound else PASS,
+                           "%d device(s) with no kernel driver" % len(unbound),
+                           detail={"devices": [{"slot": d["slot"], "class": d["class"],
+                                                "vendor": d["vendor"], "device": d["device"]}
+                                               for d in unbound]},
+                           remedy="Run shadowfetch-hardware for per-device advice."
+                                  if unbound else "",
+                           evidence=[Evidence("file", "/sys/bus/pci/devices/*/driver", True)]))
+    else:
+        out.append(_skip("drv.unbound", "drivers", "PCI devices without a driver",
+                         "/sys/bus/pci/devices is empty or unreadable"))
+
+    text, ev = host.read_text("/proc/sys/kernel/tainted", 64)
+    if text is None:
+        out.append(_skip("drv.tainted", "drivers", "Kernel taint", ev.note, [ev]))
+    else:
+        value = int(text.strip() or "0")
+        # Bit 12 (OOT_MODULE) is set by every out-of-tree module including the
+        # NVIDIA one, which is a supported configuration here, so a taint that
+        # is ONLY that bit is not a warning.
+        interesting = value & ~(1 << 12)
+        out.append(Finding("drv.tainted", "drivers", "Kernel taint",
+                           WARN if interesting else PASS,
+                           "taint mask %d" % value, detail={"tainted": value},
+                           remedy="Check dmesg for the module that tainted the kernel."
+                                  if interesting else "",
+                           evidence=[ev]))
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Checks: AI / provider readiness
+# --------------------------------------------------------------------------- #
+
+MISSIONS_LIB = "/usr/lib/shadowfetch/missions"
+PROVIDERS_DIR = "/usr/share/shadowfetch/providers.d"
+
+
+def check_ai(host: Host) -> list[Finding]:
+    out: list[Finding] = []
+
+    present = host.is_dir(MISSIONS_LIB)
+    out.append(Finding("ai.runtime", "ai", "Mission Control runtime",
+                       PASS if present else FAIL,
+                       "installed at " + MISSIONS_LIB if present
+                       else "missing: " + MISSIONS_LIB,
+                       remedy="" if present else "Install shadowfetch-missions.",
+                       evidence=[Evidence("file", MISSIONS_LIB, present)],
+                       gated=True))
+
+    manifests = host.glob(PROVIDERS_DIR, "*.json")
+    if host.is_dir(PROVIDERS_DIR):
+        ids = []
+        for path in manifests:
+            text, _ = host.read_text(path, 1 << 18)
+            try:
+                ids.append(json.loads(text or "{}").get("id") or path.rsplit("/", 1)[-1])
+            except ValueError:
+                ids.append(path.rsplit("/", 1)[-1] + " (unparseable)")
+        out.append(Finding("ai.providers", "ai", "Provider manifests",
+                           PASS if ids else WARN,
+                           "%d manifest(s): %s" % (len(ids), ", ".join(ids) or "none"),
+                           detail={"providers": ids},
+                           remedy="" if ids else "No provider is registered; missions "
+                                                 "cannot select one.",
+                           evidence=[Evidence("file", PROVIDERS_DIR + "/*.json", True)]))
+    else:
+        out.append(_skip("ai.providers", "ai", "Provider manifests",
+                         PROVIDERS_DIR + " does not exist",
+                         [Evidence("file", PROVIDERS_DIR, False, "does not exist")]))
+
+    # The orchestrator's own view. This is the only answer that reflects
+    # manifest validation and the approved-provider policy rather than a
+    # directory listing, which is why it is worth a subprocess.
+    caps = host.run("missions", ["--json", "capabilities"], timeout=20)
+    if caps.ok:
+        try:
+            document = json.loads(caps.stdout)
+        except ValueError:
+            document = {}
+        out.append(Finding("ai.capabilities", "ai", "Orchestrator capabilities", PASS,
+                           "shadowfetch-missions answered",
+                           detail={"capabilities": document},
+                           evidence=[caps.evidence]))
+    else:
+        out.append(Finding("ai.capabilities", "ai", "Orchestrator capabilities",
+                           SKIP if not caps.evidence.ok else FAIL,
+                           "Not inspected: " + caps.evidence.note if not caps.evidence.ok
+                           else "shadowfetch-missions failed: " + (caps.stderr or "no output"),
+                           evidence=[caps.evidence]))
+
+    # Credential IDENTITIES only. Values are never read, never printed and
+    # never collected -- see the module docstring. The identities ARE the
+    # audit trail: "no provider credential is present" is the single most
+    # common reason an agent run fails, and it is not a secret.
+    identities = sorted(name for name in CREDENTIAL_IDENTITY_NAMES if host.env.get(name))
+    out.append(Finding("ai.credentials", "ai", "Provider credentials in this environment",
+                       INFO,
+                       "%d credential identity/identities present" % len(identities),
+                       detail={"identities": identities,
+                               "note": "names only; this tool never reads a value"},
+                       evidence=[Evidence("probe", "os.environ keys", True,
+                                          "names only, no values")]))
+    return out
+
+
+#: Kept in step with the Firebreak grant list and sf_redact.CREDENTIAL_NAMES.
+#: Names only -- this list is used to report WHICH identities exist, never to
+#: read one.
+CREDENTIAL_IDENTITY_NAMES = (
+    "ANTHROPIC_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN", "CF_API_TOKEN", "CLOUDFLARE_API_TOKEN", "CODEX_API_KEY",
+    "DEEPSEEK_API_KEY", "DIGITALOCEAN_TOKEN", "DOCKER_PASSWORD", "GEMINI_API_KEY",
+    "GH_TOKEN", "GITHUB_TOKEN", "GITLAB_TOKEN", "GOOGLE_API_KEY", "GROQ_API_KEY",
+    "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "MISTRAL_API_KEY", "NPM_TOKEN",
+    "OPENAI_API_KEY", "OPENROUTER_API_KEY", "PYPI_TOKEN", "XAI_API_KEY",
+)
+
+
+# --------------------------------------------------------------------------- #
+# Checks: Firebreak enforcement
+# --------------------------------------------------------------------------- #
+
+def check_firebreak(host: Host) -> list[Finding]:
+    out: list[Finding] = []
+
+    for name, title, gated in (("firebreak", "Firebreak", True),
+                               ("bwrap", "bubblewrap", True),
+                               ("checkpoint", "Checkpoint engine", False)):
+        tool = host.tool(name)
+        if tool.path is None:
+            out.append(Finding("fb." + name, "firebreak", title, FAIL,
+                               "not installed at any trusted path",
+                               detail={"candidates": list(TRUSTED_TOOLS[name])},
+                               remedy="Install the package that ships it; without it "
+                                      "no session can be confined.",
+                               evidence=[Evidence("exec", "|".join(TRUSTED_TOOLS[name]),
+                                                  False, tool.reason)],
+                               gated=gated))
+        elif not tool.usable:
+            out.append(Finding("fb." + name, "firebreak", title, FAIL,
+                               "classifies as %s, not distro-managed" % tool.trust,
+                               detail={"path": tool.path, "trust": tool.trust},
+                               remedy="A program a third party can substitute cannot be "
+                                      "trusted to confine anything. Reinstall from the "
+                                      "repository.",
+                               evidence=[Evidence("exec", tool.path, False, tool.reason,
+                                                  tool.trust)],
+                               gated=gated))
+        else:
+            out.append(Finding("fb." + name, "firebreak", title, PASS,
+                               "%s (%s)" % (tool.path, tool.trust),
+                               detail={"path": tool.path, "trust": tool.trust},
+                               evidence=[Evidence("exec", tool.path, True, tool.reason,
+                                                  tool.trust)],
+                               gated=gated))
+
+    # Unprivileged user namespaces. This is THE reason a sandbox refuses to
+    # start on an Ubuntu-derived kernel, and the error bwrap prints does not
+    # say so.
+    knobs = {}
+    for knob in ("/proc/sys/kernel/unprivileged_userns_clone",
+                 "/proc/sys/kernel/apparmor_restrict_unprivileged_userns",
+                 "/proc/sys/user/max_user_namespaces"):
+        text, _ = host.read_text(knob, 64)
+        if text is not None:
+            knobs[knob] = text.strip()
+    blocked = (knobs.get("/proc/sys/kernel/unprivileged_userns_clone") == "0"
+               or knobs.get("/proc/sys/kernel/apparmor_restrict_unprivileged_userns") == "1"
+               or knobs.get("/proc/sys/user/max_user_namespaces") == "0")
+    if knobs:
+        out.append(Finding("fb.userns", "firebreak", "Unprivileged user namespaces",
+                           FAIL if blocked else PASS,
+                           "restricted by the kernel" if blocked else "available",
+                           detail=knobs,
+                           remedy="Firebreak cannot create a sandbox without them."
+                                  if blocked else "",
+                           evidence=[Evidence("file", ", ".join(knobs), True)]))
+    else:
+        out.append(_skip("fb.userns", "firebreak", "Unprivileged user namespaces",
+                         "none of the kernel knobs is readable"))
+
+    # The real proof: make a namespace. Firebreak's own `check` subcommand does
+    # something similar, but it resolves bwrap through PATH, so its answer is
+    # not admissible as a security fact here (see the module docstring). This
+    # probe uses the trusted absolute path.
+    bwrap = host.tool("bwrap")
+    if bwrap.usable:
+        true_tool = host.tool("true")
+        if not true_tool.usable:
+            out.append(_skip("fb.namespace", "firebreak", "Sandbox namespace probe",
+                             "no trusted /usr/bin/true to run inside the sandbox"))
+        else:
+            probe = host.run("bwrap", ["--ro-bind", "/usr", "/usr",
+                                       "--symlink", "usr/bin", "/bin",
+                                       "--symlink", "usr/lib", "/lib",
+                                       "--symlink", "usr/lib64", "/lib64",
+                                       "--unshare-user", "--unshare-pid", "--unshare-net",
+                                       "--proc", "/proc", "--", true_tool.path],
+                             timeout=15)
+            out.append(Finding("fb.namespace", "firebreak", "Sandbox namespace probe",
+                               PASS if probe.ok else FAIL,
+                               "a confined process started and exited cleanly" if probe.ok
+                               else "bwrap could not start: " + (probe.stderr or "no output"),
+                               detail={"exit": probe.code},
+                               remedy="" if probe.ok else
+                                      "Until this succeeds every Firebreak session will "
+                                      "fail; confinement is not partially available.",
+                               evidence=[probe.evidence], gated=True))
+    else:
+        out.append(_skip("fb.namespace", "firebreak", "Sandbox namespace probe",
+                         "bwrap is not usable: " + bwrap.reason, gated=True))
+
+    # net=allow needs slirp4netns. Stage B attaches it with
+    # --disable-host-loopback so the sandbox reaches the internet but not host
+    # loopback or abstract sockets.
+    slirp = host.tool("slirp4netns")
+    out.append(Finding("fb.netns", "firebreak", "Sandbox NAT (net=allow)",
+                       PASS if slirp.usable else WARN,
+                       "%s (%s)" % (slirp.path, slirp.trust) if slirp.usable
+                       else "unavailable: " + slirp.reason,
+                       detail={"path": slirp.path, "trust": slirp.trust},
+                       remedy="" if slirp.usable else
+                              "Sessions asking for net=allow will fail; net=none still works.",
+                       evidence=[Evidence("exec", slirp.path or "|".join(TRUSTED_TOOLS["slirp4netns"]),
+                                          slirp.usable, slirp.reason, slirp.trust)]))
+
+    # Honesty: say what is NOT enforced, in the tool, not only in a document.
+    out.append(Finding("fb.egress_filtering", "firebreak",
+                       "Sandbox egress destination filtering", INFO,
+                       "NOT ENFORCED in this release",
+                       detail={"enforced": False,
+                               "postures": ["none", "allow"],
+                               "explanation":
+                                   "There are two network postures. net=none gets an "
+                                   "empty network namespace. net=allow gets a NAT with "
+                                   "--disable-host-loopback, which blocks host loopback "
+                                   "and abstract sockets but does NOT restrict which "
+                                   "internet destinations the sandbox may reach. "
+                                   "--egress-host is RECORDED, not enforced; the session "
+                                   "record says so."},
+                       evidence=[Evidence("none", "release contract", True)]))
+
+    # Audit state. Firebreak resolves this from passwd, so this tool must too.
+    home = host.home()
+    if home is None:
+        out.append(_skip("fb.audit", "firebreak", "Firebreak audit directory",
+                         "this user has no usable passwd entry"))
+    else:
+        audit = str(home / ".local/state/shadowfetch/firebreak")
+        info = host.stat(audit)
+        if info is None:
+            out.append(Finding("fb.audit", "firebreak", "Firebreak audit directory", INFO,
+                               "no sessions have been recorded yet",
+                               detail={"path": audit},
+                               evidence=[Evidence("file", audit, False, "does not exist")]))
+        else:
+            mode = stat.S_IMODE(info.st_mode)
+            owned = info.st_uid == os.geteuid()
+            good = owned and mode == 0o700
+            out.append(Finding("fb.audit", "firebreak", "Firebreak audit directory",
+                               PASS if good else FAIL,
+                               "mode %04o, uid %d" % (mode, info.st_uid),
+                               detail={"path": audit, "mode": "%04o" % mode,
+                                       "uid": info.st_uid},
+                               remedy="" if good else
+                                      "Session records must be private to their owner; "
+                                      "chmod 700 and check ownership.",
+                               evidence=[Evidence("file", audit, True)]))
+
+    relocated = host.env.get("SHADOWFETCH_FIREBREAK_STATE", "").strip()
+    out.append(Finding("fb.audit_relocated", "firebreak", "Audit state location",
+                       WARN if relocated else PASS,
+                       "relocated by SHADOWFETCH_FIREBREAK_STATE" if relocated
+                       else "canonical, resolved from the passwd entry",
+                       detail={"relocated": bool(relocated)},
+                       remedy="Session records for this environment are not going to the "
+                              "canonical directory. That is deliberate when a test or an "
+                              "isolated session set it; it is a finding otherwise."
+                              if relocated else "",
+                       evidence=[Evidence("probe", "SHADOWFETCH_FIREBREAK_STATE", True,
+                                          "set" if relocated else "unset")],
+                       gated=True))
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Checks: credential broker (ADR-0011)
+# --------------------------------------------------------------------------- #
+
+BROKER_PATHS = ("/usr/lib/shadowfetch/broker", "/usr/bin/shadowfetch-brokerd",
+                "/usr/lib/systemd/user/shadowfetch-brokerd.service")
+
+
+def check_broker(host: Host) -> list[Finding]:
+    """The honest answer here is "it does not exist yet".
+
+    ADR-0011 specifies a host-side broker that holds every credential and binds
+    one socket into the sandbox, so no token is ever set in the sandbox
+    environment. That is NOT what 4.0.0 does: Firebreak still injects granted
+    credential values with --setenv at the boundary. A doctor that printed a
+    green "broker" line because a directory happened to exist would be
+    reporting a control that is not there.
+    """
+    present = [path for path in BROKER_PATHS if host.exists(path)]
+    if not present:
+        return [Finding("broker.present", "broker", "Credential broker", INFO,
+                        "not implemented in this release",
+                        detail={"implemented": False,
+                                "credential_delivery": "Firebreak --setenv at the "
+                                                       "sandbox boundary",
+                                "design": "ADR-0011",
+                                "consequence": "A granted credential VALUE is present "
+                                               "inside the sandbox for the life of the "
+                                               "session. Grant narrowly."},
+                        evidence=[Evidence("file", ", ".join(BROKER_PATHS), True,
+                                           "none present")])]
+    # A partial broker is worse than none: something may route credentials to a
+    # component that is not running.
+    complete = len(present) == len(BROKER_PATHS)
+    return [Finding("broker.present", "broker", "Credential broker",
+                    INFO if complete else FAIL,
+                    "present" if complete else "PARTIALLY installed",
+                    detail={"present": present,
+                            "missing": [p for p in BROKER_PATHS if p not in present]},
+                    remedy="" if complete else
+                           "Some broker components are installed and some are not. "
+                           "Credential routing must not be half-configured.",
+                    evidence=[Evidence("file", ", ".join(BROKER_PATHS), True)])]
+
+
+# --------------------------------------------------------------------------- #
+# Checks: APT
+# --------------------------------------------------------------------------- #
+
+SHADOWFETCH_KEYRING = "/usr/share/keyrings/shadowfetch.gpg"
+APT_CODENAME = "umbra"
+DEB_LINE = re.compile(r"^\s*deb(?:-src)?\s+(?P<rest>\S.*)$", re.MULTILINE)
+
+
+def _apt_source_files(host: Host) -> list[str]:
+    files = ["/etc/apt/sources.list"]
+    files += host.glob("/etc/apt/sources.list.d", "*.list")
+    files += host.glob("/etc/apt/sources.list.d", "*.sources")
+    return [path for path in files if host.exists(path)]
+
+
+def check_apt(host: Host) -> list[Finding]:
+    out: list[Finding] = []
+
+    # W-19: [trusted=yes] disables signature checking for every package a
+    # repository serves. This is a gate check, not advice.
+    offenders, inspected = [], []
+    for path in _apt_source_files(host):
+        text, ev = host.read_text(path, 1 << 18)
+        if text is None:
+            continue
+        inspected.append(path)
+        for match in DEB_LINE.finditer(text):
+            entry = match.group("rest")
+            if "trusted=yes" in entry.replace(" ", ""):
+                offenders.append({"file": path, "entry": entry.strip()})
+        if "Trusted: yes" in text or "Trusted:yes" in text:
+            offenders.append({"file": path, "entry": "deb822 Trusted: yes"})
+    if inspected:
+        out.append(Finding("apt.trusted_yes", "apt", "APT signature checking",
+                           FAIL if offenders else PASS,
+                           "%d source entry/entries disable signature checking"
+                           % len(offenders) if offenders
+                           else "every source entry is signature-checked",
+                           detail={"offenders": offenders, "files": inspected},
+                           remedy="Replace [trusted=yes] with [signed-by=%s]."
+                                  % SHADOWFETCH_KEYRING if offenders else "",
+                           evidence=[Evidence("file", ", ".join(inspected), True)],
+                           gated=True))
+    else:
+        out.append(_skip("apt.trusted_yes", "apt", "APT signature checking",
+                         "no APT source file could be read", gated=True))
+
+    keyring = host.exists(SHADOWFETCH_KEYRING)
+    out.append(Finding("apt.keyring", "apt", "Shadowfetch repository key",
+                       PASS if keyring else FAIL,
+                       "present" if keyring else "missing: " + SHADOWFETCH_KEYRING,
+                       remedy="" if keyring else
+                              "Without it the Shadowfetch repository cannot be verified.",
+                       evidence=[Evidence("file", SHADOWFETCH_KEYRING, keyring)],
+                       gated=True))
+
+    # Valid-Until. A repository nobody republishes expires and every installed
+    # machine loses `apt update` -- which is precisely what happened when the
+    # index was published with a 14-day window.
+    indexes = [path for path in host.glob("/var/lib/apt/lists", "*InRelease")
+               if APT_CODENAME in path.rsplit("/", 1)[-1]]
+    if not indexes:
+        out.append(_skip("apt.validity", "apt", "Shadowfetch index validity",
+                         "no cached InRelease for %s in /var/lib/apt/lists" % APT_CODENAME))
+    else:
+        worst = None
+        for path in indexes:
+            text, ev = host.read_text(path, 1 << 20)
+            if not text:
+                continue
+            for line in text.splitlines():
+                if line.startswith("Valid-Until:"):
+                    stamp = line.split(":", 1)[1].strip()
+                    try:
+                        when = datetime.datetime.strptime(
+                            stamp, "%a, %d %b %Y %H:%M:%S %Z").replace(
+                                tzinfo=datetime.timezone.utc)
+                    except ValueError:
+                        continue
+                    remaining = (when - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+                    if worst is None or remaining < worst[0]:
+                        worst = (remaining, path, stamp, ev)
+                    break
+        if worst is None:
+            out.append(_skip("apt.validity", "apt", "Shadowfetch index validity",
+                             "no parseable Valid-Until in the cached index"))
+        else:
+            remaining, path, stamp, ev = worst
+            days = remaining / 86400
+            status = FAIL if remaining <= 0 else (WARN if days < 7 else PASS)
+            out.append(Finding("apt.validity", "apt", "Shadowfetch index validity", status,
+                               "expired %s" % stamp if remaining <= 0
+                               else "valid for %.1f more day(s)" % days,
+                               detail={"valid_until": stamp, "seconds_remaining": int(remaining),
+                                       "index": path},
+                               remedy="apt update will refuse this index. The repository "
+                                      "must be republished." if status == FAIL else "",
+                               evidence=[ev], gated=True))
+
+    audit = host.run("dpkg", ["--audit"], timeout=20)
+    if audit.evidence.ok:
+        clean = audit.ok and not audit.stdout
+        out.append(Finding("apt.dpkg", "apt", "Package database", PASS if clean else FAIL,
+                           "consistent" if clean else "needs repair",
+                           detail={"output": audit.stdout.splitlines()[:20]},
+                           remedy="" if clean else
+                                  "Run sudo dpkg --configure -a, then shadowfetch-update.",
+                           evidence=[audit.evidence]))
+    else:
+        out.append(_skip("apt.dpkg", "apt", "Package database", audit.evidence.note,
+                         [audit.evidence]))
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Checks: services
+# --------------------------------------------------------------------------- #
+
+SHADOWFETCH_SYSTEM_UNITS = (
+    "fireproofd.service",
+    "shadowfetch-firewatchd.service",
+    "shadowfetch-hwscan.service",
+    "shadowfetch-ember.service",
+    "grub-btrfsd.service",
+)
+
+
+def check_services(host: Host) -> list[Finding]:
+    out: list[Finding] = []
+
+    failed = host.run("systemctl", ["--failed", "--no-legend", "--plain", "--no-pager"],
+                      timeout=15)
+    if failed.evidence.ok:
+        units = [line.split()[0] for line in failed.stdout.splitlines() if line.strip()]
+        out.append(Finding("svc.failed", "services", "Failed units",
+                           FAIL if units else PASS,
+                           "%d failed unit(s)" % len(units),
+                           detail={"units": units},
+                           remedy="systemctl status <unit> for each." if units else "",
+                           evidence=[failed.evidence]))
+    else:
+        out.append(_skip("svc.failed", "services", "Failed units", failed.evidence.note,
+                         [failed.evidence]))
+
+    # One call, not one per unit: `is-active` prints a line per argument, and
+    # its non-zero exit for "inactive" is an ANSWER, not a failure to look.
+    probe = host.run("systemctl", ["is-active", *SHADOWFETCH_SYSTEM_UNITS], timeout=15)
+    if not probe.evidence.ok:
+        out.append(_skip("svc.shadowfetch", "services", "Shadowfetch units",
+                         probe.evidence.note, [probe.evidence]))
+    else:
+        answers = probe.stdout.splitlines()
+        states = {unit: (answers[index].strip() if index < len(answers) else "unknown")
+                  for index, unit in enumerate(SHADOWFETCH_SYSTEM_UNITS)}
+        broken = sorted(unit for unit, state in states.items() if state == "failed")
+        out.append(Finding("svc.shadowfetch", "services", "Shadowfetch units",
+                           FAIL if broken else PASS,
+                           "%d failed: %s" % (len(broken), ", ".join(broken)) if broken
+                           else "no Shadowfetch unit is in a failed state",
+                           detail={"states": states},
+                           remedy="systemctl status <unit>." if broken else "",
+                           evidence=[probe.evidence]))
+
+    # Persistent journald. ADR-0010 mirrors every audit row to the journal so
+    # the chain head leaves the user's trust domain. With volatile storage that
+    # mirror dies at reboot and the off-uid copy stops existing -- which makes
+    # this a security finding, not a logging preference.
+    persistent = host.is_dir("/var/log/journal")
+    out.append(Finding("svc.journal_persistent", "services", "Persistent journal",
+                       PASS if persistent else FAIL,
+                       "/var/log/journal exists" if persistent
+                       else "journald storage is volatile",
+                       remedy="" if persistent else
+                              "The off-uid audit mirror does not survive a reboot. "
+                              "Create /var/log/journal and restart systemd-journald.",
+                       evidence=[Evidence("file", "/var/log/journal", persistent)],
+                       gated=True))
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Checks: recovery
+# --------------------------------------------------------------------------- #
+
+def check_recovery(host: Host) -> list[Finding]:
+    out: list[Finding] = []
+
+    rootfs = ""
+    text, ev = host.read_text("/proc/mounts")
+    if text:
+        for line in text.splitlines():
+            parts = line.split()
+            if len(parts) >= 3 and parts[1] == "/":
+                rootfs = parts[2]
+                break
+    if not text:
+        out.append(_skip("rec.btrfs", "recovery", "Snapshot-capable root", ev.note, [ev]))
+    else:
+        btrfs = rootfs == "btrfs"
+        out.append(Finding("rec.btrfs", "recovery", "Snapshot-capable root",
+                           PASS if btrfs else WARN,
+                           "root is %s" % (rootfs or "unknown"),
+                           detail={"fstype": rootfs},
+                           remedy="" if btrfs else
+                                  "Rollback recovery needs btrfs; checkpoints and "
+                                  "snapshots are unavailable on this root.",
+                           evidence=[ev]))
+
+    snapshots = host.glob("/.snapshots", "*") if host.is_dir("/.snapshots") else []
+    if host.is_dir("/.snapshots"):
+        out.append(Finding("rec.snapshots", "recovery", "System snapshots",
+                           PASS if snapshots else WARN,
+                           "%d snapshot entry/entries" % len(snapshots),
+                           detail={"count": len(snapshots)},
+                           remedy="" if snapshots else
+                                  "No snapshot exists to roll back to.",
+                           evidence=[Evidence("file", "/.snapshots", True)]))
+    else:
+        out.append(Finding("rec.snapshots", "recovery", "System snapshots", WARN,
+                           "/.snapshots does not exist",
+                           remedy="Snapper is not configured; there is nothing to roll "
+                                  "back to.",
+                           evidence=[Evidence("file", "/.snapshots", False)]))
+
+    recovery_sources = host.glob("/usr/share/shadowfetch/apt-recovery", "*.sources")
+    out.append(Finding("rec.apt_sources", "recovery", "Offline APT recovery sources",
+                       PASS if recovery_sources else WARN,
+                       "%d recovery source file(s)" % len(recovery_sources),
+                       detail={"files": recovery_sources},
+                       remedy="" if recovery_sources else
+                              "Phoenix cannot restore APT sources without them.",
+                       evidence=[Evidence("file", "/usr/share/shadowfetch/apt-recovery",
+                                          bool(recovery_sources))]))
+
+    checkpoint = host.tool("checkpoint")
+    out.append(Finding("rec.checkpoint", "recovery", "Checkpoint engine",
+                       PASS if checkpoint.usable else WARN,
+                       "%s (%s)" % (checkpoint.path, checkpoint.trust)
+                       if checkpoint.usable else "unavailable: " + checkpoint.reason,
+                       remedy="" if checkpoint.usable else
+                              "Firebreak sessions will run without an undo point.",
+                       evidence=[Evidence("exec",
+                                          checkpoint.path or "|".join(TRUSTED_TOOLS["checkpoint"]),
+                                          checkpoint.usable, checkpoint.reason,
+                                          checkpoint.trust)]))
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Checks: security
+# --------------------------------------------------------------------------- #
+
+HARDENING_SYSCTL = "/etc/sysctl.d/99-shadowfetch-hardening.conf"
+HARDENING_MODPROBE = "/etc/modprobe.d/99-shadowfetch-hardening.conf"
+SECURE_BOOT_EFIVAR = ("/sys/firmware/efi/efivars/"
+                      "SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c")
+
+
+def check_security(host: Host) -> list[Finding]:
+    out: list[Finding] = []
+
+    # DECLARED vs ENFORCED. The shipped .conf file is a request; /proc/sys is
+    # what the kernel is doing. A check that only asserts the file exists
+    # would have passed on every machine where the setting never applied.
+    declared, ev = host.read_text(HARDENING_SYSCTL, 1 << 16)
+    if declared is None:
+        out.append(_skip("sec.sysctl", "security", "Kernel hardening applied",
+                         ev.note, [ev], gated=True))
+    else:
+        wanted = _kv(declared)
+        mismatched, unreadable = [], []
+        for key, value in sorted(wanted.items()):
+            live, _ = host.read_text("/proc/sys/" + key.replace(".", "/"), 128)
+            if live is None:
+                unreadable.append(key)
+            elif live.split() and live.split()[0] != value:
+                mismatched.append({"key": key, "declared": value, "actual": live.split()[0]})
+        status = FAIL if mismatched else (WARN if unreadable else PASS)
+        out.append(Finding("sec.sysctl", "security", "Kernel hardening applied", status,
+                           "%d of %d declared sysctls differ from the running kernel"
+                           % (len(mismatched), len(wanted)) if mismatched
+                           else "every declared sysctl matches the running kernel",
+                           detail={"declared": len(wanted), "mismatched": mismatched,
+                                   "unreadable": unreadable},
+                           remedy="Run sudo sysctl --system; the shipped hardening is "
+                                  "declared but not in force." if mismatched else "",
+                           evidence=[ev, Evidence("file", "/proc/sys/<key>", True)],
+                           gated=True))
+
+    declared, ev = host.read_text(HARDENING_MODPROBE, 1 << 16)
+    modules, mev = host.read_text("/proc/modules")
+    if declared is None or modules is None:
+        out.append(_skip("sec.modprobe", "security", "Disabled modules stay unloaded",
+                         (ev if declared is None else mev).note, [ev, mev]))
+    else:
+        blocked = [line.split()[1] for line in declared.splitlines()
+                   if line.strip().startswith("install ") and len(line.split()) >= 2]
+        loaded = {line.split()[0] for line in modules.splitlines() if line.split()}
+        breached = sorted(set(blocked) & loaded)
+        out.append(Finding("sec.modprobe", "security", "Disabled modules stay unloaded",
+                           FAIL if breached else PASS,
+                           "%d module(s) that should be disabled are loaded: %s"
+                           % (len(breached), ", ".join(breached)) if breached
+                           else "none of the %d disabled modules is loaded" % len(blocked),
+                           detail={"declared_blocked": blocked, "loaded_anyway": breached},
+                           remedy="Something loaded a module the hardening config disables."
+                                  if breached else "",
+                           evidence=[ev, mev]))
+
+    data, ev = host.read_bytes(SECURE_BOOT_EFIVAR, 16)
+    if data is None:
+        out.append(_skip("sec.secure_boot", "security", "Secure Boot",
+                         ev.note + " (usually means BIOS boot or no permission)", [ev]))
+    else:
+        enabled = len(data) >= 5 and data[4] == 1
+        out.append(Finding("sec.secure_boot", "security", "Secure Boot",
+                           PASS if enabled else INFO,
+                           "enabled" if enabled else "disabled",
+                           detail={"enabled": enabled}, evidence=[ev]))
+
+    # Agent state must be private to its owner: it holds session records and
+    # mission history.
+    home = host.home()
+    if home is None:
+        out.append(_skip("sec.state_perms", "security", "Agent state permissions",
+                         "this user has no usable passwd entry"))
+    else:
+        target = str(home / ".local/state/shadowfetch")
+        info = host.stat(target)
+        if info is None:
+            out.append(Finding("sec.state_perms", "security", "Agent state permissions",
+                               INFO, "no agent state directory yet",
+                               detail={"path": target},
+                               evidence=[Evidence("file", target, False, "does not exist")]))
+        else:
+            mode = stat.S_IMODE(info.st_mode)
+            private = not (mode & 0o077) and info.st_uid == os.geteuid()
+            out.append(Finding("sec.state_perms", "security", "Agent state permissions",
+                               PASS if private else FAIL,
+                               "mode %04o, uid %d" % (mode, info.st_uid),
+                               detail={"path": target, "mode": "%04o" % mode},
+                               remedy="" if private else
+                                      "Session records and mission history are readable "
+                                      "by others; chmod go-rwx.",
+                               evidence=[Evidence("file", target, True)]))
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Checks: development state
+# --------------------------------------------------------------------------- #
+
+#: Environment variables that relocate or relax something. Their presence is
+#: not an error -- a developer or a test sets them deliberately -- but a
+#: support bundle from a machine where one is set describes a system that is
+#: not the shipped one, and that has to be visible at the top of the report.
+POSTURE_ENV = (
+    "SHADOWFETCH_FIREBREAK_STATE",
+    "SHADOWFETCH_AGENT_WORKSPACES",
+    "SHADOWFETCH_ELEMENT",
+    "SHADOWFETCH_FIREBREAK_TEST_BIN",
+    "SHADOWFETCH_CHECKPOINT_BIN",
+    "SHADOWFETCH_MISSIONS_STATE",
+    "SHADOWFETCH_PROVIDERS_DIR",
+)
+
+SHADOWFETCH_BINARIES = (
+    "shadowfetch-firebreak", "shadowfetch-checkpoint", "shadowfetch-mcp",
+    "shadowfetch-missions", "shadowfetch-health", "shadowfetch-doctor",
+    "shadowfetch-facts", "shadowfetch-passport", "shadowfetch-gpu",
+    "shadowfetch-update", "shadowfetch-workbench", "shadowfetch-recovery",
+)
+
+
+def check_development(host: Host) -> list[Finding]:
+    out: list[Finding] = []
+
+    overrides = {name: host.env[name] for name in POSTURE_ENV if host.env.get(name)}
+    out.append(Finding("dev.overrides", "development", "Posture overrides in effect",
+                       WARN if overrides else PASS,
+                       "%d override(s) set" % len(overrides) if overrides
+                       else "no posture override is set",
+                       detail={"overrides": sorted(overrides)},
+                       remedy="This environment is not the shipped configuration. Say so "
+                              "in the bug report." if overrides else "",
+                       evidence=[Evidence("probe", "os.environ", True,
+                                          "names of set overrides")],
+                       gated=True))
+
+    # /usr/local/bin shadows /usr/bin on a default PATH, so a copy there
+    # silently replaces the packaged tool for every interactive invocation.
+    shadowed = [path for path in
+                ("/usr/local/bin/" + name for name in SHADOWFETCH_BINARIES)
+                if host.exists(path)]
+    out.append(Finding("dev.shadowed", "development", "Unpackaged tool copies",
+                       FAIL if shadowed else PASS,
+                       "%d Shadowfetch tool(s) shadowed from /usr/local/bin" % len(shadowed)
+                       if shadowed else "no Shadowfetch tool is shadowed",
+                       detail={"paths": shadowed},
+                       remedy="A copy in /usr/local/bin takes precedence over the packaged "
+                              "tool on a default PATH. Remove it or accept that this "
+                              "machine is not running the release." if shadowed else "",
+                       evidence=[Evidence("file", "/usr/local/bin/shadowfetch-*",
+                                          True)],
+                       gated=True))
+
+    # Every packaged tool should be distro-managed. One that is not is either a
+    # developer build or a substituted binary, and the two look identical from
+    # here -- which is the finding.
+    classifications = {}
+    for name in ("firebreak", "checkpoint", "missions"):
+        tool = host.tool(name)
+        classifications[name] = {"path": tool.path, "trust": tool.trust}
+    bad = sorted(k for k, v in classifications.items()
+                 if v["trust"] not in (Trust.DISTRO_MANAGED, Trust.MISSING))
+    out.append(Finding("dev.trust", "development", "Packaged tool provenance",
+                       FAIL if bad else PASS,
+                       "%s not distro-managed" % ", ".join(bad) if bad
+                       else "every resolvable Shadowfetch tool is distro-managed",
+                       detail=classifications,
+                       remedy="Reinstall from the repository, or record that this is a "
+                              "development machine." if bad else "",
+                       evidence=[Evidence("probe", "classify_executable", True)],
+                       gated=True))
+
+    out.append(Finding("dev.running_from", "development", "This tool's own provenance",
+                       INFO, str(Path(__file__).resolve()),
+                       detail=dict(zip(("trust", "reason"),
+                                       classify_executable(Path(__file__).resolve()))),
+                       evidence=[Evidence("probe", "classify_executable(__file__)", True)]))
+    return out
+
+
+CHECKS = {
+    "system": check_system,
+    "gpu": check_gpu,
+    "drivers": check_drivers,
+    "ai": check_ai,
+    "firebreak": check_firebreak,
+    "broker": check_broker,
+    "apt": check_apt,
+    "services": check_services,
+    "recovery": check_recovery,
+    "security": check_security,
+    "development": check_development,
+}
+
+
+def diagnose(host: Host, categories: Sequence[str] | None = None) -> list[Finding]:
+    """Run the selected categories. One category's crash costs one category.
+
+    A doctor that dies on unusual hardware is useless precisely where it is
+    most needed, so a collector that raises becomes a FAIL finding naming the
+    exception rather than taking the run down.
+    """
+    selected = list(categories) if categories else list(CHECKS)
+    findings: list[Finding] = []
+    for name in selected:
+        collector = CHECKS.get(name)
+        if collector is None:
+            continue
+        try:
+            findings.extend(collector(host))
+        except Exception as exc:                       # noqa: BLE001 - see docstring
+            findings.append(Finding(name + ".collector", name,
+                                    "%s checks" % name.title(), FAIL,
+                                    "the collector raised %s: %s"
+                                    % (type(exc).__name__, exc),
+                                    remedy="This is a bug in shadowfetch-doctor. The "
+                                           "other categories are unaffected.",
+                                    evidence=[Evidence("none", "internal", False)]))
+    return findings
+
+
+def summarise(findings: Sequence[Finding]) -> dict[str, int]:
+    return {status: sum(f.status == status for f in findings) for status in STATUSES}
+
+
+def report_document(findings: Sequence[Finding], host: Host) -> dict:
+    version, _ = host.read_text(VERSION_FILE)
+    return {
+        "schema": SCHEMA_VERSION,
+        "tool": "shadowfetch-doctor",
+        "tool_version": VERSION,
+        "release": (version or "").strip() or "unknown",
+        "generated_utc": datetime.datetime.now(datetime.timezone.utc)
+                                 .isoformat(timespec="seconds"),
+        "summary": summarise(findings),
+        "findings": [f.as_dict() for f in findings],
+    }
+
+
+GLYPH = {PASS: "OK", WARN: "!!", FAIL: "XX", INFO: "--", SKIP: "??"}
+
+
+def human_report(document: dict) -> str:
+    lines = ["Shadowfetch Doctor %s · release %s · %s"
+             % (document["tool_version"], document["release"], document["generated_utc"]),
+             "=" * 72]
+    current = None
+    for finding in document["findings"]:
+        if finding["category"] != current:
+            current = finding["category"]
+            lines.append("")
+            lines.append(current.upper())
+        lines.append("  [%s] %s: %s" % (GLYPH[finding["status"]], finding["title"],
+                                        finding["summary"]))
+        if finding.get("remedy"):
+            lines.append("       -> " + finding["remedy"])
+    counts = document["summary"]
+    lines += ["", "=" * 72,
+              "%d pass · %d warn · %d fail · %d info · %d NOT INSPECTED"
+              % (counts[PASS], counts[WARN], counts[FAIL], counts[INFO], counts[SKIP])]
+    if counts[SKIP]:
+        lines.append("A '??' line was not inspected. It is not a pass.")
+    return "\n".join(lines)
+
+
+def exit_code(findings: Sequence[Finding]) -> int:
+    counts = summarise(findings)
+    if counts[FAIL]:
+        return 2
+    if counts[WARN]:
+        return 1
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# Release check
+# --------------------------------------------------------------------------- #
+
+def release_check(host: Host, expect_version: str | None = None) -> tuple[dict, int]:
+    """The installed-system counterpart to the build-time release gates.
+
+    ``make source-gate`` / ``package-gate`` / ``iso-gate`` prove things about
+    the tree and the image. Nothing proved anything about a machine that has
+    the image installed. This does, over the subset of findings marked
+    ``gated``.
+
+    Only PASS and INFO are acceptable. A gated FAIL blocks for the obvious
+    reason; a gated SKIP blocks because "we could not tell" and "it is fine"
+    are different answers and only one of them is a pass; a gated WARN blocks
+    because the shipped configuration has no warnings -- a warning here means
+    this machine is not what the release says it is.
+    """
+    findings = [f for f in diagnose(host) if f.gated]
+    if expect_version is not None:
+        actual = ""
+        text, ev = host.read_text(VERSION_FILE)
+        if text:
+            actual = text.strip()
+        findings.append(Finding("rel.version", "system", "Expected release version",
+                                PASS if actual == expect_version else FAIL,
+                                "%s (expected %s)" % (actual or "unknown", expect_version),
+                                detail={"expected": expect_version, "actual": actual},
+                                evidence=[ev], gated=True))
+
+    blocking = [f for f in findings if f.status not in (PASS, INFO)]
+    document = {
+        "schema": SCHEMA_VERSION,
+        "tool": "shadowfetch-doctor",
+        "mode": "release-check",
+        "tool_version": VERSION,
+        "generated_utc": datetime.datetime.now(datetime.timezone.utc)
+                                 .isoformat(timespec="seconds"),
+        "passed": not blocking,
+        "rule": "only pass and info clear the gate; fail, warn and skip all block. "
+                "'not inspected' is not a pass",
+        "summary": summarise(findings),
+        "blocking": [f.as_dict() for f in blocking],
+        "findings": [f.as_dict() for f in findings],
+    }
+    return document, (0 if not blocking else 2)
+
+
+# --------------------------------------------------------------------------- #
+# Support bundle
+# --------------------------------------------------------------------------- #
+
+class RedactorUnavailable(Exception):
+    """The one shared redactor could not be loaded from a trusted location."""
+
+
+#: Where sf_redact.py may be loaded from. Absolute, and the file is classified
+#: before it is imported: loading a module is executing it, so a substitutable
+#: sf_redact.py is a substitutable redactor AND arbitrary code.
+REDACTOR_DIRS = ("/usr/lib/shadowfetch/missions",)
+
+
+def load_redactor(extra_dirs: Sequence[str] = ()):
+    """Import the shared redactor, or raise.
+
+    There is deliberately no fallback. A second, weaker redactor is exactly
+    the thing that drifts out of step with the real rules and then silently
+    stops catching a shape the real one catches -- and the failure mode is a
+    credential in a bug report, which cannot be undone. Refusing to write a
+    bundle is recoverable; shipping an unredacted one is not.
+
+    ``extra_dirs`` exists for the source tree, where the module lives under
+    packages/. Those directories are classified exactly like the packaged one,
+    so a developer tree that anyone else can write is refused too.
+    """
+    import importlib.util
+
+    tried = []
+    for directory in (*REDACTOR_DIRS, *extra_dirs):
+        candidate = Path(directory) / "sf_redact.py"
+        if not candidate.is_file():
+            tried.append("%s: not present" % candidate)
+            continue
+        trust, reason = classify_executable_readable(candidate)
+        if trust not in (Trust.DISTRO_MANAGED, Trust.USER_MANAGED, Trust.DEVELOPER):
+            tried.append("%s: refused (%s)" % (candidate, reason))
+            continue
+        spec = importlib.util.spec_from_file_location("sf_redact_for_doctor", candidate)
+        if spec is None or spec.loader is None:
+            tried.append("%s: not importable" % candidate)
+            continue
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+        except Exception as exc:                        # noqa: BLE001
+            tried.append("%s: import failed (%s)" % (candidate, exc))
+            continue
+        if not hasattr(module, "redact_bytes") or not hasattr(module, "PLACEHOLDER"):
+            tried.append("%s: does not provide redact_bytes" % candidate)
+            continue
+        return module, str(candidate), trust
+    raise RedactorUnavailable(
+        "No usable sf_redact.py. A support bundle is not written without the "
+        "shared redactor; there is no fallback by design. Tried: " + "; ".join(tried))
+
+
+def classify_executable_readable(path: Path) -> tuple[str, str]:
+    """Trust classification for a file that is imported rather than executed.
+
+    Identical to ``classify_executable`` except that the executable bit is not
+    required: a Python module is not chmod +x, but who can write it matters
+    just as much, because importing it runs it.
+    """
+    try:
+        resolved = path.resolve()
+        info = resolved.stat()
+    except FileNotFoundError:
+        return Trust.MISSING, "%s does not exist" % path
+    except OSError as exc:
+        return Trust.UNTRUSTED, "%s cannot be inspected: %s" % (path, exc)
+    if not stat.S_ISREG(info.st_mode):
+        return Trust.UNTRUSTED, "%s is not a regular file" % resolved
+    uid = os.getuid()
+    root_owned = True
+    for component in (resolved, *resolved.parents):
+        try:
+            cinfo = component.stat()
+        except OSError as exc:
+            return Trust.UNTRUSTED, "%s cannot be inspected: %s" % (component, exc)
+        problem = _substitutable_by_others(cinfo, uid)
+        if problem is not None:
+            return Trust.UNTRUSTED, "%s is %s" % (component, problem)
+        if cinfo.st_uid != 0:
+            root_owned = False
+    if str(resolved).startswith(PACKAGED_EXEC_PREFIXES) and root_owned:
+        return Trust.DISTRO_MANAGED, "%s is root-owned in a packaging-owned directory" % resolved
+    if root_owned:
+        return Trust.DEVELOPER, "%s is root-owned outside the packaging directories" % resolved
+    return Trust.USER_MANAGED, "%s is writable only by root and uid %d" % (resolved, uid)
+
+
+#: The standing refusals, reproduced verbatim into every MANIFEST so the person
+#: about to send a bundle can read the policy rather than infer it from the
+#: file list.
+NEVER_COLLECTED = (
+    "Credential values of any kind, including provider API keys and tokens. "
+    "Only credential NAMES are recorded, because the identity is the audit "
+    "trail and the value is the secret.",
+    "Private keys, PEM material, SSH keys and /etc/ssh.",
+    "Browser profiles, cookies, saved passwords and history.",
+    "Shell history of any shell.",
+    "Any file under a home directory except the Firebreak audit directory, "
+    "and that only when --include-sessions was passed.",
+    "Any process environment block (/proc/*/environ).",
+    "/etc/shadow, /etc/gshadow and /etc/ssl/private.",
+    "Documents, media, mail, or anything else the user owns.",
+)
+
+
+@dataclass
+class BundleItem:
+    path: str
+    source: str
+    collector: str
+    bytes: int
+    sha256: str
+    note: str = ""
+
+
+class Bundle:
+    """The single write path into a support archive.
+
+    Everything -- including the MANIFEST -- goes through ``add``, and ``add``
+    applies the shared redactor to every byte with no opt-out. That is what
+    makes "the bundle is redacted" a property of the code rather than a
+    promise about every call site.
+    """
+
+    def __init__(self, redactor, redactor_path: str, redactor_trust: str):
+        self._redactor = redactor
+        self.redactor_path = redactor_path
+        self.redactor_trust = redactor_trust
+        self.items: list[BundleItem] = []
+        self.skipped: list[dict] = []
+        self._blobs: dict[str, bytes] = {}
+
+    def add(self, path: str, data: bytes | str, *, source: str, collector: str,
+            note: str = "") -> None:
+        if isinstance(data, str):
+            data = data.encode("utf-8", "replace")
+        # The one and only redaction point. Do not add another write path.
+        clean = self._redactor.redact_bytes(data)
+        self._blobs[path] = clean
+        self.items.append(BundleItem(
+            path=path, source=source, collector=collector, bytes=len(clean),
+            sha256=hashlib.sha256(clean).hexdigest(), note=note))
+
+    def skip(self, path: str, source: str, reason: str) -> None:
+        self.skipped.append({"path": path, "source": source, "reason": reason})
+
+    def manifest(self, *, include_sessions: bool, host: Host) -> dict:
+        return {
+            "schema": SCHEMA_VERSION,
+            "tool": "shadowfetch-doctor",
+            "tool_version": VERSION,
+            "created_utc": datetime.datetime.now(datetime.timezone.utc)
+                                   .isoformat(timespec="seconds"),
+            "redactor": {
+                "module": self.redactor_path,
+                "trust": self.redactor_trust,
+                "applied_to": "every byte in this archive, including this manifest",
+                "placeholder": self._redactor.PLACEHOLDER,
+                "limits": "sf_redact removes shapes it knows. Read its module "
+                          "docstring for what it does NOT catch before treating "
+                          "this bundle as safe for a public issue tracker.",
+            },
+            "inspected_root": str(host.root),
+            "include_sessions": include_sessions,
+            "hashes": "sha256 of the bytes in this archive, i.e. AFTER redaction",
+            "self": {
+                "path": "MANIFEST.json",
+                "note": "This file. It is redacted like every other member but "
+                        "is absent from 'collected' below, because a hash "
+                        "cannot cover the file it is written into. Every OTHER "
+                        "member of the archive is listed there.",
+            },
+            "collected": [vars(item) for item in self.items],
+            "skipped": self.skipped,
+            "never_collected": list(NEVER_COLLECTED),
+        }
+
+    def write(self, destination: Path, *, include_sessions: bool,
+              host: Host) -> tuple[Path, dict]:
+        """Write the archive and return the manifest that is INSIDE it.
+
+        Returning the embedded document rather than rebuilding one afterwards
+        matters: a second call would describe an archive with one more member
+        than the one on disk, and the summary the user is shown would not be a
+        summary of the file they are about to send.
+        """
+        document = self.manifest(include_sessions=include_sessions, host=host)
+        # The manifest is added like any other item, so it is redacted too --
+        # a source path can itself contain a secret-shaped string.
+        self.add("MANIFEST.json", json.dumps(document, indent=2, sort_keys=True) + "\n",
+                 source="generated", collector="manifest")
+        destination = destination.expanduser()
+        # 0600 from the moment it exists: a bundle is a support artefact, not
+        # something to leave world-readable in /tmp while it is being written.
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        handle = os.open(str(destination), flags, 0o600)
+        with os.fdopen(handle, "wb") as raw:
+            with tarfile.open(fileobj=raw, mode="w:gz") as archive:
+                for path in sorted(self._blobs):
+                    blob = self._blobs[path]
+                    info = tarfile.TarInfo("shadowfetch-support/" + path)
+                    info.size = len(blob)
+                    info.mode = 0o600
+                    info.mtime = int(datetime.datetime.now(
+                        datetime.timezone.utc).timestamp())
+                    info.uid = info.gid = 0
+                    info.uname = info.gname = "root"
+                    archive.addfile(info, io.BytesIO(blob))
+        return destination, document
+
+
+#: What a bundle collects, as data. A reviewer can read this table and know
+#: the whole of it; there is no collector hiding in a branch somewhere.
+FILE_COLLECTORS = (
+    ("system/os-release", "/etc/os-release"),
+    ("system/version", VERSION_FILE),
+    ("system/kernel", "/proc/version"),
+    ("system/cmdline", "/proc/cmdline"),
+    ("system/meminfo", "/proc/meminfo"),
+    ("system/mounts", "/proc/mounts"),
+    ("system/modules", "/proc/modules"),
+    ("system/tainted", "/proc/sys/kernel/tainted"),
+    ("security/sysctl-hardening.conf", HARDENING_SYSCTL),
+    ("security/modprobe-hardening.conf", HARDENING_MODPROBE),
+    ("apt/sources.list", "/etc/apt/sources.list"),
+)
+
+#: journalctl is restricted to Shadowfetch units. The full journal contains
+#: every other application's logs, which are not ours to put in a bug report.
+JOURNAL_UNITS = SHADOWFETCH_SYSTEM_UNITS
+
+#: Caps on Firebreak session records, newest first. A working machine
+#: accumulates thousands: an uncapped bundle from the build host collected
+#: 1,423 session files, which is both unusable as a bug report and a much
+#: larger exposure than the problem being reported needs. The cap and the
+#: number withheld both go in the MANIFEST, so a truncated bundle says it is
+#: truncated rather than looking complete.
+MAX_SESSIONS_COLLECTED = 25
+MAX_SESSIONS_LISTED = 200
+
+
+def _sessions_newest_first(host: Host, audit: str) -> list[str]:
+    """Session record paths, most recently modified first.
+
+    Newest first because the session someone is filing a bug about is almost
+    always the last one they ran.
+    """
+    paths = host.glob(audit, "*.session")
+    def when(path):
+        info = host.stat(path)
+        return info.st_mtime if info else 0.0
+    return sorted(paths, key=when, reverse=True)
+
+
+def build_bundle(destination: Path, host: Host, *, include_sessions: bool = False,
+                 categories: Sequence[str] | None = None,
+                 extra_redactor_dirs: Sequence[str] = ()) -> tuple[Path, dict]:
+    """Collect a redacted support bundle. Raises RedactorUnavailable to refuse."""
+    module, redactor_path, redactor_trust = load_redactor(extra_redactor_dirs)
+    bundle = Bundle(module, redactor_path, redactor_trust)
+
+    document = report_document(diagnose(host, categories), host)
+    bundle.add("doctor.json", json.dumps(document, indent=2, sort_keys=True) + "\n",
+               source="shadowfetch-doctor --json", collector="doctor")
+    bundle.add("doctor.txt", human_report(document) + "\n",
+               source="shadowfetch-doctor", collector="doctor")
+
+    for name, source in FILE_COLLECTORS:
+        try:
+            text, evidence = host.read_text(source, 1 << 20)
+        except Refused as exc:
+            bundle.skip(name, source, "refused by the collection allowlist: %s" % exc)
+            continue
+        if text is None:
+            bundle.skip(name, source, evidence.note)
+            continue
+        bundle.add(name, text, source=source, collector="file")
+
+    for source in _apt_source_files(host):
+        if source == "/etc/apt/sources.list":
+            continue
+        name = "apt/sources.list.d/" + source.rsplit("/", 1)[-1]
+        text, evidence = host.read_text(source, 1 << 18)
+        if text is None:
+            bundle.skip(name, source, evidence.note)
+        else:
+            bundle.add(name, text, source=source, collector="file")
+
+    # PCI inventory from sysfs: ids and bound driver only. No serial numbers,
+    # no MAC addresses, no device paths beyond the bus slot.
+    devices = _pci_devices(host)
+    bundle.add("hardware/pci.json",
+               json.dumps(devices, indent=2, sort_keys=True) + "\n",
+               source="/sys/bus/pci/devices/*/{class,vendor,device,driver}",
+               collector="sysfs",
+               note="ids and bound driver only; no serials, MACs or device paths")
+
+    # Environment: NAMES for everything, VALUES only for the posture variables
+    # whose value is the finding. Everything still passes through the redactor.
+    env_document = {
+        "names": sorted(host.env),
+        "posture_values": {name: host.env[name] for name in POSTURE_ENV
+                           if host.env.get(name)},
+        "credential_identities_present": sorted(
+            name for name in CREDENTIAL_IDENTITY_NAMES if host.env.get(name)),
+        "policy": "names only; a value appears here ONLY for the posture "
+                  "variables listed in POSTURE_ENV, never for a credential",
+    }
+    bundle.add("environment.json",
+               json.dumps(env_document, indent=2, sort_keys=True) + "\n",
+               source="os.environ", collector="environment",
+               note="names only, plus posture-variable values")
+
+    for name, args, unit_note in (
+        ("systemctl", ["--failed", "--no-legend", "--plain", "--no-pager"],
+         "failed units"),
+        ("dpkg-query", ["-W", "-f=${Package} ${Version} ${Status}\\n", "shadowfetch-*"],
+         "Shadowfetch packages only"),
+    ):
+        outcome = host.run(name, args, timeout=20)
+        target = "services/%s.txt" % name
+        if outcome.evidence.ok:
+            bundle.add(target, outcome.stdout + "\n", source=outcome.evidence.source,
+                       collector="exec", note=unit_note)
+        else:
+            bundle.skip(target, outcome.evidence.source, outcome.evidence.note)
+
+    journal_args = ["--no-pager", "-b", "-n", "300", "-o", "short-iso"]
+    for unit in JOURNAL_UNITS:
+        journal_args += ["-u", unit]
+    outcome = host.run("journalctl", journal_args, timeout=30)
+    if outcome.evidence.ok:
+        bundle.add("services/journal.txt", outcome.stdout + "\n",
+                   source=outcome.evidence.source, collector="exec",
+                   note="this boot, Shadowfetch units only, last 300 lines")
+    else:
+        bundle.skip("services/journal.txt", outcome.evidence.source, outcome.evidence.note)
+
+    # Firebreak session records. OFF by default: a session manifest quotes the
+    # agent command and the workspace paths, which is the most useful thing in
+    # the bundle and also the most personal. Opt in, and it is still redacted.
+    home = host.home()
+    audit = None if home is None else str(home / ".local/state/shadowfetch/firebreak")
+    if audit is None:
+        bundle.skip("firebreak/", "passwd", "this user has no usable passwd entry")
+    else:
+        found = _sessions_newest_first(host, audit)
+        limit = MAX_SESSIONS_COLLECTED if include_sessions else MAX_SESSIONS_LISTED
+        chosen, withheld = found[:limit], max(0, len(found) - limit)
+        listing = []
+        for path in chosen:
+            info = host.stat(path)
+            listing.append({"name": path.rsplit("/", 1)[-1],
+                            "bytes": info.st_size if info else None,
+                            "mode": "%04o" % stat.S_IMODE(info.st_mode) if info else None})
+        bundle.add("firebreak/sessions-listing.json",
+                   json.dumps({"total_present": len(found), "listed": len(listing),
+                               "withheld": withheld, "order": "newest first",
+                               "sessions": listing}, indent=2, sort_keys=True) + "\n",
+                   source=audit, collector="listing",
+                   note="names, sizes and modes only")
+        if not include_sessions:
+            bundle.skip("firebreak/sessions/", audit,
+                        "session contents not collected: --include-sessions was not "
+                        "passed (%d record(s) present)" % len(found))
+        else:
+            for path in chosen:
+                text, evidence = host.read_text(path, 1 << 20)
+                name = "firebreak/sessions/" + path.rsplit("/", 1)[-1]
+                if text is None:
+                    bundle.skip(name, path, evidence.note)
+                else:
+                    bundle.add(name, text, source=path, collector="file",
+                               note="collected because --include-sessions was passed")
+            if withheld:
+                bundle.skip("firebreak/sessions/", audit,
+                            "%d older session record(s) withheld: --include-sessions "
+                            "collects the %d most recent, and this bundle says so "
+                            "rather than looking complete"
+                            % (withheld, MAX_SESSIONS_COLLECTED))
+
+    return bundle.write(destination, include_sessions=include_sessions, host=host)
+
+
+# --------------------------------------------------------------------------- #
+# CLI
+# --------------------------------------------------------------------------- #
+
+def _default_bundle_path() -> Path:
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return Path.cwd() / ("shadowfetch-support-%s.tar.gz" % stamp)
+
+
+def _repo_redactor_dirs() -> list[str]:
+    """The source tree's copy, for running this tool from a checkout.
+
+    Same classification as the packaged path, so a checkout in a directory a
+    third party can write is refused rather than imported.
+    """
+    return [str(parent / "packages/shadowfetch-missions/data/usr/lib/shadowfetch/missions")
+            for parent in Path(__file__).resolve().parents]
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    release_version, _ = Host().read_text(VERSION_FILE)
+    parser = argparse.ArgumentParser(
+        prog="shadowfetch-doctor",
+        description="Structured diagnosis, redacted support bundles, and an "
+                    "installed-system release check.",
+        epilog="A '??' result was NOT inspected. It is not a pass, and it fails "
+               "--release-check.")
+    parser.add_argument("--version", action="version",
+                        version="shadowfetch-doctor (Shadowfetch Linux) %s"
+                                % ((release_version or "").strip() or "unknown"))
+    parser.add_argument("--json", action="store_true", help="emit structured JSON")
+    parser.add_argument("--category", action="append", choices=CATEGORIES, default=[],
+                        metavar="NAME",
+                        help="limit to a category (repeatable): " + ", ".join(CATEGORIES))
+    parser.add_argument("--timeout", type=int, default=8, metavar="SECONDS",
+                        help="per-subprocess timeout (default 8)")
+
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--support", action="store_true",
+                      help="write a redacted support bundle (.tar.gz) for a bug report")
+    mode.add_argument("--release-check", action="store_true",
+                      help="verify this installed system against the release contract; "
+                           "exits 2 if any gated check fails OR could not run")
+
+    parser.add_argument("--output", metavar="FILE",
+                        help="where to write the support bundle")
+    parser.add_argument("--include-sessions", action="store_true",
+                        help="include Firebreak session records in the bundle. They "
+                             "quote agent commands and workspace paths. Off by default.")
+    parser.add_argument("--expect-version", metavar="VERSION",
+                        help="release-check: require this exact release version")
+    args = parser.parse_args(argv)
+
+    host = Host(timeout=args.timeout)
+
+    if args.release_check:
+        document, code = release_check(host, args.expect_version)
+        if args.json:
+            print(json.dumps(document, indent=2, sort_keys=True))
+        else:
+            print("Shadowfetch release check: %s"
+                  % ("PASSED" if document["passed"] else "FAILED"))
+            for finding in document["blocking"]:
+                print("  [%s] %s: %s" % (GLYPH[finding["status"]], finding["title"],
+                                         finding["summary"]))
+            if not document["blocking"]:
+                print("  %d gated check(s), none blocking."
+                      % len(document["findings"]))
+            else:
+                print("\n  Only pass and info clear this gate. A '??' result blocks it "
+                      "on purpose: a release is not signed off on facts nobody "
+                      "established.")
+        return code
+
+    if args.support:
+        destination = Path(args.output) if args.output else _default_bundle_path()
+        try:
+            written, manifest = build_bundle(
+                destination, host, include_sessions=args.include_sessions,
+                categories=args.category or None,
+                extra_redactor_dirs=_repo_redactor_dirs())
+        except RedactorUnavailable as exc:
+            print("shadowfetch-doctor: refusing to write a support bundle.\n%s" % exc,
+                  file=sys.stderr)
+            return 3
+        except FileExistsError:
+            print("shadowfetch-doctor: %s already exists; refusing to overwrite it."
+                  % destination, file=sys.stderr)
+            return 3
+        except OSError as exc:
+            print("shadowfetch-doctor: could not write %s: %s" % (destination, exc),
+                  file=sys.stderr)
+            return 3
+        if args.json:
+            print(json.dumps({"bundle": str(written), "manifest": manifest},
+                             indent=2, sort_keys=True))
+        else:
+            print("Support bundle: %s" % written)
+            print("  %d item(s) collected, %d skipped, redacted by %s"
+                  % (len(manifest["collected"]), len(manifest["skipped"]),
+                     manifest["redactor"]["module"]))
+            print("  MANIFEST.json inside the archive lists exactly what is in it.")
+            if not args.include_sessions:
+                print("  Firebreak session contents were NOT included "
+                      "(pass --include-sessions to include them).")
+            print("  Read it before you send it: redaction removes shapes it knows, "
+                  "not everything.")
+        return 0
+
+    findings = diagnose(host, args.category or None)
+    document = report_document(findings, host)
+    print(json.dumps(document, indent=2, sort_keys=True) if args.json
+          else human_report(document))
+    return exit_code(findings)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

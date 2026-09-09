@@ -2,11 +2,14 @@ usr/libexec/phoenix-firstboot                                usr/libexec/
 usr/libexec/phoenix-check-layout                             usr/libexec/
 usr/libexec/phoenix-restore                                  usr/libexec/
 usr/libexec/phoenix-apt-repair                               usr/libexec/
+usr/libexec/phoenix-apt-snapshot                             usr/libexec/
 usr/libexec/phoenix-postboot                                 usr/libexec/
 usr/libexec/phoenix-space-check                              usr/libexec/
 usr/libexec/phoenix-desktop-reset                            usr/libexec/
 usr/libexec/phoenix-recovery-report                          usr/libexec/
 usr/libexec/phoenix-overlay-banner                           usr/libexec/
+usr/libexec/phoenix-recover                                  usr/libexec/
+usr/lib/shadowfetch/phoenix/*.py                             usr/lib/shadowfetch/phoenix/
 usr/lib/systemd/system/phoenix-firstboot.service             usr/lib/systemd/system/
 usr/lib/systemd/system/phoenix-postboot.service              usr/lib/systemd/system/
 etc/apt/apt.conf.d/79phoenix-space                           etc/apt/apt.conf.d/

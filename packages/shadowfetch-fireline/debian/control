@@ -16,6 +16,20 @@ Recommends:
  shadowfetch-phoenix,
  snapper,
  btrfs-progs
+# shadowfetch-firebreak and sf_mcp.py put /usr/lib/shadowfetch/missions on
+# sys.path to borrow the one shared redactor and the one journald anchor.
+# shadowfetch-missions Depends on THIS package, so the edge cannot point back
+# as a Depends or a Recommends without a loop -- and it must not, because both
+# call sites degrade honestly when the module is absent (a narrower redactor
+# that still redacts; an anchor that reports it has none). Suggests is the
+# strongest relation that stays acyclic, and it makes the borrow visible.
+Suggests:
+ shadowfetch-missions,
+# The MCP 'passport' server runs /usr/bin/shadowfetch-passport, shipped by
+# shadowfetch-defaults, and falls back to a minimal scrubbed view when it is
+# not there. Suggests records the borrow without pulling the desktop
+# configuration package onto a headless Firebreak install.
+ shadowfetch-defaults
 Description: Shadowfetch Fireline - contain, checkpoint and audit local AI agents
  Fireline is the agent-safety system of Shadowfetch Linux Fire and Ice. It lets
  you run any coding agent full-auto without handing it your whole machine.

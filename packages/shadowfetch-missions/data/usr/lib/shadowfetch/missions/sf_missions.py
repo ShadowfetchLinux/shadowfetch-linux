@@ -274,6 +274,19 @@ from sf_providers import (LEGACY_KIND_CAPABILITY, CAPABILITY_LEGACY_KIND,
                          ProviderError, verify_invocation, trusted_executable,
                          SandboxSpec)
 
+# Only root-owned directories. A security fact must not be decided by a program
+# the caller can choose: PATH is the caller's to set, and on a stock install
+# ~/.local/bin precedes /usr/bin and is writable by the desktop user. The
+# release gates found exactly this live -- gitleaks, the one control deciding
+# "no credential shipped", resolved to a builder-writable copy.
+TRUSTED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+def trusted_which(name):
+    """Resolve a program from trusted directories only. Never PATH."""
+    return shutil.which(name, path=TRUSTED_PATH)
+
+
 MAX_FILES = 40
 REVIEW_LOCK_WAIT_SECONDS = 10
 LIST_PAGE_LIMIT = 1000
@@ -2944,11 +2957,27 @@ def checkpoint_call(name, ws, **kwargs):
     except Exception as exc:
         raise MissionError(f"Workspace {name} failed: {clean(exc)}")
 
+# The one sanctioned way to run against a build tree instead of the installed
+# package. PATH used to do this implicitly, which meant PATH also chose which
+# binary answered a security question -- the defect this program exists to
+# close. These names are explicit, apply only to Shadowfetch's own tools, and
+# buy no trust: classify_executable() marks a path outside the trusted
+# directories as untrusted, and that is what the session row and the receipt
+# record. A run against a build tree is visibly not a trusted run.
+DEV_BUILD_OVERRIDES = {
+    "shadowfetch-firebreak": "SHADOWFETCH_FIREBREAK_TEST_BIN",
+    "shadowfetch-checkpoint": "SHADOWFETCH_CHECKPOINT_BIN",
+}
+
+
 def executable(name):
     # Provider programs are NOT resolved here any more -- a provider declares
     # its own candidate paths and the registry resolves them. This helper now
     # only finds Shadowfetch's own tools.
-    found = shutil.which(name)
+    override = os.environ.get(DEV_BUILD_OVERRIDES.get(name, ""), "")
+    if override and Path(override).is_file():
+        return override
+    found = trusted_which(name)
     if found:
         return found
     for parent in Path(__file__).resolve().parents:
@@ -3347,7 +3376,8 @@ class Executor:
             # A provider Invocation is already absolute; nothing consults PATH
             # on a provider's behalf. The lookup below remains only for the
             # workspace test command, which is the person's own.
-            resolved = str(command[0]) if invocation is not None else shutil.which(command[0])
+            resolved = (str(command[0]) if invocation is not None
+                        else trusted_which(command[0]))
             if resolved and not str(Path(resolved).resolve()).startswith(("/usr/", "/bin/", "/sbin/", "/lib/")):
                 # Explicit runtime binary distribution only; never ~/.config.
                 # Which parent directory is the runtime root is DECLARED by the
@@ -4607,7 +4637,7 @@ def capabilities():
     else:
         summary = "No agent providers are installed."
 
-    return {"version": VERSION, "workspace_root": str(workspace_root()), "runtimes": runtimes, "providers": described, "capabilities": list(CAPABILITIES), "capability_kinds": dict(CAPABILITY_LEGACY_KIND), "summary": summary, "provider_errors": list(reg.errors), "schema_version": SCHEMA_VERSION, "tools": {name: bool(shutil.which(name)) for name in ("bwrap", "ffmpeg", "ffprobe", "shadowfetch-firebreak")}, "kinds": ["code", "report", "media"], "states": ["queued", "running", "waiting-review", "completed", "failed", "cancelled", "undone"], "max_attempts": MAX_ATTEMPTS, "max_parallel": 1, "local_ai": "deferred", "grok_bot": "Launch the official desktop cloud teammate separately; it has no supported mission CLI adapter"}
+    return {"version": VERSION, "workspace_root": str(workspace_root()), "runtimes": runtimes, "providers": described, "capabilities": list(CAPABILITIES), "capability_kinds": dict(CAPABILITY_LEGACY_KIND), "summary": summary, "provider_errors": list(reg.errors), "schema_version": SCHEMA_VERSION, "tools": {name: bool(trusted_which(name)) for name in ("bwrap", "ffmpeg", "ffprobe", "shadowfetch-firebreak")}, "kinds": ["code", "report", "media"], "states": ["queued", "running", "waiting-review", "completed", "failed", "cancelled", "undone"], "max_attempts": MAX_ATTEMPTS, "max_parallel": 1, "local_ai": "deferred", "grok_bot": "Launch the official desktop cloud teammate separately; it has no supported mission CLI adapter"}
 
 
 def worker(store, once=False):

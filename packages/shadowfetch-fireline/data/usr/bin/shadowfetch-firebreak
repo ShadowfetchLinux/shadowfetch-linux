@@ -149,7 +149,8 @@ def checkpoint_bin():
     override = os.environ.get("SHADOWFETCH_CHECKPOINT_BIN")
     if override:
         return override
-    return shutil.which("shadowfetch-checkpoint") or str(Path(__file__).with_name("shadowfetch-checkpoint"))
+    return (trusted_which("shadowfetch-checkpoint")
+            or str(Path(__file__).with_name("shadowfetch-checkpoint")))
 
 def read_grants(values, ws):
     grants = []
@@ -212,6 +213,17 @@ RECORD_SCHEMA = 2
 # The PATH the sandbox is given. Named once because the record claims to
 # resolve the agent's program the way the sandbox will, and a second copy of
 # this string would quietly make that claim false.
+# Only root-owned directories. Firebreak's own readiness output is a security
+# claim, and the checkpoint binary it invokes takes the snapshot that Undo later
+# restores from -- neither may be chosen by whoever set PATH.
+TRUSTED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+def trusted_which(name):
+    """Resolve from trusted directories only. Never PATH."""
+    return shutil.which(name, path=TRUSTED_PATH)
+
+
 SANDBOX_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 ENFORCED = "enforced"
@@ -648,7 +660,7 @@ def run(args):
         args.agent_command.pop(0)
     if not args.agent_command:
         raise Error("No agent command; place it after --")
-    if not shutil.which("bwrap"):
+    if not trusted_which("bwrap"):
         raise Error("bubblewrap is not installed")
     if not 256 <= args.memory_mb <= 65536 or not 1 <= args.cpu_seconds <= 86400 or not 8 <= args.processes <= 1024:
         raise Error("Invalid memory, CPU time or process limit")
@@ -661,7 +673,7 @@ def run(args):
     # environment a moment ago.
     granted_values = tuple(os.environ[name] for name in credentials
                            if name in os.environ)
-    if not shutil.which("systemd-run"):
+    if not trusted_which("systemd-run"):
         raise Error("systemd-run is required for per-session CPU, memory and process limits")
     # RLIMIT_NPROC counts all threads for the desktop UID, including unrelated
     # applications. A dedicated cgroup enforces this session's actual task cap.
@@ -893,13 +905,13 @@ def main(argv=None):
                     print(json.dumps(entry, indent=2, sort_keys=True))
             return 0
         if args.command == "check":
-            bwrap = shutil.which("bwrap")
+            bwrap = trusted_which("bwrap")
             if not bwrap:
                 raise Error("bubblewrap is missing")
             probe = subprocess.run([bwrap, "--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib", "--symlink", "usr/lib64", "/lib64", "--unshare-user", "--unshare-pid", "--proc", "/proc", "--", "/usr/bin/true"], capture_output=True, text=True, timeout=10)
             if probe.returncode:
                 raise Error("Sandbox namespaces cannot start: " + probe.stderr.strip())
-            if not Path(checkpoint_bin()).exists() and not shutil.which(checkpoint_bin()):
+            if not Path(checkpoint_bin()).exists() and not trusted_which(checkpoint_bin()):
                 raise Error("Checkpoint engine is missing")
             print("Firebreak ready: namespaces execute, private home, explicit read grants, recovery available")
             return 0

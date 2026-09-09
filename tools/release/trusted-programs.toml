@@ -1,0 +1,33 @@
+# Trusted program pins for the release gates -- HOST policy, not release data.
+#
+# tools/release/gate.py resolves every gate program to an absolute path inside a
+# root-owned directory (/usr/bin, /bin, /usr/sbin, /sbin, then /usr/local/bin,
+# /usr/local/sbin), checking on every resolution that the file and each parent
+# directory are root-owned and not group- or world-writable. PATH is never
+# consulted, because PATH resolution is how a user-writable directory gets to
+# decide a security fact.
+#
+# A program that is genuinely not packaged for the host may be recorded here by
+# absolute path plus SHA-256. The digest is re-verified immediately before every
+# invocation, so a substituted binary is refused rather than trusted. This is
+# weaker than a root-owned path and is meant to be temporary: a replacement
+# written between the check and execve would not be caught. For anything whose
+# output decides a security fact, install it into a root-owned directory instead.
+#
+# THE PIN BELOW RECORDS A REAL EXPOSURE. On the build host gitleaks -- the only
+# control that decides "no credential shipped in this release" -- lives in
+# /home/<builder>/.local/bin, a directory the builder account can write, and
+# before Stage Q the source gate found it by PATH lookup and ran it by bare
+# name. Anything able to drop a file there could have made the release secret
+# scan pass unconditionally. The pin refuses a substituted binary today;
+# installing gitleaks under /usr/local/bin as root and deleting this entry
+# removes the exposure entirely.
+#
+# shellcheck deliberately has NO pin. It is packaged at /usr/bin/shellcheck, so
+# it resolves root-owned; PATH used to prefer the builder-writable copy in
+# ~/.local/bin instead. If the packaged one is ever removed the gate must fail
+# and say so, not fall back to the writable one.
+
+[program.gitleaks]
+path = "/home/rtx5060ti/.local/bin/gitleaks"
+sha256 = "88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509"

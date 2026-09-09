@@ -5,14 +5,28 @@
 # Two jobs, both cheap and idempotent, run once per boot by
 # phoenix-postboot.service:
 #
-#   1. If /var/lib/shadowfetch/phoenix-update-grub exists (written into the
-#      restored root by phoenix-restore), run update-grub so the menu's baked
-#      paths match the new root, then clear the flag. On failure the flag is
-#      kept for the next boot.
+#   1. Hand the volume to phoenix-recover, which finishes or undoes an
+#      interrupted restore and then collects leftovers under a bound.
 #
-#   2. Garbage-collect restore leftovers on the volume top-level: park any
-#      stray @new (interrupted restore) as @_prev_<ts>, then keep only the
-#      MOST RECENT @_prev_* and delete the rest.
+#   2. If /var/lib/shadowfetch/phoenix-update-grub exists (written into the
+#      restored root by phoenix-restore BEFORE the atomic exchange), run
+#      update-grub so the menu's baked paths match the new root, then clear
+#      the flag. On failure the flag is kept for the next boot.
+#
+# 4.0.0 Stage T. This script used to do (2) itself, in two guesses:
+#   * `mv @new @_prev_<now>_recovered` - correct when the interrupted restore
+#     had passed its atomic exchange (@new IS the previous root) and wrong when
+#     it had not (@new is a throwaway copy of a Point that still exists), where
+#     it costs a generation of the real previous root at the next collection.
+#     Nothing on disk distinguished the two cases; phoenix-restore now writes
+#     its update-grub flag into @new BEFORE the exchange, so one does.
+#   * `ls -d @_prev_* | sort | tail -1` to pick the survivor - a lexicographic
+#     sort, in which @_prev_<TS>_recovered outranks the @_prev_<TS> of the same
+#     second, and an unbounded delete loop over anything whose name merely
+#     begins with @_prev.
+# Neither collected /boot/phoenix-kernel-backup-*, which nothing collected at
+# all: one full kernel set per successful restore, forever, on the smallest
+# filesystem on the machine.
 #
 # Skipped entirely inside a "Last Known Good Flame" overlay session: never
 # GC the real volume while the user is riding a Point deciding what to keep.
@@ -25,7 +39,8 @@ case "${1:-}" in
 phoenix-postboot - post-restore boot pass (run by systemd on every boot).
 
 USAGE
-  phoenix-postboot     run update-grub if flagged; GC @_prev/@new leftovers
+  phoenix-postboot     resume an interrupted restore (phoenix-recover),
+                       then run update-grub if a restore flagged it
 
 Part of Shadowfetch Linux. https://www.shadowfetchlinux.org/
 SFHELP
@@ -42,8 +57,24 @@ if [ -e /run/live/medium ] || [ -e /run/live/rootfs ]; then exit 0; fi
 [ "$(stat -f -c %T / 2>/dev/null)" = "btrfs" ] || exit 0
 
 FLAG=/var/lib/shadowfetch/phoenix-update-grub
+RECOVER=/usr/libexec/phoenix-recover
 
-# --- 1. update-grub if a restore flagged it --------------------------------
+# --- 1. Resume an interrupted restore, then collect leftovers --------------
+#
+# This runs BEFORE the flag is consumed below, and the order is load bearing:
+# the flag sitting in @ with date=<run> is the durable evidence that the
+# atomic exchange completed for that run. Removing it first would make a
+# post-exchange crash indistinguishable from a pre-exchange one, which is
+# exactly the ambiguity this rewrite exists to remove.
+if [ -x "$RECOVER" ]; then
+    "$RECOVER" resume || \
+        echo "phoenix-postboot: phoenix-recover reported a problem (see above)" >&2
+else
+    echo "phoenix-postboot: $RECOVER is missing - an interrupted restore was" \
+         "NOT finished and leftovers were NOT collected" >&2
+fi
+
+# --- 2. update-grub if a restore flagged it --------------------------------
 if [ -f "$FLAG" ]; then
     if command -v update-grub >/dev/null 2>&1 && update-grub >/dev/null 2>&1; then
         rm -f "$FLAG"
@@ -51,36 +82,5 @@ if [ -f "$FLAG" ]; then
         echo "phoenix-postboot: update-grub failed; keeping flag for next boot" >&2
     fi
 fi
-
-# --- 2. GC leftovers on the volume top-level -------------------------------
-DEV=$(findmnt -n -o SOURCE / 2>/dev/null || true)
-DEV=${DEV%%\[*}
-[ -n "$DEV" ] && [ -b "$DEV" ] || exit 0
-
-MNT=$(mktemp -d /run/phoenix-postboot.XXXXXX)
-cleanup() {
-    if mountpoint -q "$MNT" 2>/dev/null; then umount "$MNT" 2>/dev/null || true; fi
-    rmdir "$MNT" 2>/dev/null || true
-}
-trap cleanup EXIT INT TERM
-
-mount -t btrfs -o subvolid=5 "$DEV" "$MNT" 2>/dev/null || exit 0
-
-# Park a stray @new. If a restore crashed after its atomic exchange, @new is
-# the previous root and deserves the same one-generation grace as any @_prev;
-# if it crashed before, this parks a harmless snapshot copy that the next
-# pass below will age out.
-if [ -d "$MNT/@new" ]; then
-    mv "$MNT/@new" "$MNT/@_prev_$(date +%Y%m%d%H%M%S)_recovered" 2>/dev/null || true
-fi
-
-# Keep only the newest @_prev_* (timestamps sort lexicographically).
-newest=$(ls -d "$MNT"/@_prev_* 2>/dev/null | sort | tail -n 1)
-for p in "$MNT"/@_prev_*; do
-    [ -d "$p" ] || continue
-    [ "$p" = "$newest" ] && continue
-    btrfs subvolume delete "$p" >/dev/null 2>&1 || \
-        echo "phoenix-postboot: could not delete leftover $(basename "$p")" >&2
-done
 
 exit 0

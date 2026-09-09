@@ -1,0 +1,171 @@
+{
+  "schema": 1,
+  "_note": [
+    "SINGLE SOURCE OF TRUTH for the Shadowfetch palette (ADR-0009).",
+    "Defect this file exists for: ARCHITECTURE_AUDIT.md:246 counted five copies",
+    "of the palette with three different reds and greens, one of which",
+    "(shadowfetch-fireproof) renders INSIDE the Control Center window with a",
+    "different red from the window around it.",
+    "",
+    "Two rules govern every value below and the drift gate enforces both:",
+    "  1. BRAND roles (accent, accent_bright, accent_deep) mirror by element.",
+    "     Ice is a literal R/B mirror of Fire: #D8A24A -> #4AA2D8.",
+    "  2. SEMANTIC roles (negative, warning, positive, link) are ELEMENT-",
+    "     INVARIANT. sfcc/theme.py:29-31 states this contract in prose --",
+    "     'a warning must stay warning-colored on a cold desktop' -- and the",
+    "     generated Ice assets violated it: the R/B mirror had been applied to",
+    "     them too, so ANSI red rendered blue in Konsole on Ice.",
+    "",
+    "Three SURFACES are recorded, not one. They genuinely differ and the",
+    "difference is deliberate; collapsing them would be a re-skin, not a dedup.",
+    "Each copy must match ITS surface exactly -- that is what the gate checks."
+  ],
+  "provenance": {
+    "spec": "branding/umbra-v2/UMBRA-THEME-SPEC.md",
+    "sampled": "2026-05-29, color-sampled from the 20 Umbra v2 reference frames"
+  },
+
+  "elements": {
+    "fire": {
+      "accent": "#D8A24A",
+      "accent_bright": "#E8B65E",
+      "accent_deep": "#A6792F",
+      "plasma_color_scheme": "ShadowfetchDark",
+      "plasma_scheme_name": "Shadowfetch Umbra",
+      "konsole_scheme": "ShadowfetchUmbra",
+      "konsole_description": "Shadowfetch Umbra",
+      "look_and_feel": "org.shadowfetch.dark",
+      "look_and_feel_name": "Shadowfetch Umbra",
+      "wallpaper_package": "UmbraFire",
+      "wallpaper_image": "/usr/share/backgrounds/shadowfetch/umbra-4k.jpg"
+    },
+    "ice": {
+      "accent": "#4AA2D8",
+      "accent_bright": "#5EB6E8",
+      "accent_deep": "#2F79A6",
+      "plasma_color_scheme": "ShadowfetchIce",
+      "plasma_scheme_name": "Shadowfetch Ice",
+      "konsole_scheme": "ShadowfetchGlacier",
+      "konsole_description": "Shadowfetch Glacier",
+      "look_and_feel": "org.shadowfetch.ice",
+      "look_and_feel_name": "Shadowfetch Ice",
+      "wallpaper_package": "UmbraIce",
+      "wallpaper_image": "/usr/share/backgrounds/shadowfetch/umbra-ice-4k.jpg"
+    }
+  },
+
+  "semantic": {
+    "_note": "Element-invariant. Never mirrored. See rule 2 above.",
+    "negative": "#E0484B",
+    "negative_intense": "#FF5C5F",
+    "negative_dim": "#5A1414",
+    "warning": "#E0A33A",
+    "warning_dim": "#5A3C0F",
+    "positive": "#34D058",
+    "positive_intense": "#5FE08A",
+    "positive_dim": "#145023",
+    "link": "#4FA6B8",
+    "link_intense": "#7FD0DE"
+  },
+
+  "surfaces": {
+    "desktop": {
+      "_note": [
+        "The Plasma/SDDM/Konsole/splash surface. Values are the Umbra v2",
+        "sampled tokens. Assets on this surface are GENERATED, not hand-edited:",
+        "  tools/generate_theme_assets.py"
+      ],
+      "consumers": [
+        "packages/shadowfetch-themes/data/usr/share/color-schemes/ShadowfetchDark.colors",
+        "packages/shadowfetch-themes/data/usr/share/color-schemes/ShadowfetchIce.colors",
+        "packages/shadowfetch-themes/data/usr/share/konsole/ShadowfetchUmbra.colorscheme",
+        "packages/shadowfetch-themes/data/usr/share/konsole/ShadowfetchGlacier.colorscheme",
+        "packages/shadowfetch-themes/data/usr/share/sddm/themes/umbra/theme.conf",
+        "packages/shadowfetch-themes/data/usr/share/plasma/look-and-feel/*/contents/splash/Splash.qml"
+      ],
+      "roles": {
+        "ink": "#0A0D11",
+        "abyss": "#05080B",
+        "ink_raised": "#101419",
+        "window": "#0E1116",
+        "header": "#14181E",
+        "steel": "#161A20",
+        "steel_raised": "#1E242B",
+        "slate": "#2C333B",
+        "graphite": "#4A4F56",
+        "mist": "#9AA3AD",
+        "text": "#D6DBE1",
+        "splash_bar": "#262B33",
+        "ansi_blue": "#3E8E9E",
+        "ansi_blue_intense": "#5FC2D4",
+        "ansi_magenta": "#A678C8",
+        "ansi_magenta_intense": "#C39BE0",
+        "ansi_white": "#C7CDD4",
+        "ansi_white_intense": "#EEF1F4",
+        "terminal_foreground": "#CBD2D9"
+      }
+    },
+
+    "app-chrome": {
+      "_note": [
+        "The PyQt6 Control Center chrome. Deep graphite, shipped since 2.1.1.",
+        "shadowfetch-fireproof's window is mounted INSIDE this one, so it must",
+        "use these values and not its own -- that was the audit's named defect."
+      ],
+      "consumers": [
+        "packages/shadowfetch-control-center/data/usr/share/shadowfetch/control-center/sfcc/theme.py",
+        "packages/shadowfetch-fireproof/data/usr/bin/shadowfetch-fireproof"
+      ],
+      "roles": {
+        "bg": "#151619",
+        "card": "#202126",
+        "card_hover": "#26272d",
+        "border": "#34363d",
+        "text": "#f0eee9",
+        "muted": "#aaa69f",
+        "green": "#72c69c",
+        "amber": "#e8b65e",
+        "orange": "#ef8b3a",
+        "red": "#e2533b",
+        "ink": "#151515"
+      },
+      "element_roles": {
+        "fire": {"gold": "#d8a24a", "gold_hover": "#efb95d", "gold_press": "#bf8735"},
+        "ice": {"gold": "#4aa2d8", "gold_hover": "#5db9ef", "gold_press": "#3587bf"}
+      }
+    },
+
+    "document": {
+      "_note": [
+        "Exported/standalone HTML and the first-boot Welcome window: the Umbra",
+        "v2 document look. Distinct from app-chrome on purpose -- these render",
+        "outside the Control Center, in a browser or on their own."
+      ],
+      "consumers": [
+        "packages/shadowfetch-welcome/src/shadowfetch-welcome",
+        "packages/shadowfetch-defaults/data/usr/bin/shadowfetch-passport",
+        "packages/shadowfetch-control-center/data/usr/share/shadowfetch/control-center/sfcc/guide_page.py"
+      ],
+      "roles": {
+        "text": "#E6E9ED",
+        "muted": "#9AA3AD",
+        "green": "#7FB069",
+        "red": "#E2533B",
+        "violet": "#9B7EDE",
+        "cyan": "#29B6F6"
+      },
+      "element_roles": {
+        "fire": {
+          "gold": "#D8A24A", "gold_hover": "#E8B65E", "gold_press": "#C28E38",
+          "bg": "#0B0E12", "card": "#141922", "card_hover": "#1B212C",
+          "border": "#2C333B", "ink": "#0B0E12"
+        },
+        "ice": {
+          "gold": "#4AA2D8", "gold_hover": "#5EB9E8", "gold_press": "#3887C2",
+          "bg": "#0A0F16", "card": "#121A26", "card_hover": "#182233",
+          "border": "#2C3947", "ink": "#0A0F16"
+        }
+      }
+    }
+  }
+}
