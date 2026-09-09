@@ -122,7 +122,14 @@ def read_head(chain: str, *, identifier: str = AUDIT_IDENTIFIER,
               # rewritten row stayed newest: one honest append later the two
               # heads agreed again over a row that had been rewritten. The
               # evidence was never missing, only unread.
-              "heads": {}, "chain": chain}
+              "heads": {},
+              # Sequence numbers mirrored more than once with DIFFERENT hashes.
+              # The engine mirrors each seq exactly once, so a second, differing
+              # line for one seq was written by something else -- and since
+              # /dev/log is a local datagram socket, "something else" is within
+              # reach of the mission uid. This is reported rather than resolved:
+              # picking a winner would mean deciding which forgery to believe.
+              "conflicts": {}, "chain": chain}
     if not chain:
         result["reason"] = (
             "this database has no chain id, so its entries cannot be told apart "
@@ -160,7 +167,14 @@ def read_head(chain: str, *, identifier: str = AUDIT_IDENTIFIER,
             continue                       # another database's chain
         result["entries"] += 1
         if entry.get("hash"):
-            result["heads"][entry["seq"]] = entry["hash"]
+            seen = result["heads"].get(entry["seq"])
+            if seen is None:
+                # FIRST line wins, not the last. journalctl emits oldest-first,
+                # so the first line for a sequence number is the one written
+                # when the event was appended; anything after it arrived later.
+                result["heads"][entry["seq"]] = entry["hash"]
+            elif seen != entry["hash"]:
+                result["conflicts"].setdefault(entry["seq"], [seen]).append(entry["hash"])
         if best is None or entry["seq"] > best["seq"]:
             best = entry
     if best is not None:

@@ -58,6 +58,12 @@ ACTIVE = (MissionState.QUEUED, MissionState.RUNNING)
 # retried, which is a NEW transition and not a resumption.
 FINAL = (MissionState.COMPLETED, MissionState.UNDONE)
 
+# Every authorization-relevant fact of an approval, in one place, so the writer
+# and the checker cannot disagree about what "the approval" means.
+APPROVAL_WITNESSED_FIELDS = ("approval", "subject", "scope_sha256", "granted_by",
+                             "method", "granted_at", "expires_at", "reason")
+
+
 # The transition table. Every edge names the reason it exists, and that reason
 # is what a refusal quotes back -- a person who is told "a completed mission
 # cannot run again" can act on it; "invalid state" cannot be acted on.
@@ -93,14 +99,47 @@ MISSION_TRANSITIONS = {
 }
 
 
-# Three attempts, published by capabilities() and enforced on the edge below.
+# Three attempts, published by capabilities() and enforced by the one function
+# below, which every path to a requeue asks.
 MAX_ATTEMPTS = 3
+
+
+def requeue_refusal(event, attempt):
+    """Why this edge may not requeue execution, or None.
+
+    The budget started inside Store.retry(). Phase 3 moved it into
+    transition(). Both are VERBS, and finish_execution() is a third one: it
+    called transition_allowed(), got the legitimate failed -> queued edge, and
+    requeued a mission whose attempt was already at the published ceiling.
+
+    So the question is keyed on the EDGE'S EVENT rather than on who is asking.
+    A path that reaches a requeue without calling this is the only way back to
+    the old defect, and there is now exactly one place to look.
+    """
+    if event != "retry-queued":
+        return None
+    if (attempt or 0) >= MAX_ATTEMPTS:
+        return (f"retry budget exhausted ({MAX_ATTEMPTS} attempts); "
+                "create a new reviewed mission")
+    return None
 
 # event name -> the state that event records. Unambiguous: several edges share
 # an event name ('undone', 'retry-queued') and every one of them lands on the
 # same state.
 STATE_EVENTS = {event: to for (_frm, to), (event, _reason)
                 in MISSION_TRANSITIONS.items()}
+
+# The chained event that pins which missions legitimately have no history.
+LEGACY_PIN = "legacy-missions-pinned"
+
+# How verify_states() describes each mission. Separate words because they call
+# for different actions: a legacy row is fine, a divergent row was edited, and
+# a row with no history at all was invented.
+CLASS_LEGACY = "LEGACY_PRECHAIN"
+CLASS_VALID = "VALID_CURRENT"
+CLASS_MISSING = "MISSING_HISTORY"
+CLASS_DIVERGENT = "STATE_DIVERGENCE"
+CLASS_CORRUPT = "CORRUPTED_HISTORY"
 
 
 def transition_allowed(current, target):
@@ -423,7 +462,7 @@ def difference(before, after):
     """Historical text rendering of a workspace change set; see git_change for structure."""
     return git_change(before, after).text
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 """Operational-state schema version, stored in PRAGMA user_version.
 
 v0/v1  the 4.0.0 shape: mission kind only, provider identity buried in the
@@ -681,6 +720,7 @@ class Store:
                 migrated += 1
             db.execute("CREATE INDEX IF NOT EXISTS missions_capability "
                        "ON missions(capability, provider_id)")
+            # (v4's legacy pin is appended after the chain exists; see below.)
             if migrated:
                 # Deliberately a raw insert: this row is written during the v2
                 # step, before the chain columns exist. start_chain() runs
@@ -703,10 +743,71 @@ class Store:
                     if column not in present:
                         db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
             self.start_chain(db, from_version=version)
+        if version < 4:
+            # After start_chain(), so the pin is itself a chained event. An
+            # upgrade from v3 already has a chain; one from v1/v2 just got one.
+            self.pin_legacy_missions(db, from_version=version)
         db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         # Mirrored by __init__ once this transaction has committed; mirroring a
         # row that a later failure rolls back would anchor an event that never
         # existed.
+
+    def pin_legacy_missions(self, db, *, from_version=None):
+        """Record, in a CHAINED event, which missions legitimately have no history.
+
+        verify_states() used to excuse every event-less mission as pre-chain.
+        That is an inference from ABSENCE, and an attacker obtains it by writing
+        nothing -- so a fabricated row with state='completed' verified healthy.
+
+        This writes the same fact down positively, once, at the moment the
+        database is upgraded, into an event the hash chain protects. Afterwards
+        an event-less mission is either NAMED HERE or it was invented, and
+        Store.create() being atomic is what makes that a real dichotomy rather
+        than a hopeful one.
+
+        The trust boundary is stated plainly: this believes the database as it
+        stands at upgrade time. It is trust-on-first-use, it cannot recover
+        provenance that was never recorded, and it is the strongest claim
+        available to a build that was not present when those rows were written.
+        """
+        if db.execute("SELECT 1 FROM events WHERE event=? LIMIT 1",
+                      (LEGACY_PIN,)).fetchone():
+            return
+        orphans = [r["id"] for r in db.execute(
+            "SELECT m.id FROM missions m WHERE NOT EXISTS "
+            "(SELECT 1 FROM events e WHERE e.mission = m.id) ORDER BY m.id")]
+        if not orphans:
+            # A pin that names nothing grants no exemption, so writing one
+            # would add an event to every fresh database to say "there was
+            # nothing to say". Absence of the pin and an empty pin mean the
+            # same thing to legacy_missions(), which returns an empty set for
+            # both -- and an event nobody reads is still an event everybody
+            # counts.
+            return
+        self._append(db, mission="*", event=LEGACY_PIN,
+                     actor=ACTOR_ORCHESTRATOR,
+                     detail=json.dumps({
+                         "pinned_at_schema_version": SCHEMA_VERSION,
+                         "from_schema_version": from_version,
+                         "missions": orphans,
+                         "count": len(orphans),
+                         "note": ("missions that existed with no recorded history when "
+                                  "this database was upgraded; after this point an "
+                                  "event-less mission is unexplained, because creation "
+                                  "and its first event commit together"),
+                     }, sort_keys=True))
+
+    def legacy_missions(self):
+        """The pinned set, read from the chain. Empty if nothing was ever pinned."""
+        with self.db() as db:
+            row = db.execute("SELECT detail FROM events WHERE event=? ORDER BY seq LIMIT 1",
+                             (LEGACY_PIN,)).fetchone()
+        if not row:
+            return set()
+        try:
+            return set(json.loads(row["detail"]).get("missions") or ())
+        except (ValueError, TypeError, AttributeError):
+            return set()
 
     def start_chain(self, db, *, from_version=None):
         """Begin the hash chain, honestly.
@@ -1105,14 +1206,16 @@ class Store:
                 "INSERT INTO approvals(id,subject,scope,granted_by,method,granted_at,"
                 "expires_at,reason) VALUES(?,?,?,?,?,?,?,?)",
                 (aid, subject, blob, granted_by, method, at, expires_at, reason))
+            witnessed = {"approval": aid, "subject": subject,
+                         "granted_by": granted_by, "method": method,
+                         "granted_at": at, "expires_at": expires_at,
+                         "reason": reason, "scope_sha256": scope_digest}
             row = self._append(db, mission=mission, event="approval-granted",
                                actor=ACTOR_USER, at=at,
-                               detail=json.dumps({
-                                   "approval": aid, "subject": subject,
-                                   "granted_by": granted_by, "method": method,
-                                   "expires_at": expires_at,
-                                   "scope_sha256": scope_digest,
-                               }, sort_keys=True))
+                               detail=json.dumps(
+                                   dict(witnessed,
+                                        record_sha256=self.approval_digest(witnessed)),
+                                   sort_keys=True))
         self.mirror(row)
         return aid
 
@@ -1133,14 +1236,65 @@ class Store:
                 raise MissionError("Approval does not exist")
             if row["revoked_at"]:
                 raise MissionError("Approval was already revoked")
-            db.execute("UPDATE approvals SET revoked_at=?,reason=COALESCE(?,reason) "
-                       "WHERE id=?", (at, reason, aid))
+            # reason is NOT overwritten any more. It is part of the grant's
+            # witnessed provenance, and letting a revoke rewrite it made an
+            # honest revocation look like a tampered grant. The revoke's own
+            # reason belongs to the revoke event, which is where it goes.
+            db.execute("UPDATE approvals SET revoked_at=? WHERE id=?", (at, aid))
             subject = row["subject"]
             mission = subject.split(":", 1)[1] if subject.startswith("mission:") else "*"
             appended = self._append(db, mission=mission, event="approval-revoked",
                                     actor=ACTOR_USER, at=at,
-                                    detail=f"{subject}: {reason or 'no reason given'}")
+                                    detail=json.dumps({
+                                        "approval": aid, "subject": subject,
+                                        "revoked_at": at,
+                                        "reason": reason or "no reason given",
+                                    }, sort_keys=True))
         self.mirror(appended)
+
+    def approval_digest(self, record):
+        """One digest over every authorization-relevant fact of an approval.
+
+        Enumerating fields at the COMPARISON site is how this went wrong: the
+        grant event already carried subject, granted_by, method and expires_at,
+        and the check compared scope_sha256 alone, so eight of ten direct edits
+        to the approvals table went undetected -- including reviving an expired
+        approval. Computing both sides from ONE list means a field added later
+        is covered by both or by neither, never by one.
+
+        revoked_at is deliberately absent. Revocation is legitimately mutable
+        and is witnessed by its own chained event; folding it into a digest
+        taken at creation would make every honest revoke look like tampering.
+        """
+        return hashlib.sha256(canonical(
+            {k: record.get(k) for k in APPROVAL_WITNESSED_FIELDS})).hexdigest()
+
+    def approval_revocation(self, approval_id, subject=None):
+        """The chained revoke event for an approval, or None.
+
+        The CHAIN is the authority on whether an approval was withdrawn, not
+        the row: clearing revoked_at with SQL used to restore a revoked
+        approval to full force, because the check read only the column.
+        """
+        with self.db() as db:
+            rows = db.execute(
+                "SELECT detail FROM events WHERE event='approval-revoked' "
+                "ORDER BY seq").fetchall()
+        for row in rows:
+            raw = row["detail"]
+            try:
+                detail = json.loads(raw)
+            except (ValueError, TypeError):
+                # Pre-3.1 revokes recorded "<subject>: <reason>" as prose and
+                # never named the approval. Subject is all they can be matched
+                # on, which is coarse but errs toward REFUSING -- the safe
+                # direction for a revocation.
+                if subject and isinstance(raw, str) and raw.startswith(subject + ":"):
+                    return {"approval": approval_id, "legacy": True, "detail": raw}
+                continue
+            if isinstance(detail, dict) and detail.get("approval") == approval_id:
+                return detail
+        return None
 
     def approval_witness(self, approval_id):
         """The chained grant event for an approval, or None.
@@ -1188,6 +1342,15 @@ class Store:
             if row["revoked_at"]:
                 problems.append(f"{row['id']} was revoked at {row['revoked_at']}")
                 continue
+            # The chain, not the column. Clearing revoked_at with SQL used to
+            # restore a revoked approval to full force.
+            withdrawn = self.approval_revocation(row["id"], subject=row["subject"])
+            if withdrawn is not None:
+                problems.append(
+                    f"{row['id']} has a revocation in the audit chain "
+                    f"({withdrawn.get('revoked_at') or 'time not recorded'}) but the "
+                    "row does not; the revocation was erased from the table")
+                continue
             if row["expires_at"]:
                 expiry = self.parse_instant(row["expires_at"])
                 if expiry is None:
@@ -1213,13 +1376,37 @@ class Store:
                     "it was written straight into the table and no human granted it")
                 continue
             actual = hashlib.sha256(row["scope"].encode("utf-8")).hexdigest()
-            if witness.get("scope_sha256") != actual:
-                problems.append(
-                    f"{row['id']} does not match what was granted: the chained "
-                    "record says the approved scope hashed to "
-                    f"{str(witness.get('scope_sha256'))[:16]}..., the stored scope "
-                    f"hashes to {actual[:16]}.... It was edited after it was granted")
-                continue
+            stored = {"approval": row["id"], "subject": row["subject"],
+                      "granted_by": row["granted_by"], "method": row["method"],
+                      "granted_at": row["granted_at"], "expires_at": row["expires_at"],
+                      "reason": row["reason"], "scope_sha256": actual}
+            if witness.get("record_sha256"):
+                # Every witnessed field at once. Comparing the scope alone left
+                # granted_by, method, granted_at, expires_at and reason free to
+                # edit -- provenance the receipt then reprints as fact.
+                if self.approval_digest(stored) != witness["record_sha256"]:
+                    differing = sorted(
+                        k for k in APPROVAL_WITNESSED_FIELDS
+                        if str(stored.get(k)) != str(witness.get(k)))
+                    problems.append(
+                        f"{row['id']} does not match what was granted: the chained "
+                        "record and the stored row disagree about "
+                        + (", ".join(differing) if differing else "its contents")
+                        + ". It was edited after it was granted")
+                    continue
+            else:
+                # Granted before 3.1: the event carries the individual fields
+                # but no whole-record digest. Compare what it does carry rather
+                # than falling back to the scope alone.
+                legacy = [k for k in ("subject", "granted_by", "method",
+                                      "expires_at", "scope_sha256")
+                          if k in witness and str(witness.get(k)) != str(stored.get(k))]
+                if legacy:
+                    problems.append(
+                        f"{row['id']} does not match what was granted: the chained "
+                        "record and the stored row disagree about "
+                        + ", ".join(legacy) + ". It was edited after it was granted")
+                    continue
             covered, why = sf_policy.approval_covers(granted, required)
             if covered:
                 return row, None
@@ -1581,6 +1768,22 @@ class Store:
         rewritten = sorted(seq for seq, mirrored in (external.get("heads") or {}).items()
                            if seq in stored and stored[seq] and mirrored != stored[seq])
         anchor["rewritten_seqs"] = rewritten
+
+        # A sequence number mirrored twice with two different hashes. The engine
+        # mirrors each seq once, so this is not a duplicate -- it is a second
+        # claim about the same event, and only one of them can be the one that
+        # was appended. Reported on its own, because it is evidence even when
+        # the database happens to agree with whichever line arrived first.
+        conflicts = sorted((external.get("conflicts") or {}).items())
+        anchor["mirror_conflicts"] = {str(seq): hashes for seq, hashes in conflicts}
+        if conflicts:
+            anchor["verdict"] = "conflict"
+            report["ok"] = False
+            report["problems"].append(
+                "the journal carries more than one hash for event(s) "
+                + ", ".join(str(seq) for seq, _ in conflicts[:10])
+                + ": the engine mirrors each event once, so a second differing "
+                "line was written by something other than the engine")
         if rewritten:
             anchor["verdict"] = "conflict"
             report["ok"] = False
@@ -1629,32 +1832,73 @@ class Store:
             target = STATE_EVENTS.get(row["event"])
             if target is not None and row.get("mission"):
                 trail.setdefault(row["mission"], []).append((row["seq"], target))
-        result = {"missions": len(actual), "replayed": 0,
-                  "predates_chain": 0, "problems": []}
+        pinned = self.legacy_missions()
+        result = {"missions": len(actual), "replayed": 0, "predates_chain": 0,
+                  "classes": {}, "legacy_reasons": {}, "problems": []}
+
+        def classify(mid, name, reason=None):
+            result["classes"][mid] = name
+            if reason:
+                result["legacy_reasons"][mid] = reason
+
         for mid, final in sorted(actual.items()):
             events = trail.get(mid, [])
-            # A mission whose trail starts before the chain genesis has no
-            # verifiable trail: the migration preserved those rows without
-            # hashing them, and the missions table was never chained at all.
-            # Calling that forged would be a false accusation, which is the
-            # failure mode this whole surface exists to avoid.
-            if first_chained_seq is not None and (
-                    not events or events[0][0] < first_chained_seq):
+
+            # LEGACY is now a POSITIVE, CHAINED fact rather than an inference
+            # drawn from absence. It used to be "this mission has no events",
+            # which an attacker obtains by writing none -- so a fabricated row
+            # with state='completed' verified as healthy. Two things can earn
+            # the exemption now, and both are recorded in the hash chain:
+            #   * the mission is named in the v4 legacy pin, or
+            #   * its history begins before the chain genesis.
+            if mid in pinned:
+                classify(mid, CLASS_LEGACY,
+                         "named in the chained legacy pin written at the v4 upgrade")
                 result["predates_chain"] += 1
                 continue
-            state = None
+            if events and first_chained_seq is not None and events[0][0] < first_chained_seq:
+                classify(mid, CLASS_LEGACY,
+                         f"its first event (seq {events[0][0]}) precedes the chain "
+                         f"genesis at seq {first_chained_seq}")
+                result["predates_chain"] += 1
+                continue
+
+            if not events:
+                # Creation and its first event commit in one transaction, so
+                # the engine cannot produce this. Something else wrote the row.
+                classify(mid, CLASS_MISSING)
+                result["problems"].append(
+                    f"mission {mid}: the row says {final!r} and the log has no history "
+                    "for it at all. Creation and its first event commit together, and "
+                    "this mission is not in the chained legacy pin, so the row was "
+                    "written outside the engine")
+                result["replayed"] += 1
+                continue
+
+            state, corrupt = None, False
             for seq, target in events:
                 allowed, _event, _reason = transition_allowed(state, target)
                 if not allowed:
+                    corrupt = True
                     result["problems"].append(
                         f"mission {mid}: event {seq} records {state} -> {target}, which "
                         "the transition table forbids; the row was changed outside the engine")
                 state = target
             if state != final:
+                classify(mid, CLASS_DIVERGENT)
                 result["problems"].append(
                     f"mission {mid}: the row says {final!r} but its events end at "
                     f"{state!r}; that state was written without an event")
+            elif corrupt:
+                classify(mid, CLASS_CORRUPT)
+            else:
+                classify(mid, CLASS_VALID)
             result["replayed"] += 1
+
+        counts = {}
+        for name in result["classes"].values():
+            counts[name] = counts.get(name, 0) + 1
+        result["counts"] = counts
         result["verdict"] = "disagrees" if result["problems"] else "agrees"
         return result
 
@@ -1716,30 +1960,39 @@ class Store:
             allowed, event, reason = transition_allowed(current, target)
             if not allowed:
                 raise TransitionError(f"Refused {current} -> {target}: {reason}")
-            # The retry budget is a property of THIS EDGE, not of the verb that
-            # asked for it. It lived only in Store.retry(), so an in-process
-            # caller -- the worker, the desktop, any future orchestrator -- got
-            # a fourth attempt by calling transition() directly, which is the
-            # same defect this method was written to fix for state itself.
-            if event == "retry-queued":
-                attempt = fields.get("attempt")
-                if attempt is None:
-                    attempt = db.execute("SELECT attempt FROM missions WHERE id=?",
-                                         (mid,)).fetchone()["attempt"]
-                if (attempt or 0) >= MAX_ATTEMPTS:
-                    raise TransitionError(
-                        f"Refused {current} -> {target}: retry budget exhausted "
-                        f"({MAX_ATTEMPTS} attempts); create a new reviewed mission")
-            assignments = dict(fields)
-            assignments["state"] = target
-            assignments["updated_at"] = at
-            db.execute(
-                "UPDATE missions SET " + ",".join(k + "=?" for k in assignments)
-                + " WHERE id=?", [*assignments.values(), mid])
-            row = self._append(db, mission=mid, event=event, actor=actor, at=at,
-                               detail=detail if detail is not None else reason)
+            attempt = fields.get("attempt")
+            if attempt is None:
+                attempt = db.execute("SELECT attempt FROM missions WHERE id=?",
+                                     (mid,)).fetchone()["attempt"]
+            refusal = requeue_refusal(event, attempt)
+            if refusal:
+                # RECORDED, then refused. A budget that stops a retry silently
+                # leaves nobody able to see why the mission stopped moving, and
+                # "no event" reads the same as "nobody ever tried".
+                #
+                # The event commits with THIS transaction while the mission row
+                # is deliberately left untouched, so the log gains a refusal and
+                # the state gains nothing. Raising from inside the transaction
+                # would roll the event back along with it.
+                blocked = refusal
+                row = self._append(
+                    db, mission=mid, event="retry-budget-exhausted",
+                    actor=actor, at=at,
+                    detail=f"Refused {current} -> {target}: {refusal}")
+            else:
+                blocked = None
+                assignments = dict(fields)
+                assignments["state"] = target
+                assignments["updated_at"] = at
+                db.execute(
+                    "UPDATE missions SET " + ",".join(k + "=?" for k in assignments)
+                    + " WHERE id=?", [*assignments.values(), mid])
+                row = self._append(db, mission=mid, event=event, actor=actor, at=at,
+                                   detail=detail if detail is not None else reason)
             result = db.execute("SELECT * FROM missions WHERE id=?", (mid,)).fetchone()
         self.mirror(row)
+        if blocked:
+            raise TransitionError(f"Refused {current} -> {target}: {blocked}")
         return self.unpack(result)
 
     def finish_execution(self, mid, state, error, **correlation):
@@ -1755,11 +2008,31 @@ class Store:
             allowed, event, reason = transition_allowed(row["state"], state)
             if not allowed:
                 raise TransitionError(f"Refused {row['state']} -> {state}: {reason}")
-            appended = self._append(db, mission=mid, event=event, detail=detail,
-                                    actor=ACTOR_ORCHESTRATOR, at=at, **correlation)
-            db.execute("UPDATE missions SET state=?,error=?,updated_at=? WHERE id=?", (state, error, at, mid))
+            # The same budget transition() enforces. This method reached the
+            # legitimate failed -> queued edge and requeued a mission already at
+            # the ceiling, because the guard was written into the other verb.
+            attempt = db.execute("SELECT attempt FROM missions WHERE id=?",
+                                 (mid,)).fetchone()["attempt"]
+            refusal = requeue_refusal(event, attempt)
+            if refusal:
+                # Recorded, then refused, exactly as transition() does it: the
+                # event commits with this transaction and the mission row is
+                # left untouched. Raising here instead would roll back the only
+                # evidence that a fourth attempt was asked for.
+                blocked, previous = refusal, row["state"]
+                appended = self._append(
+                    db, mission=mid, event="retry-budget-exhausted",
+                    actor=ACTOR_ORCHESTRATOR, at=at,
+                    detail=f"Refused {previous} -> {state}: {refusal}")
+            else:
+                blocked, previous = None, row["state"]
+                appended = self._append(db, mission=mid, event=event, detail=detail,
+                                        actor=ACTOR_ORCHESTRATOR, at=at, **correlation)
+                db.execute("UPDATE missions SET state=?,error=?,updated_at=? WHERE id=?", (state, error, at, mid))
             row = db.execute("SELECT * FROM missions WHERE id=?", (mid,)).fetchone()
         self.mirror(appended)
+        if blocked:
+            raise TransitionError(f"Refused {previous} -> {state}: {blocked}")
         return self.unpack(row)
 
     def unpack(self, row):
@@ -1963,14 +2236,23 @@ class Store:
         if not acceptance.ok:
             raise MissionError(acceptance.reason)
         timestamp = now()
-        with self.db() as db:
-            db.execute("INSERT INTO missions(id,title,kind,capability,provider_id,state,workspace,prompt,config,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (mid, title.strip(), kind, capability, provider.id, MissionState.QUEUED, str(ws), prompt, json.dumps(config), timestamp, timestamp))
         # Creation is the one edge with no prior state, so it inserts rather
         # than transitions. The event NAME still comes from the table, so the
         # vocabulary has exactly one definition.
         created_event = MISSION_TRANSITIONS[(None, MissionState.QUEUED)][0]
-        self.event(mid, created_event, f"{capability} via {provider.id}; scope={ws}; network={network}",
-                   actor=ACTOR_USER)
+        # ONE transaction. The row and its first event used to be written on two
+        # different connections, so an interruption between them left a mission
+        # with no events at all -- which is the exact shape a fabricated row has,
+        # and the reason the verifier could not tell the two apart. Making this
+        # atomic is what lets the verifier stop excusing event-less rows.
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("INSERT INTO missions(id,title,kind,capability,provider_id,state,workspace,prompt,config,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (mid, title.strip(), kind, capability, provider.id, MissionState.QUEUED, str(ws), prompt, json.dumps(config), timestamp, timestamp))
+            appended = self._append(
+                db, mission=mid, event=created_event, at=timestamp,
+                actor=ACTOR_USER,
+                detail=f"{capability} via {provider.id}; scope={ws}; network={network}")
+        self.mirror(appended)
         return self.get(mid)
 
     def cancel(self, mid):
@@ -3895,6 +4177,28 @@ def worker(store, once=False):
     return 0
 
 
+# The audit's exit-code contract, in one function so text and JSON cannot
+# drift. 'unverified' is NOT a pass: it means the external anchor could not be
+# read, so truncation remains undetectable, and reporting 0 there would be the
+# false claim this whole surface exists to remove.
+AUDIT_EXIT_OK = 0
+AUDIT_EXIT_TAMPERED = 1
+AUDIT_EXIT_UNVERIFIED = 2
+
+
+def audit_exit_code(report):
+    """The audit's exit status, derived from the report and nothing else.
+
+    Fails closed: a report with no "ok" at all is a failure, because the only
+    way to be told a log is intact is for the verifier to have said so.
+    """
+    if not report.get("ok"):
+        return AUDIT_EXIT_TAMPERED
+    if (report.get("anchor") or {}).get("verdict") in ("unverified", "degraded"):
+        return AUDIT_EXIT_UNVERIFIED
+    return AUDIT_EXIT_OK
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="Machine-readable JSON output")
@@ -4028,6 +4332,13 @@ def main(argv=None):
         elif args.command == "audit":
             store = Store()
             result = store.verify_chain()
+            # ONE ladder, computed from the report before anything is rendered.
+            # It used to sit inside `if not args.json`, so the caller most
+            # likely to pass --json -- a CI gate, a cron check, the LaunchAgent
+            # pattern this project already uses -- was told a tampered log had
+            # passed. Exit status is a property of the RESULT, never of how it
+            # is being printed.
+            code = audit_exit_code(result)
             if not args.json:
                 anchor = result.get("anchor") or {}
                 print(f"events            {result['events']}")
@@ -4055,11 +4366,9 @@ def main(argv=None):
                 # 'unverified' is not a pass. It means the external anchor could
                 # not be read, so truncation remains undetectable, and saying
                 # "ok" there would be the false claim this phase exists to remove.
-                if not result["ok"]:
-                    return 1
-                if anchor.get("verdict") in ("unverified", "degraded"):
-                    return 2
-                return 0
+            else:
+                print(json.dumps(result, indent=2))
+            return code
         else:
             store = Store()
             if args.command == "list":
