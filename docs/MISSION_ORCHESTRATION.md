@@ -3,12 +3,21 @@
 The domain model Phase 3 added between "a person asked for something" and "a process
 ran", and the path a mission actually takes through it.
 
-**Version.** Written against `7978259` ("Phase 3 Steps 19, 20, 21, 23, 24, 25") plus the
-uncommitted Step 18 work in the working tree (`tool_executions`, `stream_events`,
-receipt schema 2, the `records` and `watch` verbs). Everything described here lives in
+**Version.** Brought forward to **Phase 3.1** on the `release/4.0.0` branch. It was first
+written against `7978259` ("Phase 3 Steps 19, 20, 21, 23, 24, 25") plus the Step 18 work
+(`tool_executions`, `stream_events`, receipt schema 2, the `records` and `watch` verbs).
+Everything described here lives in
 `packages/shadowfetch-missions/data/usr/lib/shadowfetch/missions/sf_missions.py`.
-`docs/MISSION_SCHEMA.md` describes the persisted state at schema **v2** and has not been
-brought forward; the v3 tables are described in §2 here and in `DOMAIN_SCHEMA`.
+
+The persisted schema is **v4**. `docs/MISSION_SCHEMA.md` describes it at **v2** and has not
+been brought forward; the v3 tables are described in §2 here and in `DOMAIN_SCHEMA`, and v4
+adds no table at all — it adds one chained event, `legacy-missions-pinned`, which
+`docs/AUDIT_EVENTS.md` §8 documents.
+
+What Phase 3.1 changed in this document: `Store.create()` is atomic (§3), the retry budget
+belongs to the edge rather than to a verb (§3), the mission rows are replayed against the log
+(§3), and `cancel-requested` records the person who produced it (§3, §11). Superseded
+behaviour is kept only under **Historical note** headings.
 
 Every command output below was run on the build host against a throwaway store
 (`SHADOWFETCH_MISSIONS_STATE` and `SHADOWFETCH_AGENT_WORKSPACES` pointed at a
@@ -105,7 +114,7 @@ reason is what a refusal quotes back.
 execution will not resume from there on its own. `failed` and `cancelled` are *not* final:
 they can be retried, which is a new transition and not a resumption.
 
-### The two guarantees
+### The three guarantees
 
 **One transaction covers the read, the validation, the write and the event.** A state
 change with no event, and an event describing a change that rolled back, are both
@@ -114,6 +123,14 @@ nothing at all.
 
 **`state` is not writable directly.** It was on `Store.update()`'s allow-list at 4.0.0,
 which is why every guard lived in a high-level verb a caller could simply not use.
+
+**Creation is atomic too.** `Store.create()` writes the mission row and its first `queued`
+event in **one** `BEGIN IMMEDIATE` transaction. They used to be written on two different
+connections, so an interruption between them left a real mission with no events at all —
+which is the exact shape a fabricated row has, and the reason a verifier could not tell the
+two apart. Making creation atomic is what lets `verify_states()` stop excusing event-less
+rows (below). The event's *name* still comes from `MISSION_TRANSITIONS[(None, QUEUED)]`, so
+the vocabulary has one definition even on the one edge with no prior state.
 
 ```
 ### refusing an illegal mission transition
@@ -134,12 +151,79 @@ to a mission they were not looking at. Extra keyword fields (`attempt`, `error`,
 `cancel_requested`, `approval_id`, `checkpoint`, `artifacts`, `receipt`) are written in the
 same transaction so they cannot drift out of step with the state they describe.
 
+### The retry budget belongs to the edge, not to a verb
+
+`MAX_ATTEMPTS` is 3, published by `capabilities()` as `max_attempts`, and
+`requeue_refusal(event, attempt)` is the **one** function that answers "may this requeue?".
+It is keyed on the edge's **event name** — `retry-queued` — rather than on who is asking,
+because three different verbs reach that edge and each one was, at some point, the one that
+did not know about the budget. Both `transition()` and `finish_execution()` ask it; a path
+that reaches a requeue without asking is the only way back to the old defect, and there is
+now exactly one place to look.
+
+A refusal is **recorded and then raised**. The `retry-budget-exhausted` event commits with
+the same transaction that declines to touch the mission row, and the `TransitionError` is
+raised after that transaction closes — raising from inside it would roll the event back
+along with it, and "no event" reads exactly like "nobody ever tried". Three verbs against a
+mission already at the ceiling, verbatim:
+
+```
+mission is 'failed' with attempt=3 (capabilities() publishes max_attempts=3)
+transition(mid,'queued')            TransitionError: Refused failed -> queued: retry budget exhausted (3 attempts); create a new reviewed mission
+retry(mid)                          MissionError: Retry budget exhausted (three attempts); create a new reviewed mission
+finish_execution(mid,'queued')      TransitionError: Refused failed -> queued: retry budget exhausted (3 attempts); create a new reviewed mission
+state after all three: failed attempt 3
+  queued                   media_export via offline-media; scope=…/ws/probe
+  running                  the worker claimed a queued mission
+  failed                   execution raised, or was interrupted with no owner
+  retry-budget-exhausted   Refused failed -> queued: retry budget exhausted (3 attempts); …
+  retry-budget-exhausted   Refused failed -> queued: retry budget exhausted (3 attempts); …
+verify_chain ok = True
+```
+
+Two refusal events, not three: `Store.retry()` checks the ceiling itself and raises a
+`MissionError` before it reaches `transition()`, so the CLI's wording stays the one people
+know. `verify_chain()` still passes afterwards — a recorded refusal is an ordinary chained
+event, not a hole punched by the guard.
+
+> **Historical note.** The budget lived only in `Store.retry()`, so an in-process caller —
+> the worker, the desktop, any future orchestrator — got a fourth attempt by calling
+> `transition()` directly, and the event it wrote carried the table's own reason, *"a human
+> retried a failed mission"*. Moving it into `transition()` then left `finish_execution()`
+> reaching the same edge on its own. Two verbs with the same hole is why the question is now
+> asked of the edge.
+
+### The mission rows are replayed against the log
+
+`Store.verify_states()` walks each mission's event trail through `MISSION_TRANSITIONS` and
+compares where it lands with what the row says, classifying every mission as
+`VALID_CURRENT`, `LEGACY_PRECHAIN`, `STATE_DIVERGENCE`, `CORRUPTED_HISTORY` or
+`MISSING_HISTORY`. `verify_chain()` carries the result and `audit verify` prints it on its
+own line beside the chain's:
+
+```
+chain             intact
+mission states    disagrees (1 replayed against the transition table)
+PROBLEM           mission mission-51b3ffa4346a473b: the row says 'completed' but its events end at 'queued'; that state was written without an event
+```
+
+The `missions` table is not hash-chained and cannot be, so this is detection at verify time
+and not prevention at write time. `docs/AUDIT_EVENTS.md` §4 documents the classes, the
+`MISSING_HISTORY`/legacy-pin pair, and what the replay does not do.
+
 ### Two events that are deliberately not state changes
 
 - **`cancel-requested`** is a *request*. `Store.cancel()` on a running mission sets a flag
-  that `Executor.check()` observes; the state moves only when execution actually stops.
-  Pressing Stop twice appends one event, not two — the second call is a no-op returning the
-  row, because two events would read as two decisions.
+  that `Executor.check()` observes; the state moves only when execution actually stops. It
+  records `actor=ACTOR_USER`, because a person produces it. Pressing Stop twice appends one
+  event, not two — the second call is a no-op returning the row, because two events would
+  read as two decisions.
+
+  The flag and the event are written in **one** transaction with the state re-read inside
+  it. `cancel()` used to read the state in `get()` and write the flag in a separate
+  `update()`, so a mission that reached `waiting-review` in between got a
+  `cancel_requested` flag on a terminal row and a `cancel-requested` event appended *after*
+  its terminal event — a log recording a decision that was not possible when it was written.
 - **`reviewed`** is what the *person chose*, as opposed to what the mission became. A
   mission reaches `undone` from four states, so the decision is not recoverable from the
   state event. Its detail is the bare decision string (`accept` / `undo`) because consumers
@@ -579,7 +663,12 @@ Everything in this document is reachable from the CLI, which is the desktop's IP
 | `shadowfetch-missions watch --since <seq>` | the raw chained event rows, followed |
 | `shadowfetch-missions policy show <id>` | the decision, the mediation matrix and `advisory_fields` |
 | `shadowfetch-missions approvals [<id>]` | approval rows |
-| `shadowfetch-missions audit verify` | see `docs/AUDIT_EVENTS.md` |
+| `shadowfetch-missions audit verify` | the chain, the mission-state replay, the head and the anchor verdict — see `docs/AUDIT_EVENTS.md` |
+
+`audit verify` is the one verb here whose **exit status** is part of its answer: `0` intact,
+`1` tampered, `2` unverified-or-degraded. The ladder is computed once by `audit_exit_code()`
+from the report itself, so `--json` and the text form return the same code, and a report with
+no verdict at all counts as a failure.
 
 Until Step 18 landed in the working tree, `records` did not exist and the desktop printed
 "not reported. The mission CLI has no command that returns tasks" rather than inferring task
@@ -607,13 +696,17 @@ otherwise assume works.
    than in a document nobody opens at review time. It is not closed.
 6. **Egress allowlists and masked paths reach no mechanism.** They are recorded as
    *requested* and reported in `declared_but_not_enforced`. Firebreak has two network
-   postures, `none` and `allow`; an allowlist collapses to `allow`.
+   postures, `none` and `allow`; an allowlist collapses to `allow`. Firebreak **does** accept
+   `--mask-path`, but it is record-only — it reaches no bwrap argument — and Mission Control
+   never passes it, so a declared mask does not even appear in the session record. The
+   conclusion is the same either way; the reason matters because "there is no flag" implied
+   the fix was to add one that already exists.
 7. **Tool actions inside a provider turn are `not_observable`.** A `tool_executions` row
    exists only because the provider reported it, with `decision: "observed"` — nothing
    intercepted it and nothing could have refused it.
-8. **`cancel-requested` is recorded with `actor: orchestrator`**, although a person is what
-   produces it; `Store.cancel()` does not pass `actor=ACTOR_USER` to that event. The
-   `cancelled` transition it leads to does record the right actor.
+8. **A forged mission row is detected, not prevented.** The `missions` table carries no hash,
+   so `UPDATE missions SET state=…` lands. `verify_states()` reports it at verify time (§3)
+   and cannot recover the state it displaced.
 9. **`record_artifact()` and `decide_review()` emit no event.** Artifact and review-decision
    rows are visible through `records` and the receipt, not through the event stream. The
    `reviewed` event that `review()` emits separately is the only trace of a decision in the
@@ -621,4 +714,9 @@ otherwise assume works.
 10. **Reconciliation cannot distinguish "the worker died" from "the worker is alive but
     lockless."** It relies entirely on the caller holding the right lock. Nothing checks a
     pid.
-11. **`docs/MISSION_SCHEMA.md` is at schema v2** and does not describe any v3 table.
+11. **`docs/MISSION_SCHEMA.md` is at schema v2** and does not describe any v3 table, nor the
+    v4 legacy pin.
+
+> **Historical note.** This list carried *"`cancel-requested` is recorded with `actor:
+> orchestrator`, although a person is what produces it"*. `Store.cancel()` passes
+> `actor=ACTOR_USER` now, so both events it can emit record the person.

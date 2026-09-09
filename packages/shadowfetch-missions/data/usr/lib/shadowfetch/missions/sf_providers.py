@@ -910,8 +910,14 @@ SANDBOX_ENFORCEMENT = {
                          "'allowlist' collapses to allow, so the hosts are recorded "
                          "for audit and reach no filter. Phase 4"),
     "masked_paths": (NOT_ENFORCED,
-                     "Firebreak has no masking flag; the paths are checked on "
-                     "widening and reach nothing. Phase 4"),
+                     # The reason matters as much as the verdict: Firebreak DOES
+                     # have --mask-path. It is record-only -- it reaches no bwrap
+                     # argument -- and run_process() never passes it, so the mask
+                     # is not even in the session record. Saying "there is no
+                     # flag" implied the fix was to add one that already exists.
+                     "Firebreak's --mask-path is record-only and reaches no bwrap "
+                     "argument, and Mission Control does not pass it at all; the "
+                     "paths are checked on widening and reach nothing. Phase 4"),
     "syscall_profile": (NOT_REPRESENTABLE,
                         "no schema property and no bwrap --seccomp anywhere"),
 }

@@ -157,6 +157,12 @@ def transition_allowed(current, target):
         f"a {current} mission cannot become {target}. From {current} a mission may "
         "become: " + (", ".join(sorted(
             to for (frm, to) in MISSION_TRANSITIONS if frm == current)) or "nothing"))
+# How long to wait before believing the journal is missing an event rather than
+# merely behind. The mirror is synchronous, so honest lag is journald's flush
+# and is sub-second on every host measured; a line that was never sent does not
+# arrive no matter how long anyone waits.
+JOURNAL_SETTLE_SECONDS = 1.0
+
 MAX_TEXT = 200_000
 MAX_OUTPUT = 2_000_000
 # Written between the retained head and the retained tail when a provider
@@ -671,10 +677,14 @@ class Store:
             """)
             self.migrate(db)
         self.db_path.chmod(0o600)
-        pending = getattr(self, "_pending_mirror", None)
-        if pending is not None:
-            self._pending_mirror = None
+        # A LIST. It used to hold one row, so the genesis was mirrored and
+        # every other event written during the same migration -- the legacy pin
+        # -- was not. That left a permanent hole in the journal at an honest
+        # seq, and an honest hole is exactly what makes "a seq the journal never
+        # saw" useless as evidence of forgery.
+        for pending in (getattr(self, "_pending_mirror", None) or []):
             self.mirror(pending)
+        self._pending_mirror = []
 
     def migrate(self, db):
         """Bring an existing database forward. Runs inside the caller's
@@ -773,41 +783,76 @@ class Store:
         if db.execute("SELECT 1 FROM events WHERE event=? LIMIT 1",
                       (LEGACY_PIN,)).fetchone():
             return
-        orphans = [r["id"] for r in db.execute(
-            "SELECT m.id FROM missions m WHERE NOT EXISTS "
-            "(SELECT 1 FROM events e WHERE e.mission = m.id) ORDER BY m.id")]
-        if not orphans:
-            # A pin that names nothing grants no exemption, so writing one
-            # would add an event to every fresh database to say "there was
-            # nothing to say". Absence of the pin and an empty pin mean the
-            # same thing to legacy_missions(), which returns an empty set for
-            # both -- and an event nobody reads is still an event everybody
-            # counts.
-            return
-        self._append(db, mission="*", event=LEGACY_PIN,
+        orphans, states = [], {}
+        for r in db.execute(
+                "SELECT m.id, m.state FROM missions m WHERE NOT EXISTS "
+                "(SELECT 1 FROM events e WHERE e.mission = m.id) ORDER BY m.id"):
+            orphans.append(r["id"])
+            states[r["id"]] = r["state"]
+        # The pin is written even when it names NOTHING. Skipping the empty one
+        # was tidier and left the slot open forever: a correctly-chained pin
+        # appended later named a fabricated mission and moved `audit verify`
+        # from exit 1 to exit 0. An empty pin grants no exemption -- what it
+        # does is close the slot, so any later pin is not the first one and is
+        # evidence rather than authority.
+        pinned_row = self._append(db, mission="*", event=LEGACY_PIN,
                      actor=ACTOR_ORCHESTRATOR,
                      detail=json.dumps({
                          "pinned_at_schema_version": SCHEMA_VERSION,
                          "from_schema_version": from_version,
                          "missions": orphans,
+                         # The STATE each one was in, not just its name. Pinning
+                         # identity alone made the exemption permanent: there
+                         # was nothing to replay FROM, so the verifier skipped
+                         # the row for the life of the database and an attacker
+                         # only had to read these ids out of the log and edit
+                         # one. With the pin-time state the replay has a
+                         # starting point, and everything that happens AFTER the
+                         # pin is checked like any other mission.
+                         "states": states,
                          "count": len(orphans),
                          "note": ("missions that existed with no recorded history when "
                                   "this database was upgraded; after this point an "
                                   "event-less mission is unexplained, because creation "
                                   "and its first event commit together"),
                      }, sort_keys=True))
+        self._pending_mirror = (getattr(self, "_pending_mirror", None) or []) + [pinned_row]
 
     def legacy_missions(self):
         """The pinned set, read from the chain. Empty if nothing was ever pinned."""
+        return set(self.legacy_pin_states())
+
+    def legacy_pin_states(self):
+        """{mission id: the state it was in when it was pinned}.
+
+        A pin written before this build recorded ids only. Such a row returns
+        {} rather than a set of ids with unknown states, and verify_states then
+        says so in the mission's reason instead of quietly granting a permanent
+        exemption -- an honest statement of what is not checkable beats an
+        exemption nobody can see.
+        """
         with self.db() as db:
             row = db.execute("SELECT detail FROM events WHERE event=? ORDER BY seq LIMIT 1",
                              (LEGACY_PIN,)).fetchone()
         if not row:
-            return set()
+            return {}
         try:
-            return set(json.loads(row["detail"]).get("missions") or ())
-        except (ValueError, TypeError, AttributeError):
-            return set()
+            detail = json.loads(row["detail"])
+        except (ValueError, TypeError):
+            return {}
+        if not isinstance(detail, dict):
+            return {}
+        states = detail.get("states")
+        if isinstance(states, dict) and states:
+            return dict(states)
+        return {mid: None for mid in (detail.get("missions") or ())}
+
+    def extra_legacy_pins(self):
+        """Pins after the first. A database is pinned once, at its upgrade, so a
+        second pin was appended by something that wanted an exemption."""
+        with self.db() as db:
+            return [r["seq"] for r in db.execute(
+                "SELECT seq FROM events WHERE event=? ORDER BY seq", (LEGACY_PIN,))][1:]
 
     def start_chain(self, db, *, from_version=None):
         """Begin the hash chain, honestly.
@@ -844,7 +889,7 @@ class Store:
                                   "not individually verifiable; this digest pins the "
                                   "set as it stood when the chain began"),
                      }, sort_keys=True))
-        self._pending_mirror = genesis
+        self._pending_mirror = (getattr(self, "_pending_mirror", None) or []) + [genesis]
 
     @contextlib.contextmanager
     def db(self):
@@ -1798,6 +1843,82 @@ class Store:
                 "minted once at genesis, so the log was re-minted after those "
                 "events were recorded")
 
+        # Events beyond the last one the mirror recorded writing. Every event
+        # the ENGINE appends goes through Store.mirror(), which records the seq
+        # on success; a row inserted straight into the table never does. So a
+        # database head past that mark is not "the mirror is lagging" -- it is a
+        # stretch of log that nothing was ever asked to witness, which is the
+        # exact shape a forged tail has.
+        #
+        # 'behind' used to cover this, and 'behind' is documented as normal.
+        # Honest lag is invisible here because the engine mirrors synchronously
+        # and the mark moves with the append.
+        # A journal head behind the database head. The engine mirrors as it
+        # appends, so this is either sub-second flush lag or a tail that was
+        # never sent -- and those are told apart by WAITING, because lag
+        # resolves and a line that was never sent never arrives.
+        #
+        # An earlier version of this check compared against last_mirrored_seq
+        # from audit-mirror.json. That file has the same uid and directory as
+        # the database, and writing last_mirrored_seq into it restored ok=True
+        # over three rows the journal had never seen. The deciding fact must not
+        # be one the attacker can write; the local bookmark is kept below only
+        # as a caveat that EXPLAINS a finding, never one that removes it.
+        if (external.get("available") and external.get("head_seq") is not None
+                and report["head_seq"] is not None
+                and external["head_seq"] < report["head_seq"]):
+            time.sleep(JOURNAL_SETTLE_SECONDS)
+            external = sf_audit.read_head(self.chain_id(), store=self.store_identity())
+            anchor["journal_head_seq"] = external.get("head_seq")
+            anchor["journal_reread_after_seconds"] = JOURNAL_SETTLE_SECONDS
+        if (external.get("available") and external.get("head_seq") is not None
+                and report["head_seq"] is not None
+                and external["head_seq"] < report["head_seq"]):
+            missing = report["head_seq"] - external["head_seq"]
+            anchor["unwitnessed_events"] = missing
+            message = (
+                f"the database holds {missing} event(s) after seq "
+                f"{external['head_seq']}, which the journal still does not have "
+                f"{JOURNAL_SETTLE_SECONDS}s later. The engine mirrors every event as "
+                "it appends it, so these were written without passing through it")
+            local_claim = local.get("last_mirrored_seq")
+            if local_claim is not None and local_claim >= report["head_seq"]:
+                message += (f" -- the local mirror bookkeeping claims to have written "
+                            f"up to seq {local_claim}, which the journal contradicts")
+            if anchor["mirror_failures"]:
+                message += (" -- the mirror has recorded failures, which would also "
+                            "produce this")
+            anchor["verdict"] = "conflict"
+            report["ok"] = False
+            report["problems"].append(message)
+
+        # Sequence numbers the database holds that sit INSIDE the range the
+        # journal can still see, with no line of their own. The engine mirrors
+        # every event as it appends it, so a seq inside that window with no
+        # journal line was not appended by the engine.
+        #
+        # This is what survives the cover-up: one later honest append brings the
+        # heads back into agreement, but it cannot create the line that was
+        # never sent for the forged row. (This block was lost once to a careless
+        # span replacement and the attack suite caught it; it is the only check
+        # that examines a forged row after the heads agree again.)
+        seen_seqs = set((external.get("heads") or {}))
+        if seen_seqs and external.get("available"):
+            floor, ceiling = min(seen_seqs), max(seen_seqs)
+            gaps = sorted(seq for seq in stored
+                          if floor <= seq <= ceiling and seq not in seen_seqs)
+            anchor["unmirrored_seqs_in_window"] = gaps
+            if gaps:
+                anchor["verdict"] = "conflict"
+                report["ok"] = False
+                report["problems"].append(
+                    "event(s) " + ", ".join(str(s) for s in gaps[:10])
+                    + " are in the database and were never mirrored, while the "
+                    f"journal holds neighbours on both sides (seq {floor}-{ceiling}). "
+                    "The engine mirrors every event as it appends it, so these were "
+                    "written without passing through it. A journald rate-limit drop "
+                    "would look the same, and is the one innocent explanation")
+
         conflicts = sorted((external.get("conflicts") or {}).items())
         anchor["mirror_conflicts"] = {str(seq): hashes for seq, hashes in conflicts}
         if conflicts:
@@ -1831,13 +1952,14 @@ class Store:
         # state SQL wrote and the engine never reached.
         report["chain_ok"] = report["ok"]
         report["states"] = self.verify_states(
-            rows, first_chained_seq=report["first_chained_seq"])
+            rows, first_chained_seq=report["first_chained_seq"],
+            chain_ok=report["chain_ok"])
         if report["states"]["problems"]:
             report["problems"].extend(report["states"]["problems"])
             report["ok"] = False
         return report
 
-    def verify_states(self, rows=None, *, first_chained_seq=None):
+    def verify_states(self, rows=None, *, first_chained_seq=None, chain_ok=True):
         """Replay every mission's event trail through the transition table.
 
         The hash chain proves no EVENT was altered. It says nothing about the
@@ -1856,7 +1978,15 @@ class Store:
             target = STATE_EVENTS.get(row["event"])
             if target is not None and row.get("mission"):
                 trail.setdefault(row["mission"], []).append((row["seq"], target))
-        pinned = self.legacy_missions()
+        # A pin read out of a chain that failed its own check is not evidence.
+        # Without this, ONE unchained INSERT of a forged legacy-missions-pinned
+        # row reclassified a fabricated mission as legitimate and flipped this
+        # verdict back to "agrees" -- deleting the mission finding while the
+        # chain finding was still printed above it. That is the audit-mirror
+        # suppression switch, and it must not exist here either.
+        pinned = self.legacy_pin_states() if chain_ok else {}
+        pin_ignored = bool(self.legacy_pin_states()) and not chain_ok
+        extra_pins = self.extra_legacy_pins()
         result = {"missions": len(actual), "replayed": 0, "predates_chain": 0,
                   "classes": {}, "legacy_reasons": {}, "problems": []}
 
@@ -1876,9 +2006,39 @@ class Store:
             #   * the mission is named in the v4 legacy pin, or
             #   * its history begins before the chain genesis.
             if mid in pinned:
-                classify(mid, CLASS_LEGACY,
-                         "named in the chained legacy pin written at the v4 upgrade")
+                # NOT a permanent exemption. The pin says what state this
+                # mission was in when it was pinned; the replay starts there and
+                # everything after it is checked like any other mission. Skipping
+                # the replay entirely -- which is what this branch used to do --
+                # left every pinned id editable for the life of the database,
+                # and the pin event publishes those ids in plaintext.
+                pinned_state = pinned.get(mid)
                 result["predates_chain"] += 1
+                if pinned_state is None:
+                    classify(mid, CLASS_LEGACY,
+                             "named in a legacy pin that recorded no state for it, so "
+                             "nothing that happened after the pin is checkable")
+                    result["replayed"] += 1
+                    continue
+                state = pinned_state
+                for seq, target in events:
+                    allowed, _e, _r = transition_allowed(state, target)
+                    if not allowed:
+                        result["problems"].append(
+                            f"mission {mid}: event {seq} records {state} -> {target}, "
+                            "which the transition table forbids")
+                    state = target
+                if state != final:
+                    classify(mid, CLASS_DIVERGENT)
+                    result["problems"].append(
+                        f"mission {mid}: the legacy pin recorded it as {pinned_state!r} "
+                        f"and the row now says {final!r}; that state was written "
+                        "without an event")
+                else:
+                    classify(mid, CLASS_LEGACY,
+                             f"named in the chained legacy pin as {pinned_state!r}, "
+                             "and unchanged since")
+                result["replayed"] += 1
                 continue
             if events and first_chained_seq is not None and events[0][0] < first_chained_seq:
                 classify(mid, CLASS_LEGACY,
@@ -1923,6 +2083,16 @@ class Store:
         for name in result["classes"].values():
             counts[name] = counts.get(name, 0) + 1
         result["counts"] = counts
+        if extra_pins:
+            result["problems"].append(
+                "the log contains %d legacy pin(s) after the first (seq %s). A "
+                "database is pinned once, at its upgrade; a later pin was appended "
+                "by something seeking an exemption and was not honoured"
+                % (len(extra_pins), ", ".join(str(s) for s in extra_pins[:5])))
+        if pin_ignored:
+            result["problems"].append(
+                "a legacy pin exists but the chain carrying it did not verify, so it "
+                "was not honoured: a pin read out of a broken chain is not evidence")
         result["verdict"] = "disagrees" if result["problems"] else "agrees"
         return result
 

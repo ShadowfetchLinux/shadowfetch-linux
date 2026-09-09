@@ -102,7 +102,8 @@ class LegacyDatabaseReachesV3(MigrationHarness):
         self.assertTrue(report["ok"], report["problems"])
         # every pre-existing row, plus any v2 migration row, is unchained
         self.assertGreaterEqual(report["unchained"], before)
-        self.assertEqual(report["chained"], 1, "only the genesis is chained yet")
+        self.assertEqual(report["chained"], 2,
+                         "the genesis and the legacy pin; nothing was back-filled")
         rows = self.raw().execute(
             "SELECT hash FROM events ORDER BY seq LIMIT ?", (before,)).fetchall()
         for row in rows:
@@ -178,8 +179,11 @@ class ChainAppend(MigrationHarness):
         report = self.store.verify_chain()
         self.assertTrue(report["ok"], report["problems"])
         self.assertEqual(report["problems"], [])
-        self.assertEqual(report["chained"], 6)          # genesis + 5
-        self.assertEqual(report["head_seq"], 6)
+        # genesis + legacy pin + 5 appends. The pin is written even when it
+        # names nothing, so the slot cannot be filled later by whoever wants the
+        # exemption -- see pin_legacy_missions().
+        self.assertEqual(report["chained"], 7)
+        self.assertEqual(report["head_seq"], 7)
 
     def test_the_first_row_chains_from_a_known_genesis_value(self):
         row = self.raw().execute("SELECT * FROM events ORDER BY seq LIMIT 1").fetchone()
@@ -380,9 +384,9 @@ class ConcurrentAppend(MigrationHarness):
         self.assertEqual(errors, [])
         report = store.verify_chain()
         self.assertTrue(report["ok"], report["problems"])
-        self.assertEqual(report["chained"], 41)           # genesis + 4*10
+        self.assertEqual(report["chained"], 42)           # genesis + pin + 4*10
         seqs = [r[0] for r in self.raw().execute("SELECT seq FROM events ORDER BY seq")]
-        self.assertEqual(seqs, list(range(1, 42)), "sequence numbers collided or skipped")
+        self.assertEqual(seqs, list(range(1, 43)), "sequence numbers collided or skipped")
 
 
 class InterruptedTransaction(MigrationHarness):

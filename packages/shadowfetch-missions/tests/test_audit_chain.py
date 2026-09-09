@@ -68,9 +68,15 @@ class DegradedAudit(MigrationHarness):
         with mock.patch.object(sf_audit, "mirror",
                                return_value=(False, "simulated outage")):
             store = Store(self.root)
+            before = self.raw().execute("SELECT COUNT(*) FROM events").fetchone()[0]
             store.append_event("mission-x", "probe", "this must survive")
         count = self.raw().execute("SELECT COUNT(*) FROM events").fetchone()[0]
-        self.assertEqual(count, 2, "the database row is the record of truth")
+        # Derived, not pinned. What this test is about is that the row survives
+        # a mirror outage; the number of events the migration happens to write
+        # is not, and hardcoding it made this fail when an honest one was added.
+        self.assertEqual(count, before + 1, "the database row is the record of truth")
+        self.assertTrue(self.raw().execute(
+            "SELECT 1 FROM events WHERE detail='this must survive'").fetchone())
 
     def test_a_mirror_failure_is_reported_as_degraded(self):
         with mock.patch.object(sf_audit, "mirror",
@@ -124,26 +130,44 @@ class ExternalAnchorVerdicts(MigrationHarness):
             return self.store.verify_chain()
 
     def test_matching_heads_agree(self):
-        report = self.anchor_with(head_seq=5, head_hash=self.store.verify_chain()["head"],
-                                  entries=5)
+        real = self.store.verify_chain()
+        report = self.anchor_with(head_seq=real["head_seq"], head_hash=real["head"],
+                                  entries=real["head_seq"])
         self.assertEqual(report["anchor"]["verdict"], "agrees")
         self.assertTrue(report["ok"])
 
     def test_a_journal_ahead_of_the_database_is_truncation(self):
-        report = self.anchor_with(head_seq=9, entries=9)
+        ahead = self.store.verify_chain()["head_seq"] + 4
+        report = self.anchor_with(head_seq=ahead, entries=ahead)
         self.assertEqual(report["anchor"]["verdict"], "truncated")
         self.assertFalse(report["ok"])
         self.assertTrue(any("removed from the end" in p for p in report["problems"]))
 
-    def test_a_journal_behind_the_database_is_normal(self):
-        """The mirror is asynchronous and journals rotate. Behind is not a
-        finding, and reporting it as one would train people to ignore it."""
-        report = self.anchor_with(head_seq=2, entries=2)
-        self.assertEqual(report["anchor"]["verdict"], "behind")
-        self.assertTrue(report["ok"])
+    def test_a_journal_behind_the_database_is_a_finding(self):
+        """A journal behind the database is UNWITNESSED HISTORY, not lag.
+
+        This test used to assert the opposite, on the premise that "the mirror
+        is asynchronous". It is not: Store.mirror() is a blocking socket write
+        that happens as the event is appended. The only honest lag is journald's
+        own flush, which is sub-second on every host measured, and verify_chain()
+        now waits JOURNAL_SETTLE_SECONDS and re-reads before deciding.
+
+        That premise was load-bearing for an attack: three rows inserted
+        straight into the events table produced verdict 'behind', and 'behind'
+        was documented as normal, so the log reported clean over history nobody
+        had ever witnessed.
+        """
+        behind = max(1, self.store.verify_chain()["head_seq"] - 3)
+        report = self.anchor_with(head_seq=behind, entries=behind)
+        self.assertEqual(report["anchor"]["verdict"], "conflict")
+        self.assertFalse(report["ok"])
+        self.assertTrue(any("without passing through it" in p
+                            for p in report["problems"]),
+                        report["problems"])
 
     def test_a_hash_disagreement_at_the_same_seq_is_a_conflict(self):
-        report = self.anchor_with(head_seq=5, head_hash="0" * 64, entries=5)
+        head = self.store.verify_chain()["head_seq"]
+        report = self.anchor_with(head_seq=head, head_hash="0" * 64, entries=head)
         self.assertEqual(report["anchor"]["verdict"], "conflict")
         self.assertFalse(report["ok"])
         self.assertTrue(any("rewritten after it was mirrored" in p

@@ -22,6 +22,22 @@ change, or it declined to claim anything the evidence did not support. An attack
 the system cannot stop is a FINDING, not a failed attack, and the note says so
 in the plainest words available.
 
+WHY THE NOTES ARE ASSEMBLED RATHER THAN WRITTEN
+  Every NOTE here used to be one hard-coded string. The observations underneath
+  them were re-derived every run; the prose above them was not, so as Phase 3.1
+  fixed defect after defect the notes went on describing behaviour the engine no
+  longer had -- four of them contradicted, word for word, the OBSERVED block
+  printed immediately above them, and every attack still said PASS. A note that
+  can silently go stale is the same defect class as an enforcement table that
+  can: a claim with nothing checking it.
+
+  So a NOTE is now built by Note(): each clause carries the live value that makes
+  it true, and a clause whose value does not hold is not printed as prose. It is
+  printed as NO LONGER TRUE and it FAILS the attack. Note.either() is for the
+  forks where both outcomes are worth describing -- it cannot go stale, because
+  it reads the run and picks. Note.always() is for the few sentences that are
+  about the design rather than about this run.
+
 WHAT EACH ATTACK CHECKS AFTER A REFUSAL
   Not "it raised". Every refusal is followed by reading the mission row back
   column by column, counting the events, and re-verifying the chain head, because
@@ -36,15 +52,14 @@ SIDE EFFECTS
   throwaway store mints its own chain id, so those lines cannot be confused with
   the operator's chain -- read_head() filters by chain id.
 
-HOW TO RUN IT, AND WHERE IT IS NOT
+HOW TO RUN IT
       python3 tools/attacks/attack_integrity.py      # table, exit 1 on any FAIL
   or  from attack_integrity import ATTACKS, run      # composed with the others
-  It is NOT in a gate. `make test` names each test directory explicitly and this
-  file is in none of them, so nothing runs it but a person or another module.
-  Wiring it in means one line in the Makefile's `test:` target --
-  `python3 tools/attacks/attack_integrity.py` -- which the author of this file
-  was not permitted to add. Until that line exists, saying this module "runs in
-  CI" would be false; it runs when someone runs it.
+  `make attacks` runs it alongside the other three suites, and `make test` ends
+  with `$(MAKE) attacks`, so it is in the gate. It was not when this module was
+  written -- the docstring said so and said what the missing line was; that line
+  now exists, which is why this paragraph reads differently from the one in the
+  Phase 3 transcripts.
 """
 from __future__ import annotations
 
@@ -243,6 +258,91 @@ def lines(*parts):
     return "\n".join(str(p) for p in parts if p is not None)
 
 
+# --------------------------------------------------------------------------- #
+# Notes that cannot outlive the behaviour they describe
+# --------------------------------------------------------------------------- #
+class Note:
+    """A NOTE assembled from clauses, each checked against THIS run.
+
+    The defect this exists for: `state-jump-forged-row` carried the sentence
+    "nothing replays MISSION_TRANSITIONS ... Not prevented, not detected" for as
+    long as it took Phase 3.1 to add verify_states(), and the OBSERVED block
+    directly above it printed the detection. The attack still said PASS, because
+    `passed` was computed from the engine and the note was a string literal.
+
+    Three verbs, and the difference between them is the whole point:
+
+      says(holds, text)     an assertion about this run. Printed when `holds`;
+                            when it does not, the clause is reported as NO
+                            LONGER TRUE and ok() goes false, which fails the
+                            attack. Use it for anything a future fix could
+                            falsify.
+      either(cond, a, b)    a fork where both sides are worth describing. It
+                            reads the run and picks, so it cannot go stale.
+      always(text)          a sentence about the DESIGN, not about this run --
+                            a threat model, a scope statement, a reference.
+                            Nothing checks these, so keep them free of claims.
+
+    A clause is a sentence, not a paragraph: the smaller the unit, the more
+    precisely a change is reported.
+    """
+
+    STALE_HEADER = (
+        "STALE NOTE -- this attack FAILS on that alone. The module carried "
+        "claim(s) about the engine that this run contradicts. They are printed "
+        "here instead of as prose because a note describing behaviour the "
+        "system no longer has is exactly the defect this suite hunts:")
+
+    def __init__(self):
+        self._parts = []
+        self._stale = []
+
+    def says(self, holds, text):
+        (self._parts if holds else self._stale).append(text)
+        return self
+
+    def either(self, cond, when_true, when_false):
+        self._parts.append(when_true if cond else when_false)
+        return self
+
+    def always(self, text):
+        self._parts.append(text)
+        return self
+
+    def ok(self):
+        return not self._stale
+
+    def text(self):
+        body = " ".join(part.strip() for part in self._parts if part)
+        if not self._stale:
+            return body
+        return lines(self.STALE_HEADER,
+                     *("  NO LONGER TRUE: " + s for s in self._stale),
+                     ("What this run actually saw: " + body) if body else None)
+
+    def __str__(self):
+        return self.text()
+
+
+def _note_self_check():
+    """The staleness guard needs a guard of its own, or it is one more claim.
+
+    At import, so it holds however this module is reached -- `make attacks`, a
+    person, or another suite importing ATTACKS -- rather than only on the path
+    that happens to call main().
+    """
+    fresh = Note().says(True, "held").either(False, "no", "yes").always("design")
+    assert fresh.ok(), "a Note whose clauses all hold must not report stale"
+    assert fresh.text() == "held yes design", fresh.text()
+    gone = Note().says(False, "the engine still does X").always("design")
+    assert not gone.ok(), "a Note with a clause that no longer holds must fail"
+    assert "NO LONGER TRUE: the engine still does X" in gone.text()
+    assert "design" in gone.text(), "the surviving clauses are still shown"
+
+
+_note_self_check()
+
+
 def rechain(db_path, edits=None):
     """Recompute prev_hash/hash for every chained row, applying `edits` first.
 
@@ -289,30 +389,60 @@ def state_jump_forged_row():
         report = store.verify_chain()
         exit_code, stdout, _ = cli("audit", "verify")
         verdict_line = next((l for l in stdout.splitlines() if l.startswith("chain")), "")
+        states_line = next((l for l in stdout.splitlines()
+                            if l.startswith("mission states")), "")
 
+        states = report.get("states") or {}
+        classification = (states.get("classes") or {}).get(mid)
         observed = lines(
             f"mission created by {how}, state {'queued'!r}",
             f"after UPDATE missions SET state='completed': store.get()['state'] == {forged!r}",
             f"store.transition(mid, 'undone') -> {refused or 'accepted, state is now ' + repr(after)}",
             f"event trail: {trail}",
-            f"store.verify_chain(): ok={report['ok']} problems={report['problems']} "
+            f"store.verify_chain(): ok={report['ok']} chain_ok={report.get('chain_ok')} "
             f"anchor={report['anchor']['verdict']!r}",
-            f"`audit verify` exit {exit_code}; {verdict_line.strip()!r}")
-        passed = refused is not None or not report["ok"]
-        note = ("FINDING. The missions table is not covered by the hash chain and nothing "
-                "replays MISSION_TRANSITIONS across the event trail, so a state written "
-                "with SQL is indistinguishable from one the engine reached. The mission "
-                "went queued -> undone without ever running, and the event the engine "
-                "wrote for it says 'a human changed their mind about accepted work' -- a "
-                "sentence chosen from the forged state, which makes the audit trail assert "
-                "something that did not happen. verify_chain() is right to stay silent: it "
-                "verifies events, not states. The gap is that nothing else checks. A replay "
-                "of the event sequence against MISSION_TRANSITIONS would catch exactly this "
-                "and needs no new storage. Not prevented, not detected.")
+            f"  states verdict={states.get('verdict')!r}; this mission is classified "
+            f"{classification!r}",
+            f"  problems={report['problems']}",
+            f"`audit verify` exit {exit_code}; {verdict_line.strip()!r}; "
+            f"{states_line.strip()!r}")
+
+        detected = (not report["ok"]) and states.get("verdict") == "disagrees"
+        note = Note()
+        note.says(forged == "completed",
+                  "The WRITE is not prevented and cannot be: the missions table carries no "
+                  "hash and sits in a database this uid owns, so the UPDATE lands and the "
+                  "engine reads the forged state back as the mission's own.")
+        note.either(refused is None,
+                    "The engine then ACTS on it -- transition(mid, 'undone') is accepted, "
+                    "and the event it writes carries the transition table's reason for the "
+                    "completed -> undone edge, a sentence chosen from a state the mission "
+                    "never reached.",
+                    f"The engine refused to act on it: {refused}.")
+        note.says(report.get("chain_ok"),
+                  "The chain itself stays silent, correctly: no EVENT was altered, and "
+                  "reporting one would be the chain claiming something outside its own "
+                  "evidence.")
+        note.says(detected,
+                  "It is DETECTED all the same. verify_states() replays every mission's "
+                  "event trail through MISSION_TRANSITIONS, and the replay is part of the "
+                  f"same report: this mission is classified {classification!r}, the CLI "
+                  f"prints {states_line.strip()!r} beside 'chain intact', and the exit "
+                  f"status is {exit_code}.")
+        note.says(exit_code == 1,
+                  "Exit 1 is the tampered code, not the unverified one, so a caller that "
+                  "gates on the exit status sees a finding rather than a caveat.")
+        note.always(
+            "Scope, stated plainly: this is detection at verify time, not prevention at "
+            "write time, and it does not recover the state the mission actually had. "
+            "Historical note: through Phase 3 nothing replayed the trail, so this attack "
+            "was a FINDING -- 'not prevented, not detected' -- and verify reported a clean "
+            "log over a mission that had never run.")
+        passed = (refused is not None or not report["ok"]) and note.ok()
         return ("A mission state that no event records is not a state the engine reached: "
                 "either the engine refuses to act on it, or verification reports the "
                 "mismatch between the row and its event trail.",
-                observed, passed, note)
+                observed, passed, note.text())
 
 
 def state_jump_illegal_target():
@@ -374,19 +504,32 @@ def state_jump_illegal_target():
             f"head hash {str(before['head_hash'])[:16]} -> {str(after['head_hash'])[:16]}",
             f"'events' table still exists after the SQL-shaped target: {'events' in tables}",
             f"verify_chain(): ok={report['ok']} problems={report['problems']}")
-        passed = not changed_by and report["ok"]
-        note = ("The near-miss spellings are refused by name, and the refusal text names "
-                "the reachable states rather than saying 'invalid'. Worth the lead's eye: "
-                "an unhashable target (a list) raises TypeError from inside "
-                "transition_allowed()'s dict lookup rather than TransitionError -- it is "
-                "raised inside the BEGIN IMMEDIATE block, so the transaction rolls back "
-                "and nothing is written, but a caller catching TransitionError will not "
-                "catch it. That is an exception-class wart, not a state change."
-                if not changed_by else
-                "FINDING: something on that list changed the row: " + ", ".join(changed_by))
+        unhashable = any("TypeError" in a and "unhashable" in a for a in attempts)
+        note = Note()
+        note.either(not changed_by,
+                    "The near-miss spellings are refused by name, and the refusal text "
+                    "names the reachable states rather than saying 'invalid' -- a person "
+                    "can act on the first and not on the second.",
+                    "FINDING: something on that list changed the row: "
+                    + ", ".join(changed_by))
+        note.says(after["mission_row"] == before["mission_row"],
+                  "The mission row is byte-identical afterwards, which is the check that "
+                  "matters: a guard that raises after writing is the defect this phase "
+                  "keeps finding.")
+        note.says(report["ok"],
+                  "The chain is unchanged too -- no refusal appended an event describing a "
+                  "change that did not happen.")
+        note.says(unhashable,
+                  "Worth the lead's eye: an unhashable target (a list) raises TypeError "
+                  "from inside transition_allowed()'s dict lookup rather than "
+                  "TransitionError. It is raised inside the BEGIN IMMEDIATE block, so the "
+                  "transaction rolls back and nothing is written, but a caller catching "
+                  "TransitionError will not catch it. That is an exception-class wart, not "
+                  "a state change.")
+        passed = (not changed_by) and report["ok"] and note.ok()
         return ("Every one of these is refused, and the mission row, the event count and "
                 "the chain head are unchanged afterwards.",
-                observed, passed, note)
+                observed, passed, note.text())
 
 
 def state_jump_retry_budget():
@@ -408,29 +551,62 @@ def state_jump_retry_budget():
             landed = after["state"] == sf.MissionState.QUEUED
         except Exception as exc:                                   # noqa: BLE001
             edge, landed = f"{type(exc).__name__}: {exc}", False
+        # The THIRD verb that reaches the same edge. transition() and retry() were
+        # the two the budget was moved between; finish_execution() is the one that
+        # requeued a mission at the ceiling while both of those were being argued
+        # about, which is why requeue_refusal() is keyed on the edge's event.
+        try:
+            store.finish_execution(mid, sf.MissionState.QUEUED, None)
+            finish = "ACCEPTED"
+            landed = landed or store.get(mid)["state"] == sf.MissionState.QUEUED
+        except Exception as exc:                                   # noqa: BLE001
+            finish = f"{type(exc).__name__}: {exc}"
         trail = [(e["event"], e["detail"][:52]) for e in store.events(mid)]
         published = sf.capabilities().get("max_attempts")
+        final = store.get(mid)
+        refusals = [e for e in store.events(mid) if e["event"] == "retry-budget-exhausted"]
+        report = store.verify_chain()
 
         observed = lines(
             f"mission is {state_before['state']!r} with attempt={state_before['attempt']} "
             f"(capabilities() publishes max_attempts={published})",
-            f"store.retry(mid) -> {verb}",
-            f"store.transition(mid, 'queued') -> {edge}",
-            f"event trail: {trail}")
-        passed = not landed
-        note = ("FINDING. The three-attempt budget lives only in Store.retry(). "
-                "Store.transition() owns the state machine and does not know about it, so "
-                "the same failed -> queued edge goes through with attempt already at the "
-                "published ceiling, and the event it writes carries the table's reason, "
-                "'a human retried a failed mission'. Phase 3's own comment on Store.update "
-                "says the defect it fixed was that 'every guard lived in a high-level verb "
-                "that a caller could simply not use'; the retry budget is still exactly "
-                "that. Scope, stated honestly: the CLI's `retry` goes through retry() and "
-                "IS capped -- this is reachable by an in-process caller of the engine API, "
-                "which is what the worker, the desktop and every future orchestrator are.")
+            f"store.retry(mid)                    -> {verb}",
+            f"store.transition(mid, 'queued')     -> {edge}",
+            f"store.finish_execution(mid,'queued')-> {finish}",
+            f"row afterwards: state={final['state']!r} attempt={final['attempt']} "
+            f"error={final['error']!r}",
+            f"event trail: {trail}",
+            f"verify_chain(): ok={report['ok']} problems={report['problems']}")
+
+        note = Note()
+        note.says(not landed,
+                  "The budget is a property of the failed -> queued EDGE, not of a verb: "
+                  "requeue_refusal() is keyed on the edge's event name and every path to a "
+                  "requeue asks it, so all three verbs refuse the fourth attempt.")
+        note.says(len(refusals) >= 2,
+                  "The refusal is RECORDED before it is raised. transition() and "
+                  "finish_execution() each append a 'retry-budget-exhausted' event that "
+                  "commits with their own transaction while the mission row is left "
+                  "untouched, so the log gains a refusal and the state gains nothing -- "
+                  "'no event' would read the same as 'nobody ever tried'.")
+        note.says(final["state"] == sf.MissionState.FAILED
+                  and final["attempt"] == state_before["attempt"],
+                  "Nothing partial landed: the state and the attempt counter are exactly "
+                  "what they were before the three attempts to get past the ceiling.")
+        note.says(report["ok"],
+                  "The chain still verifies afterwards, so the recorded refusals are "
+                  "ordinary chained events and not a hole punched by the guard.")
+        note.always(
+            "Historical note: the budget once lived only in Store.retry(), so an in-process "
+            "caller -- the worker, the desktop, any future orchestrator -- got a fourth "
+            "attempt by calling transition() directly; moving it into transition() then "
+            "left finish_execution() reaching the same edge on its own. Two verbs is why "
+            "the question is now asked of the edge.")
+        passed = (not landed) and note.ok()
         return ("The retry budget is a property of the failed -> queued edge, so the edge "
-                "refuses a fourth attempt no matter which verb asks for it.",
-                observed, passed, note)
+                "refuses a fourth attempt no matter which verb asks for it, and the "
+                "refusal is recorded rather than silent.",
+                observed, passed, note.text())
 
 
 # --------------------------------------------------------------------------- #
@@ -477,19 +653,31 @@ def event_field_coverage():
             "one column at a time, rewritten with SQL and then restored:",
             *results,
             f"after restoring every column: verify_chain().ok={restored['ok']}")
-        passed = not uncovered and all("NOT DETECTED" not in r for r in results)
-        note = ("Every column of `events` except prev_hash and hash is inside "
-                "HASHED_FIELDS, so there is no unprotected field to rewrite -- including "
-                "the three correlation columns (task_id, session_id, tool_execution_id) "
-                "that carry no data on most rows and would be the quiet place to hide a "
-                "reattribution. The existing tests cover detail, mission and actor; this "
-                "walks the table so a column ADDED later without being added to "
-                "HASHED_FIELDS shows up here as NOT DETECTED."
-                if passed else
-                "FINDING: a column outside the hash, or a change the chain did not notice.")
+        all_detected = all("NOT DETECTED" not in r for r in results)
+        note = Note()
+        note.either(not uncovered,
+                    "Every column of `events` except prev_hash and hash is inside "
+                    "HASHED_FIELDS, so there is no unprotected field to rewrite -- "
+                    "including the three correlation columns (task_id, session_id, "
+                    "tool_execution_id) that carry no data on most rows and would be the "
+                    "quiet place to hide a reattribution.",
+                    "FINDING: these columns are neither hashed nor chain metadata, so "
+                    "rewriting them is invisible: " + ", ".join(uncovered))
+        note.either(all_detected,
+                    "Each one was rewritten with SQL and each rewrite was reported.",
+                    "FINDING: at least one rewrite was NOT DETECTED; the lines above say "
+                    "which column.")
+        note.says(restored["ok"],
+                  "The chain verifies again once every column is restored, so the walk did "
+                  "not leave the store in a state that would flatter the next check.")
+        note.always(
+            "The existing unit tests cover detail, mission and actor. This walks the table, "
+            "so a column ADDED later without being added to HASHED_FIELDS shows up here as "
+            "NOT DETECTED rather than as nothing at all.")
+        passed = not uncovered and all_detected and note.ok()
         return ("Every stored field of an event is covered by its hash, so rewriting any "
                 "one of them is detected.",
-                observed, passed, note)
+                observed, passed, note.text())
 
 
 def event_rechain_then_cover():
@@ -532,23 +720,42 @@ def event_rechain_then_cover():
             f"journal still holds seq {victim} hash {str(mirrored.get(victim))[:16]}, "
             f"database now holds {str(now_stored['hash'])[:16]} "
             f"(original was {str(original_hash)[:16]})",
-            f"the two disagree at seq {victim}: {mirrored.get(victim) != now_stored['hash']}")
-        passed = not afterwards["ok"]
-        note = ("FINDING. The anchor compares ONE row: read_head() returns max(seq) and "
-                "verify_chain() compares only that head. So a rewrite is caught for "
-                "exactly as long as the rewritten head is the newest event -- one honest "
-                "append later, the journal's head and the database's head agree again and "
-                "verify reports ok with verdict 'agrees', over a row that says REWRITTEN BY "
-                "THE ATTACKER. The evidence is not missing: the journal still carries the "
-                "pre-tamper hash for that seq, printed above, and this uid can read it. "
-                "Nothing compares it. Comparing every mirrored seq the journal can still "
-                "see, rather than only the maximum, closes this with no new storage and no "
-                "new privilege -- and would also make the anchor useful for rows that have "
-                "not rotated away. Not prevented; detectable only in a window the attacker "
-                "chooses the end of.")
+            f"the two disagree at seq {victim}: {mirrored.get(victim) != now_stored['hash']}",
+            f"anchor.rewritten_seqs after the cover append: "
+            f"{afterwards['anchor'].get('rewritten_seqs')}")
+
+        anchor = afterwards["anchor"]
+        note = Note()
+        note.says(clean["ok"] and not immediately["ok"],
+                  "The rewrite is caught the moment it is made, which was never the "
+                  "question here.")
+        note.says(not afterwards["ok"],
+                  "It is still caught AFTER the cover append. The anchor compares every "
+                  "sequence number the journal can still see, not only the maximum, so the "
+                  "honest event that re-aligned the two heads buys the attacker nothing.")
+        note.says(victim in (anchor.get("rewritten_seqs") or []),
+                  f"seq {victim} is named in anchor.rewritten_seqs, and the problem line "
+                  "says which rows were rewritten after they were mirrored rather than "
+                  "reporting a bare head mismatch.")
+        note.says(anchor.get("verdict") == "conflict",
+                  "The verdict is 'conflict' -- a finding, not a caveat -- and it is what "
+                  "sets ok=False.")
+        note.says(exit_code == 1,
+                  "`audit verify` exits 1 over a log whose heads agree, which is the point: "
+                  "the exit status follows the evidence, not the head.")
+        note.always(
+            "What this does NOT close: the journal is the only witness, so a row whose "
+            "mirrored line has rotated out of the read window, or was never mirrored "
+            "because the mirror was failing, has nothing to be compared against. That is "
+            "the hole in the middle of the anchor, and it is a different gap from this one. "
+            "Historical note: the anchor used to compare max(seq) alone, so a rewrite was "
+            "detectable only until the next honest append -- a window the attacker chose "
+            "the end of -- while the journal held the pre-tamper hash the whole time and "
+            "nothing read it.")
+        passed = (not afterwards["ok"]) and note.ok()
         return ("A rewritten row is detected however far back it is, because the journal "
                 "recorded that row's hash and this uid cannot rewrite the journal.",
-                observed, passed, note)
+                observed, passed, note.text())
 
 
 def event_detail_not_utf8():
@@ -561,6 +768,7 @@ def event_detail_not_utf8():
                 (sqlite3.Binary(b"\xff\xfe not utf-8"), victim))
         stored = rows(store.db_path, "SELECT typeof(detail) AS t FROM events WHERE seq=?",
                       (victim,))[0]["t"]
+        report = None
         try:
             report = store.verify_chain()
             raised, verdict = None, f"ok={report['ok']} problems={report['problems']}"
@@ -580,20 +788,36 @@ def event_detail_not_utf8():
             f"`audit verify` exit {text_exit}; last line of stderr: "
             f"{(text_err.strip().splitlines() or ['(none)'])[-1]!r}",
             f"`--json audit verify` exit {json_exit}; stdout parses as JSON: {parses}")
-        passed = raised is None and verdict is not None and "ok=False" in (verdict or "")
-        note = ("FINDING. verify_chain() raises TypeError out of canonical() instead of "
-                "reporting the row as a problem: json.dumps cannot serialise the bytes "
-                "SQLite happily stored in a TEXT-affinity column. It fails CLOSED -- the "
-                "exit code is non-zero and nothing ever claims the chain is intact -- so "
-                "this is not an evidence defeat. What it defeats is the report: an operator "
-                "gets a traceback with no PROBLEM line and no head, and a caller reading "
-                "`--json audit verify` gets no JSON at all, which for the desktop is the "
-                "difference between 'this log was tampered with' and 'the audit view is "
-                "broken again'. One row that treats a non-str detail as a problem, rather "
-                "than hashing it, turns this back into a verdict.")
+        blob_problem = [p for p in ((report or {}).get("problems") or [])
+                        if "not text" in p]
+        note = Note()
+        note.says(raised is None,
+                  "verify_chain() returns a report rather than raising. The bytes SQLite "
+                  "accepts into a TEXT-affinity column are not something json.dumps can "
+                  "serialise, and canonical() used to take that TypeError all the way out "
+                  "of verify.")
+        note.says(bool(blob_problem),
+                  "The row is reported as a PROBLEM in the ordinary way: "
+                  + repr(blob_problem[0] if blob_problem else "") + " -- a non-text detail "
+                  "is treated as evidence that something other than the engine wrote the "
+                  "row, which is what it is, rather than being hashed.")
+        note.says(text_exit != 0 and json_exit != 0,
+                  "Both surfaces fail closed, and with the same code: nothing claims this "
+                  "chain is intact.")
+        note.says(parses is True,
+                  "`--json audit verify` still emits parseable JSON, which is the half the "
+                  "desktop reads. A traceback there is the difference between 'this log was "
+                  "tampered with' and 'the audit view is broken again'.")
+        note.always(
+            "Historical note: this attack was a FINDING against the report rather than "
+            "against the evidence -- it always failed closed, but an operator got a "
+            "traceback with no PROBLEM line and no head, and --json produced nothing a "
+            "caller could parse.")
+        passed = (raised is None and verdict is not None
+                  and "ok=False" in (verdict or "") and note.ok())
         return ("A row whose detail is not text is reported as a problem, like every other "
                 "corrupt row, and verify still produces a verdict.",
-                observed, passed, note)
+                observed, passed, note.text())
 
 
 def event_insert_bypassing_append():
@@ -628,17 +852,30 @@ def event_insert_bypassing_append():
             "INSERT letting AUTOINCREMENT pick the seq (so the row carries no hash):",
             f"  verify_chain(): ok={report['ok']} problems={report['problems']}",
             f"  `audit verify` exit {exit_code}; {chain_line.strip()!r}")
-        passed = "IntegrityError" in duplicate and not report["ok"]
-        note = ("Two different mechanisms, both holding. seq is the INTEGER PRIMARY KEY, so "
-                "the storage engine itself refuses a second row claiming a sequence number "
-                "that is already taken -- forging history in place is not available, only "
-                "rewriting it. A row appended around _append() has no hash, and the chain "
-                "reports 'chained region has no hash' rather than skipping it, which is the "
-                "difference between a chain and a list of hashes.")
+        unhashed = [p for p in report["problems"] if "no hash" in p]
+        note = Note()
+        note.says("IntegrityError" in duplicate,
+                  "seq is the INTEGER PRIMARY KEY, so the storage engine itself refuses a "
+                  "second row claiming a sequence number that is already taken. Forging "
+                  "history IN PLACE is not available; only rewriting it is, which is the "
+                  "attack two entries above this one.")
+        note.says(before["head_hash"] == after_duplicate["head_hash"],
+                  "The refused INSERT left the head hash untouched, so the failure was the "
+                  "storage engine's and not a half-applied write.")
+        note.says(bool(unhashed),
+                  "A row appended around _append() carries no hash, and the chain reports "
+                  + repr(unhashed[0]) + " rather than skipping it -- which is the "
+                  "difference between a chain and a list of hashes.")
+        note.always(
+            "_append() is the only INSERT into events in the running engine. The one "
+            "deliberate exception is historical rather than reachable: the v1 -> v2 "
+            "migration writes its schema-migrated row with a raw INSERT, because it runs "
+            "before the chain columns exist, and start_chain() pins it a moment later.")
+        passed = "IntegrityError" in duplicate and not report["ok"] and note.ok()
         return ("A row inserted without going through _append() cannot take an existing "
                 "sequence number, and one appended at the end is reported as unhashed "
                 "rather than accepted.",
-                observed, passed, note)
+                observed, passed, note.text())
 
 
 # --------------------------------------------------------------------------- #
@@ -686,31 +923,48 @@ def _truncation_attack(count, blind):
             f"problems the CHAIN alone raised (no journal): {hash_problems}",
             f"`audit verify` exit {exit_code}; {chain_line.strip()!r}; {anchor_line.strip()!r}")
 
+        note = Note()
         if blind:
-            passed = exit_code != 0 and report["anchor"]["verdict"] == "unverified"
-            note = ("The deletion was NOT prevented and NOT detected -- with no journal "
-                    "there is nothing left that could detect it, because every surviving "
-                    "row still verifies against its predecessor. That is what a hash chain "
-                    "is, and sf_audit's docstring says so in its first paragraph. This "
-                    "passes on the only claim available: the system does not call the log "
-                    "verified. verify reports the anchor as 'unverified' with the reason, "
-                    "and the CLI exits 2 rather than 0, so a caller that treats 0 as "
-                    "'audited' is not misled. The removed events are gone and "
-                    "unrecoverable.")
+            note.says(not hash_problems,
+                      "The deletion was NOT prevented and NOT detected. With no journal "
+                      "there is nothing left that could detect it: every surviving row "
+                      "still verifies against its predecessor, which is what a hash chain "
+                      "is, and sf_audit's docstring says so in its first paragraph.")
+            note.says(report["anchor"]["verdict"] == "unverified"
+                      and bool(report["anchor"]["reason"]),
+                      "This passes on the only claim available -- the system does not call "
+                      "the log verified. The anchor reports 'unverified' with the reason "
+                      "it could not be read: " + repr(report["anchor"]["reason"]) + ".")
+            note.says(exit_code == 2,
+                      "The CLI exits 2, not 0, so a caller that treats 0 as 'audited' is "
+                      "not misled into treating an unexercised control as a passing one.")
+            note.always("The removed events are gone and unrecoverable.")
+            passed = (exit_code != 0
+                      and report["anchor"]["verdict"] == "unverified"
+                      and note.ok())
             expected = ("With no external anchor the truncation cannot be detected; the "
                         "system must therefore refuse to report the log as verified.")
         else:
-            passed = (not report["ok"]) and report["anchor"]["verdict"] == "truncated" \
-                and not hash_problems and exit_code == 1
-            note = ("The chain alone is perfectly happy -- no hash problem was raised, "
-                    "listed above as an empty list -- and the journal is the entire reason "
-                    "this is caught. The count in the message is the real one, and the "
-                    "journal entry it compares against was written by a process running as "
-                    "this uid but into a store this uid cannot edit.")
+            note.says(not hash_problems,
+                      "The chain alone is perfectly happy -- the problems it raised on its "
+                      "own are listed above as an empty list -- and the journal is the "
+                      "entire reason this is caught.")
+            note.says(report["anchor"]["verdict"] == "truncated"
+                      and report["anchor"]["journal_head_seq"] == head,
+                      f"The journal's high-water mark is seq {head}, the database's is "
+                      f"{remaining}, and the count in the message is the real one.")
+            note.says(exit_code == 1,
+                      "The CLI exits 1: the removal is a finding, not a caveat.")
+            note.always(
+                "The journal entry this compares against was written by a process running "
+                "as this uid, into a store this uid cannot edit. That asymmetry is the "
+                "whole mechanism, and it ends at root.")
+            passed = ((not report["ok"]) and report["anchor"]["verdict"] == "truncated"
+                      and not hash_problems and exit_code == 1 and note.ok())
             expected = ("The journal's high-water mark exceeds the database's, so verify "
                         "reports the removal, names how many rows went, and the CLI exits "
                         "non-zero.")
-        return (expected, observed, passed, note)
+        return (expected, observed, passed, note.text())
 
 
 def chain_truncate_anchored():
@@ -770,29 +1024,41 @@ def chain_truncate_mirror_forged():
             f"  {chain_line.strip()!r}",
             f"  {head_line.strip()!r}",
             f"  {journal_line.strip()!r}")
-        passed = not forged["ok"] and forged["anchor"]["verdict"] == "truncated"
-        note = ("FINDING, and the sharpest one here. audit-mirror.json sits beside the "
-                "database, owned by the same uid that wrote the events, and verify_chain() "
-                "branches on it FIRST: `if anchor['mirror_failures']` reports 'degraded' and "
-                "never reaches the journal comparison at all. So an attacker who truncates "
-                "the log and then writes failures=1 into a file they already control turns "
-                "ok=False into ok=True, turns the message from '2 event(s) were removed "
-                "from the end of the log' into 'the audit mirror has failed 1 time(s)', and "
-                "turns exit 1 into exit 2. The CLI then prints 'chain intact', 'head seq N' "
-                "and 'journal head seq N+2' on three consecutive lines without comparing "
-                "them. Deleting the file does NOT help the attacker -- that path is clean -- "
-                "which is what makes writing it worth reporting: the degraded branch is a "
-                "suppression switch. Comparing the heads regardless of the local failure "
-                "count, and reporting degraded ALONGSIDE the comparison rather than instead "
-                "of it, fixes it; local bookkeeping should never be able to silence the one "
-                "check that does not depend on local bookkeeping. Why this is a FAIL when "
-                "chain-truncate-unanchored is a PASS, since both end at ok=True and exit 2: "
-                "there no evidence existed and the system said so; here the evidence was in "
-                "hand -- the CLI prints the journal head two lines below the database head "
-                "-- and a file the attacker owns stopped the two being compared.")
+        truncation_problems = [p for p in forged["problems"] if "removed from the end" in p]
+        degraded_problems = [p for p in forged["problems"] if "audit mirror has failed" in p]
+        note = Note()
+        note.says(not plain["ok"] and not deleted["ok"] and not forged["ok"],
+                  "The truncation is reported in all three states of the local bookkeeping "
+                  "file: present and honest, deleted, and written by the attacker with a "
+                  "failure count in it.")
+        note.says(forged["anchor"]["verdict"] == "truncated",
+                  "The verdict stays 'truncated' with the forged file in place. The journal "
+                  "comparison does not depend on the file, and a file the attacker owns "
+                  "must not be able to silence the one check that does not.")
+        note.says(bool(truncation_problems) and bool(degraded_problems),
+                  "Both facts are reported, in that order of authority: the removal of the "
+                  "rows is a FINDING and the mirror failure is a CAVEAT printed alongside "
+                  "it. Degradation may add to a report and may never subtract from one.")
+        note.says(forged["anchor"].get("degraded") is True,
+                  "anchor['degraded'] stays separately readable, so a caller that wants to "
+                  "know the mirror is unwell can still ask without the verdict having been "
+                  "spent on saying so.")
+        note.says(exit_code == 1,
+                  "The exit status is 1, the tampered code -- not 2, which would say "
+                  "'nothing could be concluded' about a log that had just been compared.")
+        note.always(
+            "Historical note: verify_chain() tested the failure count FIRST, as the head of "
+            "an elif chain, and never reached the journal comparison while it was set. "
+            "Truncating the log and then writing {\"failures\": 1} into a file the same uid "
+            "already owns turned ok=False into ok=True, replaced '2 event(s) were removed "
+            "from the end of the log' with 'the audit mirror has failed 1 time(s)', and "
+            "turned exit 1 into exit 2 -- a suppression switch built out of local "
+            "bookkeeping. Deleting the file never helped the attacker; only writing it did.")
+        passed = (not forged["ok"] and forged["anchor"]["verdict"] == "truncated"
+                  and note.ok())
         return ("Local mirror bookkeeping is attacker-writable, so it must not be able to "
                 "suppress the journal comparison: the truncation is reported either way.",
-                observed, passed, note)
+                observed, passed, note.text())
 
 
 def event_delete_genesis():
@@ -837,25 +1103,41 @@ def event_delete_genesis():
             f"  anchor={second['anchor']['verdict']!r} ({second['anchor']['reason']})",
             f"  `audit verify` exit {second_exit}; {chain_line.strip()!r}; "
             f"{anchor_line.strip()!r}")
-        passed = first_exit != 0 and second_exit != 0 and not first["ok"]
-        note = ("Stage 1 is a clean catch: every surviving row 'carries a hash before the "
-                "chain genesis' and verify says nothing is verifiable, exit 1. Stage 2 is "
-                "the honest boundary and the lead should read it as a finding rather than a "
-                "pass: with a forged genesis the CHAIN reports itself intact over a "
-                "rewritten row -- problems is empty and the CLI prints 'chain intact' -- and "
-                "the only thing that stops a clean bill of health is that the new chain id "
-                "was never mirrored, so the anchor is 'unverified' and the exit code is 2 "
-                "rather than 0. The chain id living inside a row the attacker can delete is "
-                "what makes that possible; an identifier kept outside the events table "
-                "would turn stage 2 into a mismatch instead of an absence. The journal has "
-                "not forgotten anything -- every mirrored head of the ORIGINAL chain is "
-                "still there under the original id -- but read_head() is keyed by the id "
-                "the database hands it, so re-minting the id detaches the log from its own "
-                "anchor. Same root cause as event-rechain-then-cover: the comparison is by "
-                "one identity and one row, and both are things the attacker can move.")
+        others = second["anchor"].get("other_chains_for_this_store") or {}
+        note = Note()
+        note.says(not first["ok"] and first_exit != 0,
+                  "Stage 1 is a clean catch: with the genesis gone every surviving row "
+                  "'carries a hash before the chain genesis', verify says nothing is "
+                  "verifiable, and the CLI exits non-zero.")
+        note.says(bool(others),
+                  "Stage 2 is now a MISMATCH rather than an absence. The journal is keyed by "
+                  "a store identity derived from the database's absolute path -- the one "
+                  "name in the record the database cannot restate about itself -- so the "
+                  "entries this store mirrored under its original chain id are still "
+                  "attributable to it: "
+                  + ", ".join(f"{cid[:12]} ({n} event(s))" for cid, n in sorted(others.items()))
+                  + ", against the id it now presents.")
+        note.says(second["anchor"].get("verdict") == "conflict" and not second["ok"],
+                  "That makes the verdict 'conflict' and sets ok=False: a chain id is minted "
+                  "once at genesis, so a store presenting a second one re-minted its log.")
+        note.says(second_exit == 1,
+                  "The exit status is 1, the tampered code. An attacker who re-chains "
+                  "everything under a new genesis no longer buys the softer 'unverified'.")
+        note.always(
+            "What remains true: the genesis lives in a row this uid can delete, so the "
+            "chain id is still not a secret and still not outside the attacker's reach -- "
+            "what changed is that moving it is now evidence rather than amnesia. A database "
+            "genuinely copied to a new path is a different store with no journal history, "
+            "which reports 'unverified' and is the honest answer to 'I have never seen this "
+            "before'. Historical note: before the store identity existed, read_head() was "
+            "keyed only by the id the database handed it, so re-minting detached the log "
+            "from its own anchor and stage 2 reported a bare absence.")
+        passed = (first_exit != 0 and second_exit != 0 and not first["ok"]
+                  and note.ok())
         return ("Deleting the genesis row is reported as unverifiable, and a forged "
-                "replacement cannot buy a clean verification.",
-                observed, passed, note)
+                "replacement is reported as a re-minted chain rather than as a log with no "
+                "history.",
+                observed, passed, note.text())
 
 
 # --------------------------------------------------------------------------- #
@@ -892,22 +1174,28 @@ def firebreak_session_forged():
             f"_gate(undo, who) -> ({allowed}, {reason!r})",
             f"tools offered to the agent: {offered}",
             f"checkpoint.undo call -> {json.dumps(result)[:200]}")
-        passed = after["status"] == sf_mcp.CORRELATION_OBSERVED and allowed
-        note = ("NOT PREVENTED, and it is not meant to be. An empty file created by this "
-                "uid moves the correlation from 'unknown' to 'observed' and opens the "
-                "DESTRUCTIVE gate, because _session_recorded() is is_file() and nothing "
-                "more. That is the documented design: the server runs with no more "
-                "privilege than the agent it is gating, so it cannot hold evidence that "
-                "agent cannot forge. What it buys is cost and a name -- the forged id is on "
-                "the audit row, and the operator must also have set "
-                "SHADOWFETCH_MCP_DESTRUCTIVE=allow, which the agent cannot do for itself. "
-                "This is marked PASS for the next attack's reason, not this one's: the "
-                "action succeeded, and the question that matters is what the system then "
-                "CLAIMS about it.")
+        note = Note()
+        note.says(before["status"] == sf_mcp.CORRELATION_UNKNOWN
+                  and after["status"] == sf_mcp.CORRELATION_OBSERVED,
+                  "NOT PREVENTED, and it is not meant to be. An empty file created by this "
+                  "uid moves the correlation from 'unknown' to 'observed'.")
+        note.says(allowed,
+                  "That opens the DESTRUCTIVE gate, because _session_recorded() is one "
+                  "is_file() call and nothing more.")
+        note.always(
+            "That is the documented design: the server runs with no more privilege than the "
+            "agent it is gating, so it cannot hold evidence that agent cannot forge. What it "
+            "buys is cost and a name -- the forged id is on the audit row, and the operator "
+            "must also have set SHADOWFETCH_MCP_DESTRUCTIVE=allow, which the agent cannot do "
+            "for itself. This is marked PASS for the next attack's reason, not this one's: "
+            "the action succeeded, and the question that matters is what the system then "
+            "CLAIMS about it.")
+        passed = (after["status"] == sf_mcp.CORRELATION_OBSERVED and allowed
+                  and note.ok())
         return ("Forging the file succeeds -- this uid owns that directory -- and the "
                 "system's own documentation says so rather than claiming the session was "
                 "verified.",
-                observed, passed, note)
+                observed, passed, note.text())
 
 
 def firebreak_session_claim():
@@ -955,25 +1243,32 @@ def firebreak_session_claim():
             f"the refusal text for an unrecorded id: {refusal[:180]!r}")
         claims_verified = any(word in " ".join(reasons).lower()
                               for word in ("verified", "authenticated", "proven", "trusted"))
+        note = Note()
+        note.says(statuses == {sf_mcp.CORRELATION_OBSERVED} and not claims_verified,
+                  "The claim matches the code. The word recorded is 'observed', never "
+                  "'verified', 'authenticated', 'proven' or 'trusted', and the permitted "
+                  "call's reason says what was permitted rather than anything about the "
+                  "session.")
+        note.says(checks_is_file and not reads_content,
+                  "_session_recorded() is exactly one is_file() call. It reads nothing, so "
+                  "the file's CONTENTS are not evidence and are not treated as evidence.")
+        note.says(traversal["status"] == sf_mcp.CORRELATION_MALFORMED,
+                  "A path-traversal id is MALFORMED before any path is built from it, which "
+                  "falls out of the shape check rather than the file check.")
+        note.says(as_directory == sf_mcp.CORRELATION_UNKNOWN,
+                  "A directory of the right name reads as UNKNOWN for the same reason.")
+        note.always(
+            "What remains true and is not a defect to fix here: the correlation is worth "
+            "what a file this uid can create is worth, which is the honest ceiling for a "
+            "gate running with the agent's own privileges.")
         passed = (statuses == {sf_mcp.CORRELATION_OBSERVED} and checks_is_file
                   and not reads_content and not claims_verified
                   and traversal["status"] == sf_mcp.CORRELATION_MALFORMED
-                  and as_directory == sf_mcp.CORRELATION_UNKNOWN)
-        note = ("The claim matches the code. The word recorded is 'observed', the module's "
-                "comment defines it as 'a Firebreak session record exists on disk under "
-                "that id... weaker than the session is real', and _session_recorded() is "
-                "exactly one is_file() call -- it reads nothing, so the file's CONTENTS are "
-                "not evidence and are not treated as evidence. The permitted call's reason "
-                "is 'DESTRUCTIVE call permitted', which says what was permitted and asserts "
-                "nothing about the session. Two things fall out of the shape check rather "
-                "than the file check: a path-traversal id is MALFORMED before any path is "
-                "built from it, and a directory of the right name reads as UNKNOWN. What "
-                "remains true and is not a defect to fix here: the correlation is worth "
-                "what a file this uid can create is worth, which is the honest ceiling for "
-                "a gate with the agent's own privileges.")
+                  and as_directory == sf_mcp.CORRELATION_UNKNOWN
+                  and note.ok())
         return ("The system records the forged correlation as 'observed' and nothing "
                 "anywhere upgrades that into a claim that the session is real.",
-                observed, passed, note)
+                observed, passed, note.text())
 
 
 # --------------------------------------------------------------------------- #

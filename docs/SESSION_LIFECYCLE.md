@@ -1,15 +1,16 @@
 # Agent Session Lifecycle
 
-*Shadowfetch Linux 4.0.x — Phase 3, Steps 5, 6, 12, 16 and 21. Companion to
-`APPROVAL_POLICY.md` (what a human agreed to), `PROVIDER_TRUST.md` (what is known
-about the provider) and `AGENT_ARCHITECTURE.md` (the seam itself).*
+*Shadowfetch Linux 4.0.x — Phase 3, Steps 5, 6, 12, 16 and 21, brought forward to
+**Phase 3.1**. Companion to `APPROVAL_POLICY.md` (what a human agreed to),
+`PROVIDER_TRUST.md` (what is known about the provider) and
+`AGENT_ARCHITECTURE.md` (the seam itself).*
 
 This document answers one question: **what is recorded about one provider
 execution, from before it starts to after it is settled, and what is not?**
 
 Everything below is read out of `sf_missions.py`, `sf_providers.py` and
 `shadowfetch-firebreak`, or is literal output from a real run on the build host.
-Limitations are in §8 and are as load-bearing as the rest.
+Limitations are in **§10** and are as load-bearing as the rest.
 
 ---
 
@@ -105,6 +106,22 @@ if self.session_id:
     if self.task_id:
         wrapper.extend(["--task", self.task_id])
 ```
+
+Two hops, two flag names, and it is worth keeping them apart. Mission Control
+names each granted credential **identity** with `--credential-env NAME`; Firebreak
+is what turns that into bwrap's `--clearenv` plus one `--setenv` per name. The
+value travels in Firebreak's environment, never in either argv (§7). Which
+identities may be named is intersected with the invocation's `SandboxSpec` first,
+so an adapter that narrowed `credential_ids` actually narrows what is passed —
+before that, the narrowing was ignored: fail-safe, since the manifest still
+bounded it, but decorative, and decorative is worse than absent because it reads
+as a control.
+
+Two of Mission Control's declared fields have **no** flag on this hop at all:
+`egress_allowlist` and `masked_paths`. Firebreak accepts `--egress-host` and
+`--mask-path`, both record-only, and Mission Control passes neither — so those
+declarations reach neither a mechanism nor Firebreak's own session record. §6 and
+`PHASE3_REMAINING_RISKS.md` say so in the same words.
 
 ### 4.2 What Firebreak does with it
 
@@ -276,16 +293,36 @@ From a real offline session, verbatim:
                                                        Per-PROCESS, so a provider that forks
                                                        gets a fresh budget for each child"},
 "egress_allowlist": {"status": "not_applicable",
-                     "mechanism": "this session declared nothing for this field"},
+                     "mechanism": "this session declared no egress host"},
 "masked_paths":     {"status": "not_applicable",
-                     "mechanism": "this session declared nothing for this field"},
+                     "mechanism": "this session declared no masked path"},
 "credential_ids":   {"status": "not_applicable",
                      "mechanism": "this session was granted no credential identity"},
+"read_grants":      {"status": "not_applicable",
+                     "mechanism": "this session was granted no read access outside its workspace"},
+"account_mount":    {"status": "not_applicable",
+                     "mechanism": "this session mounts no provider account"},
 "syscall_profile":  {"status": "not_representable",
                      "mechanism": "no schema property and no bwrap --seccomp anywhere"}
 ```
 
-Two of those statuses are corrections of claims that had shipped:
+Every `not_applicable` message says **what was not asked for**, from
+`UNUSED_MEANS_NOT_APPLICABLE`, rather than the generic *"this session declared
+nothing for this field"*. `not_applicable` on its own reads as a gap; naming the
+absent thing is what distinguishes "there was nothing to apply" from "a control
+that should have applied did not".
+
+`network` reads `enforced` above because that session's posture is `none`. The
+same field on an `allowlist` session reads:
+
+```json
+"network": {"status": "partial",
+            "mechanism": "bwrap --unshare-net enforces network on/off. This session is
+                          not 'none', so the sandbox has the host's network and the
+                          declared destinations are not filtered -- see egress_allowlist"}
+```
+
+Three of those statuses are corrections of claims that had shipped:
 
 * `network` used to read `enforced` unconditionally, so Mission Control said
   *enforced* about an allowlist session while Firebreak's record for the **same
@@ -294,6 +331,9 @@ Two of those statuses are corrections of claims that had shipped:
 * `credential_ids` used to read `enforced` for a session granted no credentials,
   because `all([])` is `True` — a control reported as working for a session that
   never asked for it. It now reads `not_applicable`.
+* the same `all([])` shape was fixed **for every field a session does not use**,
+  not just the one that was noticed: `account_mount` said `enforced` for a session
+  that mounts no account, which is a claim about a mechanism that never ran.
 
 Firebreak computes its own enforcement map independently, **out of the argv about
 to be spawned** rather than echoed back from the request. Two records describing

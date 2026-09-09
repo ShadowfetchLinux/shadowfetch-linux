@@ -66,8 +66,13 @@ POLICY_MEDIATION = {
                          "values are resolved outside the sandbox and injected at "
                          "the boundary; no provider code sees the resolution"),
     "path_masking": (OBSERVABLE_ONLY,
-                     "Firebreak has no masking flag; declared masks reach nothing. "
-                     "Phase 4"),
+                     # Not "there is no flag" -- --mask-path exists. It is
+                     # record-only, and Mission Control never passes it. The
+                     # conclusion was right and the reason was false, which made
+                     # the fix look like adding a flag that is already there.
+                     "Firebreak's --mask-path is record-only and reaches no bwrap "
+                     "argument, and Mission Control does not pass it; declared "
+                     "masks reach nothing. Phase 4"),
     "memory": (FULLY_MEDIATED, "systemd MemoryMax with MemorySwapMax=0"),
     "processes": (FULLY_MEDIATED, "systemd TasksMax"),
     "cpu_time": (PARTIALLY_MEDIATED,

@@ -1,9 +1,9 @@
 # Approval Policy
 
-*Shadowfetch Linux 4.0.x — Phase 3, Steps 8, 9 and 10. Companion to
-`AGENT_ARCHITECTURE.md` (what the seam is), `PROVIDER_TRUST.md` (what is known
-about a provider before it runs) and `SESSION_LIFECYCLE.md` (what is recorded
-once it does).*
+*Shadowfetch Linux 4.0.x — Phase 3, Steps 8, 9 and 10, brought forward to
+**Phase 3.1**. Companion to `AGENT_ARCHITECTURE.md` (what the seam is),
+`PROVIDER_TRUST.md` (what is known about a provider before it runs) and
+`SESSION_LIFECYCLE.md` (what is recorded once it does).*
 
 This document answers one question: **what does a human have to agree to before
 a mission runs, and what does that agreement actually control?**
@@ -11,6 +11,14 @@ a mission runs, and what does that agreement actually control?**
 Everything below is either read out of `sf_policy.py` / `sf_missions.py` and
 pinned by a test, or listed in §7 as a limitation. There is no third category.
 A claim here that is in neither list is a bug in this document.
+
+**What Phase 3.1 changed here.** §7.3 (expiry compared as an instant, unreadable
+expiry refused), §7.4 (`path_masking` reaches `advisory_fields`, and the reason
+the control is unenforced restated correctly) and §7.6 (the approval row is
+checked against the chain on every use) all described **defects** in earlier
+revisions of this document, one of them with an operator workaround attached.
+Those descriptions are kept only under **Historical note** headings. Nothing
+under a Historical note is current guidance.
 
 ---
 
@@ -161,9 +169,9 @@ raises the ordinary `MissionError`, because there is nothing to offer.
 The gate is one call, in `run_mission()`, before the transition to `running`:
 
 ```
-$ grep -n 'require_approval' sf_missions.py
-3087:def require_approval(store, mission):
-3221:        require_approval(store, mission)
+$ grep -n 'def require_approval\|^        require_approval' sf_missions.py
+3804:def require_approval(store, mission):
+3952:        require_approval(store, mission)
 ```
 
 One definition, one call site. The surrounding code says why:
@@ -276,7 +284,7 @@ $ shadowfetch-missions --json policy matrix
 | `network_destination` | **observable_only** | Firebreak has two postures, none and allow. An allowlist collapses to allow, so declared hosts are recorded and nothing filters packets. Phase 4 |
 | `credential_identity` | fully_mediated | bwrap `--clearenv` then one `--setenv` per declared identity; an undeclared name is not in the environment |
 | `credential_value` | fully_mediated | values are resolved outside the sandbox and injected at the boundary; no provider code sees the resolution |
-| `path_masking` | **observable_only** | Firebreak has no masking flag; declared masks reach nothing. Phase 4 |
+| `path_masking` | **observable_only** | Firebreak's `--mask-path` is record-only and reaches no bwrap argument, and Mission Control does not pass it; declared masks reach nothing. Phase 4 |
 | `memory` | fully_mediated | systemd `MemoryMax` with `MemorySwapMax=0` |
 | `processes` | fully_mediated | systemd `TasksMax` |
 | `cpu_time` | partially_mediated | `RLIMIT_CPU`, which is per-process: a provider that forks gets a fresh budget for each child |
@@ -341,42 +349,67 @@ provider reports them on its own stream, and nothing intercepts them. Rows in
 verdict. Building an approval prompt for actions that nothing can stop is the
 theatrical approval this phase refuses to build.
 
-**7.3 `expires_at` is stored exactly as typed and compared as a string.**
-`find_approval()` evaluates `row["expires_at"] <= now()` where `now()` is a UTC
-ISO-8601 instant. That is a lexical comparison, not an instant comparison, and it
-is wrong in two ways that are reachable from the shipped CLI. Measured, same
-machine, same minute:
+**7.3 `expires_at` is compared as an INSTANT, and an unreadable expiry is
+refused rather than assumed.** `Store.parse_instant()` reads the stored string
+with `datetime.fromisoformat()` and treats a naive stamp as UTC, because `now()`
+writes UTC and guessing the operator's zone would reintroduce the defect this
+replaced. Measured, same machine, same minute:
 
 ```
-now (UTC): 2026-09-08T23:58:02+00:00
+now (UTC): 2026-09-09T05:14:02+00:00
 
-A  expiry one hour ago, written in UTC   2026-09-08T22:58:02+00:00
-   -> refused: "appr-86968c332a214929 expired at 2026-09-08T22:58:02+00:00"
+A  expiry one hour ago, written in UTC   2026-09-09T04:14:02+00:00
+   -> refused: "appr-9d7b380fab104ac9 expired at 2026-09-09T04:14:02+00:00"
 
-B  the SAME INSTANT, written as +10:00   2026-09-09T08:58:02+10:00
-   -> ACCEPTED; the mission ran
-      approval-used | appr-b7f54b2a22a64156 granted by uid:1000 via cli
-      running       | the worker claimed a queued mission
+B  the SAME INSTANT, written as +10:00   2026-09-09T14:14:02+10:00
+   -> refused: "appr-05cbac4a158544bf expired at 2026-09-09T14:14:02+10:00"
 
 C  not a timestamp at all                "never"
-   -> ACCEPTED; the mission ran
+   -> refused AT GRANT TIME, while a person is watching:
+      MissionError: Cannot read 'never' as an expiry. Use an ISO-8601 instant
+      such as 2026-09-09T17:00:00Z; an expiry that cannot be read would
+      otherwise mean no expiry at all.
+
+C2 the same value written straight into the table with SQL
+   -> "appr-6e6dfa53e1254756 has an unreadable expiry ('never') and is treated
+       as expired"
 ```
 
-An expiry written in a non-UTC offset, and any string that is not a timestamp,
-therefore do not expire when they should. Until this is fixed, **write
-`--expires-at` in UTC with a `+00:00` offset, in the same form the engine's own
-timestamps use.**
+Two guards, deliberately, because they fail in different directions: `C` is
+refused at write time so nobody carries a broken expiry for the life of an
+approval, and `C2` catches the row that was already there or was edited since.
+An expiry nobody can read is not a licence to run forever.
 
-**7.4 A declared `masked_paths` never reaches `advisory_fields`.**
-`_mediation_for()` sets `relied_on = False` for `path_masking` with the comment
-*"set by the caller when masks are declared"* — and no caller sets it. Nothing
-outside `sf_policy.py` touches the mediation map. Neither shipped provider
-declares a masked path, so today the gap is latent; a future provider that
-declared one would get an `observable_only` control that the decision does not
-warn about. The `SandboxSpec` enforcement map (`sf_providers.sandbox_enforcement`)
-does report `masked_paths: not_enforced` for such a session, and Firebreak's own
-session record does too — so the caveat exists in two places and is missing from
-the third.
+> **Historical note.** `find_approval()` used to evaluate `row["expires_at"] <=
+> now()` — a lexical comparison. `B` was **accepted** and the mission ran,
+> because an approval stamped in UTC+10 sorted as later than it was and outlived
+> its own expiry by ten hours; `C` was accepted too, because any non-timestamp
+> string that sorts high enough never expires. Earlier versions of this document
+> carried an operator instruction to *"write `--expires-at` in UTC with a
+> `+00:00` offset"* as a workaround. **Do not follow it as guidance** — it
+> described a defect, not a rule, and any offset is now read correctly.
+
+**7.4 A declared `masked_paths` does reach `advisory_fields`, and the control it
+names is still unenforced.** `_mediation_for()` sets
+`relied_on = bool(sandbox.masked_paths)`, so a mission that declares a mask is
+told, on the one surface built to disclose exactly that, that masking reaches
+nothing. Neither shipped provider declares one, so the caveat is latent today —
+but it is now latent because nothing asks for it, not because nothing reports
+it. The `SandboxSpec` enforcement map (`sf_providers.sandbox_enforcement`) and
+Firebreak's own session record both report `masked_paths: not_enforced` for such
+a session, so all three surfaces agree.
+
+What remains true is the gap itself, and the **reason** for it is worth stating
+precisely because it was recorded wrongly for a long time: Firebreak **has** a
+`--mask-path` flag. It is record-only — it reaches no bwrap argument — and
+Mission Control never passes it, so a declared mask does not even appear in the
+session record. Saying "Firebreak has no masking flag" implied the fix was to
+add a flag that already exists; the fix is a mechanism behind it.
+
+> **Historical note.** `_mediation_for()` hard-coded `relied_on = False` for
+> `path_masking` with a comment saying the caller would set it. No caller did,
+> and nothing outside `sf_policy.py` touches the mediation map, so a mission
+> declaring masks was never warned.
 
 **7.5 `approve` on a denied mission talks about approval, not about refusal.**
 `decision.needs_approval` is true only for `ESCALATE`, so `approve` on a `DENY`
@@ -384,15 +417,76 @@ prints `{"approved": false, "outcome": "deny", "reason": "this mission does not
 require approval: ..."}`. The behaviour is right — a `DENY` cannot be approved —
 but the sentence is about approval when the fact is refusal.
 
-**7.6 An approval row is evidence, not a lock.** The database is owned by the
-user running the missions. Anyone who can write it can insert or edit an approval
-row. What the design guarantees is that a tampered row is not silently honoured:
-the scope is re-checked against a scope recomputed at run time (§2.2), an
-unreadable scope is refused rather than ignored, and grants and revocations are
-chained audit events. An inserted approval therefore has no `approval-granted`
-event behind it, and both halves are readable — `approvals` and `events` — but
-**nothing compares them automatically.** Noticing the mismatch is a person's job
-today.
+**7.6 An approval row is evidence, not a lock — and the row is now checked
+against the chain on every use.** The database is owned by the user running the
+missions. Anyone who can write it can insert or edit an approval row. What the
+design guarantees is that a tampered row is not silently honoured, and
+`find_approval()` is where that is enforced, on the path every mission takes.
+
+Four checks, each with the defect it closes:
+
+* **`approval_witness()` — was this granted at all?** The chained
+  `approval-granted` event is looked up by approval id. `None` means nobody
+  granted it through the engine: the row exists and the audit chain has never
+  heard of it.
+
+  ```
+  appr-inserted-by-sql has no approval-granted event in the audit chain;
+  it was written straight into the table and no human granted it
+  ```
+
+* **`approval_digest()` — is it still what was granted?** The grant event carries
+  `record_sha256` over **every** field of `APPROVAL_WITNESSED_FIELDS`
+  (`approval`, `subject`, `scope_sha256`, `granted_by`, `method`, `granted_at`,
+  `expires_at`, `reason`), and the check recomputes the same digest from the
+  stored row. Both sides come from **one** list, so a field added later is
+  covered by both or by neither — never by one. Editing any witnessed field with
+  SQL, one at a time:
+
+  ```
+  granted_by -> appr-… does not match what was granted: the chained record and
+                the stored row disagree about granted_by. It was edited after it
+                was granted
+  method     -> … disagree about method. It was edited after it was granted
+  granted_at -> … disagree about granted_at. It was edited after it was granted
+  reason     -> … disagree about reason. It was edited after it was granted
+  ```
+
+  An approval granted before 3.1 carries the individual fields but no
+  whole-record digest; those are compared field by field on what the event does
+  carry, rather than falling back to the scope alone.
+
+* **`approval_revocation()` — was it withdrawn?** Revocation is read from the
+  **chain**, not from the `revoked_at` column, so clearing the column with SQL
+  does not revive an approval:
+
+  ```
+  after revoke                      -> appr-a3af65fa30c34486 was revoked at …
+  after clearing revoked_at with SQL -> appr-a3af65fa30c34486 has a revocation in
+        the audit chain (2026-09-09T05:14:02+00:00) but the row does not; the
+        revocation was erased from the table
+  ```
+
+* **The scope is re-checked against a scope recomputed at run time** (§2.2), and
+  an unreadable scope is refused rather than ignored.
+
+`revoke_approval()` also no longer overwrites the grant's `reason`. That field is
+part of the grant's witnessed provenance, and letting a revoke rewrite it made an
+honest revocation look like a tampered grant; the revoke's own reason belongs to
+the revoke event, which is where it goes. `revoked_at` is deliberately **absent**
+from the witnessed digest for the same reason in reverse: revocation is
+legitimately mutable and has its own chained event, and folding it into a digest
+taken at creation would make every honest revoke look like tampering.
+
+What this does **not** do: it detects at use time and prevents nothing at write
+time, and it cannot help an approval whose grant event has itself been removed —
+that is a chain problem, and `audit verify` is what reports it.
+
+> **Historical note.** Both halves were readable and **nothing compared them**;
+> earlier versions of this document said noticing the mismatch was a person's job.
+> The comparison that did exist enumerated fields at the checking site and
+> compared `scope_sha256` alone, so eight of ten direct edits to the `approvals`
+> table went undetected — including reviving an expired approval.
 
 **7.7 The CLI cannot grant a wildcard.** `_covers_value()` honours `"*"` and
 fnmatch patterns, because a wildcard is an explicit widening a human typed. The
@@ -472,6 +566,23 @@ is a weaker claim than *"it did not start"*.
 A thirteenth test asserts that granting **and** revoking both appear in the hash
 chain and that the chain still verifies afterwards.
 
+The unit suite is where a bypass is *pinned*; it is not where the bypasses were
+*found*. `tools/attacks/attack_approval.py` is the adversarial suite, re-derived
+against the tree on every run rather than transcribed, and it is what found the
+row-versus-chain gaps in §7.6 and the expiry defects in §7.3 — its attacks include
+`forged-approval-row`, `approval-scope-widened-after-grant`,
+`approval-for-an-unknown-mission`, `expiry-in-a-nonzero-offset`,
+`expiry-that-is-not-a-date`, `revoke-inside-the-check-window`,
+`provider-swapped-after-approval` and `credential-ceiling-widened`. `make attacks`
+runs it, and `make test` ends with `$(MAKE) attacks`.
+
+One refusal worth naming here because it has no row in the table above:
+`grant_approval()` calls `self.get(mission)` before writing, so an approval for a
+mission that **does not exist** is refused. It used to chain an event no reader
+could ever see — `Store.events()` checks the mission first — leaving a real,
+hashed, invisible approval that a later mission id could collide with. A
+pre-plantable approval is worth refusing on its own.
+
 The suite, run whole:
 
 ```
@@ -494,14 +605,19 @@ It is picked up by `make test`, which runs
 | workspace-write does not escalate | a mission may modify your workspace without an approval |
 | approval is checked once, at start | revoking mid-run does not stop a running mission; Stop does |
 | no tool-level approval | actions inside a provider turn are recorded if reported, and never gated |
-| `expires_at` is compared as a string | a non-UTC-offset or non-timestamp expiry does not expire (§7.3) |
-| `path_masking` never enters `advisory_fields` | a declared mask is unenforced and the decision does not say so |
+| `path_masking` is `observable_only` | a declared mask reaches no mechanism; the decision, the enforcement map and the session record all say so (§7.4) |
 | `network_destination` is `observable_only` | an egress allowlist is recorded and filters nothing |
 | `syscalls` is `not_observable` | no seccomp profile is applied and none is expressible |
 | `"unknown"` is a known trust class | a provider with no recorded trust runs rather than being denied |
+| row-versus-chain checks run at **use** time | a tampered approval row is refused when a mission tries to use it, not at the moment it is written (§7.6) |
 
 Each of these is stated somewhere the person acting on it will see it: in the
 `Decision`'s `advisory_fields`, in the `approve` output's `not_enforced`, in the
-receipt's `declared_but_not_enforced`, and in the desktop's caveat panel — except
-`path_masking`, which is the one on this list that is not, and that is why it is
-written down here.
+receipt's `declared_but_not_enforced`, and in the desktop's caveat panel.
+
+> **Historical note — two rows that were on this list and are not now.**
+> *"`expires_at` is compared as a string"* was fixed by comparing instants and by
+> refusing an unreadable expiry at grant time (§7.3). *"`path_masking` never
+> enters `advisory_fields`"* was fixed by deriving `relied_on` from the sandbox
+> spec (§7.4); what survives is the underlying gap, now stated with the right
+> reason. Neither carries an operator workaround any more.
