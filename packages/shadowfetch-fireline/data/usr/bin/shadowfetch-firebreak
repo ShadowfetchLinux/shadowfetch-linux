@@ -422,17 +422,17 @@ def enforcement(argv, args, ws, grants, credentials, net):
             "systemd TasksMax on the session's own cgroup",
             "the systemd scope does not carry this task cap"),
     }
-    if net == "none":
-        report["network"] = _status(
-            applied(argv, "--unshare-net"),
-            "bwrap --unshare-net: the sandbox gets its own empty network namespace",
-            "posture 'none' was asked for and no network namespace was created")
-    else:
-        report["network"] = {
-            "status": NOT_ENFORCED,
-            "mechanism": "posture 'allow' creates no network namespace, so the "
-                         "sandbox keeps the host's network, its loopback services "
-                         "and its abstract sockets"}
+    # Both postures now. 'allow' used to create no namespace at all and this
+    # row said so; it reaches the internet through a user-space NAT attached to
+    # its own namespace instead, so the host's loopback and abstract sockets are
+    # out of reach either way.
+    report["network"] = _status(
+        applied(argv, "--unshare-net"),
+        ("bwrap --unshare-net: the sandbox gets its own network namespace. "
+         + ("Posture 'none' leaves it empty" if net == "none" else
+            "Posture 'allow' adds a slirp4netns NAT with --disable-host-loopback, "
+            "so the sandbox reaches the internet and not the host")),
+        "a network namespace was not created")
     report["read_grants"] = (
         {"status": NOT_APPLICABLE, "mechanism": "no read grant was asked for"}
         if not grants else
@@ -483,8 +483,12 @@ def arguments(args, ws, sid):
     # read-only task still has scratch space.
     bind = "--ro-bind" if args.workspace_mode == "read-only" else "--bind"
     command += [bind, str(ws), str(ws), "--chdir", str(ws)]
-    if net == "none":
-        command += ["--unshare-net"]
+    # EVERY session gets its own network namespace. 'allow' used to create
+    # none at all, so a sandbox that wanted the internet also got the host's
+    # loopback, its abstract AF_UNIX namespace and its LAN. Connectivity for
+    # 'allow' comes from a user-space NAT attached to this namespace instead,
+    # wired up in run() once bwrap reports the child pid.
+    command += ["--unshare-net"]
     environment = {"HOME": "/home/agent", "USER": "agent", "LOGNAME": "agent", "PATH": SANDBOX_PATH, "LANG": "C.UTF-8", "XDG_CONFIG_HOME": "/home/agent/.config", "XDG_CACHE_HOME": "/home/agent/.cache", "XDG_STATE_HOME": "/home/agent/.local/state", "XDG_DATA_HOME": "/home/agent/.local/share", "SHADOWFETCH_FIREBREAK": sid, "SHADOWFETCH_FIREBREAK_WORKSPACE": ws.name, "TMPDIR": "/tmp", "PYTHONDONTWRITEBYTECODE": "1"}
     if getattr(args, "codex_account", False):
         if net != "allow":
@@ -540,6 +544,53 @@ def user_service_env():
         env.setdefault("XDG_RUNTIME_DIR", str(runtime))
         env.setdefault("DBUS_SESSION_BUS_ADDRESS", "unix:path=" + str(runtime / "bus"))
     return env
+
+
+# The user-space NAT that gives an isolated namespace outbound connectivity.
+# Absolute paths: this decides whether a sandbox is contained, and a helper
+# found on PATH would let the caller choose what "contained" means.
+SLIRP_PATHS = ("/usr/bin/slirp4netns", "/bin/slirp4netns")
+SLIRP_READY_TIMEOUT = 20
+
+
+def slirp_binary():
+    for candidate in SLIRP_PATHS:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
+def attach_network(child_pid, ready_w):
+    """NAT the sandbox's namespace to the outside, and only to the outside.
+
+    --disable-host-loopback is the point of the exercise: without it the NAT
+    gateway forwards to the host's 127.0.0.1 and the namespace buys nothing.
+    """
+    binary = slirp_binary()
+    if binary is None:
+        raise Error(
+            "network access was requested but no slirp4netns exists at "
+            + " or ".join(SLIRP_PATHS)
+            + ". Firebreak will not fall back to sharing the host network: "
+            "that is the containment this session asked for")
+    return subprocess.Popen(
+        [binary, "--configure", "--mtu=65520", "--disable-host-loopback",
+         "--ready-fd", str(ready_w), str(child_pid), "tap0"],
+        pass_fds=(ready_w,), stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE, text=True)
+
+
+def terminate_nat(nat):
+    """The NAT dies with the session. It holds the sandbox namespace open, so
+    leaving it running would leave a namespace and a helper behind per run."""
+    if nat is None or nat.poll() is not None:
+        return
+    nat.terminate()
+    try:
+        nat.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        nat.kill()
+        nat.wait(timeout=5)
 
 
 def run(args):
@@ -658,8 +709,57 @@ def run(args):
     previous = signal.signal(signal.SIGTERM, terminate)
     try:
         try:
-            process = subprocess.Popen(cmd, preexec_fn=limits(args), env=user_service_env())
-            rc = process.wait()
+            nat = None
+            if net == "allow":
+                # bwrap makes the namespace, reports the child pid on --info-fd,
+                # and then WAITS on --block-fd. slirp4netns configures tap0 in
+                # that namespace and signals --ready-fd. Only then is the block
+                # released, so the payload never runs on an unconfigured
+                # interface and never runs before the NAT exists.
+                info_r, info_w = os.pipe()
+                block_r, block_w = os.pipe()
+                ready_r, ready_w = os.pipe()
+                launch = list(cmd)
+                marker = launch.index("--") + 1        # after systemd-run's --
+                launch[marker + 1:marker + 1] = ["--info-fd", str(info_w),
+                                                 "--block-fd", str(block_r)]
+                process = subprocess.Popen(
+                    launch, preexec_fn=limits(args), env=user_service_env(),
+                    pass_fds=(info_w, block_r))
+                os.close(info_w); os.close(block_r)
+                try:
+                    info = b""
+                    with os.fdopen(info_r, "rb") as handle:
+                        while b"}" not in info:
+                            chunk = handle.read(1)
+                            if not chunk:
+                                break
+                            info += chunk
+                    try:
+                        child_pid = json.loads(info.decode("utf-8"))["child-pid"]
+                    except (ValueError, KeyError, UnicodeDecodeError):
+                        raise Error(
+                            "the sandbox did not report its network namespace, so "
+                            "no NAT could be attached to it and execution is "
+                            "refused rather than run with the host network")
+                    nat = attach_network(child_pid, ready_w)
+                    os.close(ready_w)
+                    with os.fdopen(ready_r, "rb") as handle:
+                        if not handle.read(1):
+                            raise Error(
+                                "the network helper exited before the sandbox "
+                                "interface came up: "
+                                + (nat.stderr.read() if nat.stderr else "")[-300:])
+                finally:
+                    os.close(block_w)      # release bwrap either way
+                try:
+                    rc = process.wait()
+                finally:
+                    terminate_nat(nat)
+            else:
+                process = subprocess.Popen(cmd, preexec_fn=limits(args),
+                                           env=user_service_env())
+                rc = process.wait()
             reason = ("signal:" + signal_name(-rc) if rc < 0
                       else "completed" if rc == 0 else "nonzero-exit")
         except KeyboardInterrupt:

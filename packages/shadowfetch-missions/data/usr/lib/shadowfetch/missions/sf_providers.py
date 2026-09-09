@@ -891,8 +891,12 @@ SANDBOX_ENFORCEMENT = {
     "workspace_mode": (ENFORCED,
                        "bwrap --ro-bind for read-only, --bind otherwise"),
     "network": (ENFORCED,
-                "bwrap --unshare-net for 'none'; 'allowlist' collapses to the "
-                "host network, see egress_allowlist"),
+                "bwrap --unshare-net in EVERY posture. 'none' leaves the "
+                "namespace empty; 'allowlist' adds a slirp4netns NAT with "
+                "--disable-host-loopback, so the sandbox reaches the internet "
+                "and not the host's loopback, abstract sockets or LAN. Which "
+                "DESTINATIONS it may reach is a separate question -- see "
+                "egress_allowlist"),
     "read_grants": (ENFORCED, "bwrap --ro-bind per grant"),
     "credential_ids": (ENFORCED,
                        "bwrap --clearenv plus one --setenv per declared identity"),
@@ -906,9 +910,9 @@ SANDBOX_ENFORCEMENT = {
                     "timeout. Per-PROCESS, so a provider that forks gets a fresh "
                     "budget for each child"),
     "egress_allowlist": (NOT_ENFORCED,
-                         "Firebreak has two network postures, none and allow. "
-                         "'allowlist' collapses to allow, so the hosts are recorded "
-                         "for audit and reach no filter. Phase 4"),
+                         "the sandbox reaches the internet through a NAT that "
+                         "does not filter by destination, so the declared hosts "
+                         "are recorded for audit and constrain nothing. Stage C"),
     "masked_paths": (NOT_ENFORCED,
                      # The reason matters as much as the verdict: Firebreak DOES
                      # have --mask-path. It is record-only -- it reaches no bwrap
@@ -960,9 +964,10 @@ def sandbox_enforcement(spec=None) -> dict:
             if getattr(spec, "network", None) != "none":
                 entry["status"] = PARTIAL
                 entry["mechanism"] = (
-                    "bwrap --unshare-net enforces network on/off. This session is "
-                    "not 'none', so the sandbox has the host's network and the "
-                    "declared destinations are not filtered -- see egress_allowlist")
+                    "the sandbox has its own network namespace and cannot reach "
+                    "the host's loopback, abstract sockets or LAN. It CAN reach "
+                    "any internet destination: the declared allowlist is still "
+                    "not filtered -- see egress_allowlist")
         # Every field a session did not use, not merely the two that were
         # noticed one at a time. all([]) is True, so a control with nothing to
         # apply reported itself working -- account_mount said "enforced" for a

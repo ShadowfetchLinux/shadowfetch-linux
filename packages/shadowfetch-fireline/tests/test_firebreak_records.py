@@ -44,17 +44,34 @@ def fake_which(name, mode=os.F_OK | os.X_OK, path=None):
 
 
 class FakeSandbox:
-    """A sandbox that never runs. What is under test is the record, not bwrap."""
+    """A sandbox that never runs. What is under test is the record, not bwrap.
+
+    Since Stage B a networked session hands bwrap an --info-fd and waits for the
+    child pid before attaching the NAT, so a stub that writes nothing there
+    leaves the launcher waiting on a pipe that never speaks -- and the launcher
+    is right to refuse in that case. The stub therefore answers on the info fd
+    the way bwrap does, and the NAT helper is stubbed separately.
+    """
 
     def __init__(self, rc=0, before=None):
         self.rc = rc
         self.before = before
         self.spawned = None
+        self.argv = []
 
     def __call__(self, cmd, **kwargs):
         if self.before is not None:
             self.before()
         self.spawned = list(cmd)
+        self.argv = list(cmd)
+        info = None
+        for index, value in enumerate(cmd):
+            if value == "--info-fd":
+                info = int(cmd[index + 1])
+        if info is not None:
+            # Write, do NOT close: the descriptor belongs to the launcher, which
+            # closes its own copy after Popen the way it would for real bwrap.
+            os.write(info, json.dumps({"child-pid": os.getpid()}).encode())
         return self
 
     def wait(self, timeout=None):
@@ -91,7 +108,14 @@ class RecordTests(unittest.TestCase):
     # -- helpers ------------------------------------------------------------ #
     def execute(self, *extra, sid="s-record", rc=0, before=None, popen=None):
         sandbox = popen or FakeSandbox(rc, before)
-        with patch.object(fb.subprocess, "Popen", sandbox):
+
+        def attach(child_pid, ready_w):
+            """Stand in for slirp4netns: say the interface is up, run nothing."""
+            os.write(ready_w, b"1")
+            return FakeSandbox(0)
+
+        with patch.object(fb.subprocess, "Popen", sandbox), \
+                patch.object(fb, "attach_network", attach):
             code = fb.main(["run", "--workspace", "project", "--no-checkpoint",
                             "--session-id", sid, *extra, "--", "true"])
         return code, sandbox
@@ -290,13 +314,34 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(status["executable_path"]["status"], "observed")
         self.assertEqual(start["read_grants"], [str(grant)])
 
-    def test_network_allow_is_never_recorded_as_enforced(self):
-        code, _ = self.execute("--net", "allow")
+    def test_network_allow_is_enforced_as_a_namespace(self):
+        """This asserted the opposite until Stage B, and it was right to.
+
+        Posture 'allow' created NO network namespace, so a sandbox that only
+        wanted the internet also kept the host's loopback services and abstract
+        AF_UNIX namespace. It unshares the network in both postures now and
+        reaches the outside through a user-space NAT attached to its own
+        namespace, measured against real listeners rather than argv:
+
+            before  host_loopback REACHED   abstract REACHED   internet REACHED
+            after   host_loopback blocked   abstract blocked   internet REACHED
+        """
+        code, spawned = self.execute("--net", "allow")
         self.assertEqual(code, 0)
         start = self.records()[0]
         self.assertEqual(start["network_requested"], "allow")
         self.assertEqual(start["network_effective"], "allow")
-        self.assertEqual(start["enforcement"]["network"]["status"], "not_enforced")
+        self.assertEqual(start["enforcement"]["network"]["status"], "enforced")
+        self.assertIn("--unshare-net", spawned.argv,
+                      "posture 'allow' did not create a network namespace")
+        self.assertIn("disable-host-loopback",
+                      start["enforcement"]["network"]["mechanism"])
+
+    def test_every_posture_unshares_the_network(self):
+        for posture in ("none", "allow"):
+            with self.subTest(net=posture):
+                _, spawned = self.execute("--net", posture)
+                self.assertIn("--unshare-net", spawned.argv)
 
     def test_the_default_posture_records_that_the_caller_asked_for_nothing(self):
         self.execute()

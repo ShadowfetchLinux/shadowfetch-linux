@@ -54,11 +54,13 @@ POLICY_MEDIATION = {
                         "only declared read grants are bound into the sandbox; "
                         "everything else is simply absent"),
     "network_on_off": (FULLY_MEDIATED,
-                       "bwrap --unshare-net gives a namespace with no route"),
+                       "bwrap --unshare-net in every posture: the sandbox has "
+                       "its own network namespace and cannot reach the host's "
+                       "loopback, abstract sockets or LAN"),
     "network_destination": (OBSERVABLE_ONLY,
-                            "Firebreak has two postures, none and allow. An "
-                            "allowlist collapses to allow, so declared hosts are "
-                            "recorded and nothing filters packets. Phase 4"),
+                            "the allowed posture reaches the internet through a "
+                            "NAT that does not filter by destination, so declared "
+                            "hosts are recorded and constrain nothing. Stage C"),
     "credential_identity": (FULLY_MEDIATED,
                             "bwrap --clearenv then one --setenv per declared "
                             "identity; an undeclared name is not in the environment"),

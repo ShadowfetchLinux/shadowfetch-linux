@@ -1137,6 +1137,12 @@ def attack_mask_reaches_nothing(bench, report):
 
 
 def attack_allowlist_reaches_elsewhere(bench, report):
+    """Two destinations, two different truths.
+
+    This used to aim at the host's loopback, because posture 'allow' created no
+    network namespace and the sandbox simply shared it. Stage B closed that, so
+    loopback now tests CONTAINMENT and an internet host tests the allowlist.
+    """
     name = "21-an-allowlist-reaches-a-destination-it-never-allowed"
     bench.workspace("eta", with_input=False)
     server = socket.socket()
@@ -1155,44 +1161,77 @@ def attack_allowlist_reaches_elsewhere(bench, report):
 
     thread = threading.Thread(target=accept, daemon=True)
     thread.start()
-    # A loopback listener, so the proof needs no internet. With posture 'allow'
-    # there is no network namespace at all, so the sandbox shares the host's
-    # loopback -- a destination the allowlist never named.
-    program = ("import socket;s=socket.create_connection(('127.0.0.1',%d),5);"
-               "s.sendall(b'REACHED');s.close();print('connected')" % port)
+    # (a) the host's loopback, which the allowlist never named and which Stage B
+    #     should now put out of reach; and (b) a public address, which it also
+    #     never named and which nothing yet filters.
+    program = (
+        "import json,socket\n"
+        "out={}\n"
+        "try:\n"
+        "    s=socket.create_connection(('127.0.0.1',%d),5); s.sendall(b'REACHED')\n"
+        "    s.close(); out['loopback']='REACHED'\n"
+        "except OSError as e: out['loopback']='blocked:'+type(e).__name__\n"
+        "try:\n"
+        "    s=socket.create_connection(('1.1.1.1',443),8); s.close()\n"
+        "    out['internet']='REACHED'\n"
+        "except OSError as e: out['internet']='blocked:'+type(e).__name__\n"
+        "print('RESULT '+json.dumps(out))\n" % port)
     proc = bench.firebreak("run", "--workspace", "eta", "--net", "allow",
                            "--no-checkpoint", "--egress-host", "api.example.com",
                            "--", "/usr/bin/python3", "-c", program)
     thread.join(5)
     server.close()
+    reached = {}
+    for line in (proc.stdout or "").splitlines():
+        if line.startswith("RESULT "):
+            reached = json.loads(line[7:])
     record = next((r for r in bench.firebreak_records().values()
                    if r.get("egress_allowlist_requested")), None)
     egress = (record or {}).get("enforcement", {}).get("egress_allowlist", {})
     network = (record or {}).get("enforcement", {}).get("network", {})
-    passed = (egress.get("status") == "not_enforced"
-              and network.get("status") == "not_enforced")
+
+    loopback_contained = (reached.get("loopback") != "REACHED" and not received)
+    # The allowlist named api.example.com and nothing else. If any other
+    # destination was reached, the record must not call the allowlist enforced.
+    allowlist_honest = (egress.get("status") != "enforced"
+                        if reached.get("internet") == "REACHED" else True)
+    network_honest = (network.get("status") == "enforced") == loopback_contained
+    passed = loopback_contained and allowlist_honest and network_honest
+
+    note = ("Loopback is contained -- the sandbox has its own network namespace, "
+            "so a destination the allowlist never named is now out of reach "
+            "whether or not anything filters destinations. The internet was "
+            "still reached, and the record says egress_allowlist not_enforced, "
+            "which is the honest description of a NAT that does not filter. "
+            "That half becomes a containment assertion when Stage C lands.")
+    if not passed:
+        problems = []
+        if not loopback_contained:
+            problems.append("the sandbox reached the host's loopback, which the "
+                            "allowlist never named")
+        if not allowlist_honest:
+            problems.append("an un-allowlisted internet destination was reached "
+                            "while the allowlist was described as enforced")
+        if not network_honest:
+            problems.append("the record's network status does not match what the "
+                            "sandbox could actually reach")
+        note = "; ".join(problems)
+
     report(name,
-           "an egress allowlist naming exactly one host does not stop the sandbox "
-           "reaching a destination that is not on it -- and the session record "
-           "refuses to describe either the allowlist or the posture as enforced",
+           "an egress allowlist naming one host does not let the sandbox reach "
+           "the host's loopback, and any destination it CAN still reach is "
+           "described honestly rather than as enforced",
            f"$ shadowfetch-firebreak run --net allow --egress-host api.example.com "
-           f"-- python3 (connect to 127.0.0.1:{port})\n"
-           f"rc = {proc.returncode}   stdout = {proc.stdout.strip()!r}\n"
-           f"bytes delivered to the un-allowlisted destination: {received}\n"
+           f"-- python3 (loopback 127.0.0.1:{port}, internet 1.1.1.1:443)\n"
+           f"rc = {proc.returncode}\n"
+           f"what the sandbox reached: {json.dumps(reached, sort_keys=True)}\n"
+           f"bytes delivered to the loopback listener: {received}\n"
            f".session egress_allowlist_requested = "
            f"{json.dumps((record or {}).get('egress_allowlist_requested'))}\n"
            f".session enforcement.egress_allowlist = "
            f"{json.dumps(egress, sort_keys=True)}\n"
            f".session enforcement.network = {json.dumps(network, sort_keys=True)}",
-           passed,
-           note=("THE ACTION WAS NOT PREVENTED: the sandbox opened a connection to "
-                 "a destination the allowlist never named and delivered bytes to "
-                 "it. This PASSES only because Firebreak records both the "
-                 "allowlist and the posture as not_enforced, with the reason. "
-                 "Egress filtering is Phase 4."
-                 if passed else
-                 "the allowlist or the posture was described as enforced while an "
-                 "un-allowlisted destination was reached"))
+           passed, note=note)
 
 
 # --------------------------------------------------------------------------- #
