@@ -198,9 +198,30 @@ def fingerprint(store, mid=None):
     }
 
 
+ANCHOR_BLINDED = False
+
+
+def _cli_argv(args):
+    """The command that runs the CLI, blinded if blind_anchor() is active.
+
+    A subprocess resolves the real absolute journalctl, so an in-process patch
+    of JOURNALCTL_PATHS never reached it and the child reported the anchor as
+    readable. This carries the same patch into the child. Deliberately NOT an
+    environment variable the engine honours: that would hand an attacker back
+    the control that resolving by absolute path just removed.
+    """
+    if not ANCHOR_BLINDED:
+        return [sys.executable, str(MISSIONS_CLI), *args]
+    engine = str(Path(MISSIONS_CLI).resolve().parent.parent / "lib/shadowfetch/missions")
+    code = ("import sys; sys.path.insert(0, %r);"
+            "import sf_audit; sf_audit.JOURNALCTL_PATHS = ();"
+            "import sf_missions; sys.exit(sf_missions.main())" % engine)
+    return [sys.executable, "-c", code, *args]
+
+
 def cli(*args):
     """Run the real CLI against the throwaway store. (exit, stdout, stderr)."""
-    done = subprocess.run([sys.executable, str(MISSIONS_CLI), *args],
+    done = subprocess.run(_cli_argv(args),
                           capture_output=True, text=True, timeout=120,
                           env=dict(os.environ))
     return done.returncode, done.stdout, done.stderr
@@ -216,13 +237,25 @@ def blind_anchor():
     prove that the code branches; removing the binary proves that the branch is
     the one a host without a journal actually takes.
     """
-    saved = os.environ.get("PATH", "")
+    saved_path = os.environ.get("PATH", "")
+    saved_paths = sf_audit.JOURNALCTL_PATHS
     empty = tempfile.mkdtemp(prefix="sf-attack-nopath-")
+    # Emptying PATH is no longer enough, and that is deliberate: sf_audit
+    # resolves journalctl by ABSOLUTE path, because a uid that controls PATH
+    # controlled what the verifier believed the journal said. Point the absolute
+    # candidates at a directory with no journalctl in it instead -- the real
+    # lookup still runs and finds nothing, which is the branch a host without a
+    # journal genuinely takes.
+    global ANCHOR_BLINDED
     os.environ["PATH"] = empty
+    sf_audit.JOURNALCTL_PATHS = (os.path.join(empty, "journalctl"),)
+    ANCHOR_BLINDED = True
     try:
         yield
     finally:
-        os.environ["PATH"] = saved
+        ANCHOR_BLINDED = False
+        os.environ["PATH"] = saved_path
+        sf_audit.JOURNALCTL_PATHS = saved_paths
         shutil.rmtree(empty, ignore_errors=True)
 
 

@@ -27,6 +27,25 @@ import socket
 import subprocess
 
 AUDIT_IDENTIFIER = "shadowfetch-audit"
+
+# journalctl is resolved by ABSOLUTE PATH and never through PATH. The verifier
+# asks this program what the journal says, and a normal desktop uid controls
+# PATH -- on a stock install ~/.local/bin is writable and precedes /usr/bin. A
+# shadowed journalctl turned a truncated log into "chain intact, external anchor
+# agrees", exit 0. That is not a denial of service, it is a forged clean bill of
+# health through the one mechanism the anchor exists to provide.
+#
+# Ordered by how a Debian system actually ships it. If none exists the anchor
+# reports itself unreadable, which is the honest answer and is not a pass.
+JOURNALCTL_PATHS = ("/usr/bin/journalctl", "/bin/journalctl", "/usr/sbin/journalctl")
+
+
+def journalctl_binary():
+    """The absolute path of a real journalctl, or None."""
+    for candidate in JOURNALCTL_PATHS:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
 SYSLOG_SOCKET = "/dev/log"
 
 # authpriv.notice. authpriv because an audit trail is security-relevant and
@@ -157,21 +176,33 @@ def read_head(chain: str, *, identifier: str = AUDIT_IDENTIFIER,
               # been mirroring, which is worth seeing even though the common
               # case -- the attacker holding the mission uid -- looks identical
               # to the engine here.
-              "uids": set(), "store": store, "chain": chain}
+              "uids": set(), "foreign_store_entries": 0,
+              "store": store, "chain": chain}
     if not chain:
         result["reason"] = (
             "this database has no chain id, so its entries cannot be told apart "
             "from another database mirroring to the same identifier")
         return result
     try:
+        binary = journalctl_binary()
+        if binary is None:
+            result["reason"] = (
+                "no journalctl exists at any of " + ", ".join(JOURNALCTL_PATHS)
+                + ", so the external anchor cannot be read. It is deliberately NOT "
+                "looked up on PATH: this user controls PATH and would then control "
+                "what the verifier believes the journal said")
+            return result
         done = subprocess.run(
             # -o json, not -o cat. `cat` returns MESSAGE alone and discards
             # everything journald knows about the writer, which left the
             # ordering that "earliest wins" depends on resting on output order,
             # and left the sender-supplied fields inside MESSAGE as the only
             # thing to reason about.
-            ["journalctl", "-t", identifier, "-o", "json", "--no-pager",
+            [binary, "-t", identifier, "-o", "json", "--no-pager",
              "-n", str(limit)],
+            # A clean environment: PATH is not consulted for the binary above,
+            # and is not inherited into it either.
+            env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"},
             capture_output=True, text=True, timeout=30)
     except FileNotFoundError:
         result["reason"] = "journalctl is not installed, so the external anchor cannot be read"
@@ -220,6 +251,15 @@ def read_head(chain: str, *, identifier: str = AUDIT_IDENTIFIER,
         if entry.get("_uid") is not None:
             result["uids"].add(entry["_uid"])
         if not isinstance(entry, dict) or not isinstance(entry.get("seq"), int):
+            continue
+        # A line for OUR chain that was mirrored by a different store. A
+        # database copied to a new path keeps its chain id but changes store, and
+        # read_head used to accept those lines as its own -- so a copy verified
+        # clean and a re-mint was defeated by relocating the database, both of
+        # which store_identity()'s own docstring said would be reported.
+        if store and entry.get("chain") == chain and entry.get("store") \
+                and entry.get("store") != store:
+            result["foreign_store_entries"] = result.get("foreign_store_entries", 0) + 1
             continue
         if entry.get("chain") != chain:
             # Another chain id. If it was mirrored by THIS store, that is the

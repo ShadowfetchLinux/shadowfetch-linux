@@ -100,6 +100,82 @@ measurement includes mission creation. The "1444× improvement" claim compared
 against a baseline that was not remeasured and **has been withdrawn**. What is
 demonstrably true: the worker is event-driven rather than polling.
 
+
+## Step 16 — the independent final attack pass
+
+Four independent attackers, each on a distinct angle, run against the hardened
+tree. They found **six** things. All six are fixed; the two most serious are
+recorded here because both were introduced or missed by this phase itself.
+
+### Fixed: the anchor was read through PATH (CRITICAL)
+
+`sf_audit` invoked `journalctl` by bare name. A normal desktop uid controls
+`PATH` — and on this very box `~/.local/bin` is user-writable and precedes
+`/usr/bin`. A shadowed `journalctl` moved a truncated log from
+`exit 1 / anchor 'truncated'` to `exit 0 / anchor 'agrees'`, printing
+*"chain intact, external anchor agrees"*.
+
+That is not the denial of service already documented. It is a **forged clean
+bill of health**, obtained through the one mechanism the whole anchor exists to
+provide, by a user with no privilege at all. It is now resolved from a fixed
+list of absolute paths and run with a clean environment; if no journalctl is
+found the anchor reports itself unreadable, which is exit 2 and not a pass.
+Verified with the real attack (`tools/probes/path_attack.py`).
+
+### Fixed: the retry budget trusted numbers the attacker controls (HIGH)
+
+Two ways through. `transition(mid, "queued", attempt=0)` handed the guard the
+**caller's own** counter, and `attempt` is an unwitnessed column, so resetting it
+bought unlimited retries. `Store.attempts_taken()` now counts the chained
+`retry-queued` events and takes the **higher** of that and the column — an
+attacker can lower the column and cannot lower the chain.
+
+### Fixed: the store binding was largely illusory (HIGH)
+
+`store_identity()`'s docstring said a copied database "will have no journal
+history". `read_head()` filtered by chain id alone, so a byte-for-byte copy at a
+new path verified clean and a re-mint was defeated simply by relocating the
+database. Lines mirrored by a different store are no longer adopted as this
+store's own.
+
+Also fixed: `audit verify --json` — the flag written *after* the subcommand,
+where anyone would naturally put it — was not recognised as JSON mode at all.
+
+### The harnesses had to change with it
+
+Three attacks blinded the anchor by emptying `PATH`. That no longer works, which
+is the point. They now empty the absolute-path candidate list, and carry that
+patch into the CLI child process — the simulation had been stopping at the
+process boundary, so the child was quietly reporting a readable anchor.
+
+### Confirmed still open, and worse than first described
+
+**Migration trust-on-first-use launders fabricated history.** An attacker who
+seeds fabricated `completed` missions with no events into a genuine *pre-v4*
+database **before its first 4.0.0 run** gets the engine to pin those rows as
+authentic pre-chain history. The pin is then a real engine-appended, real
+engine-mirrored event; the chain and the journal are never touched, and verify
+reports `exit 0 / states agrees / anchor agrees` **with a fully working
+journal**. The documented claim "fabricate a mission with no events →
+MISSING_HISTORY, exit 1" holds only for a database that is already v4.
+
+This is the honest ceiling of trust-on-first-use, and `pin_legacy_missions()`
+says so in its own docstring — but the risk was understated here and is
+corrected now. Closing it needs provenance from before this build existed, which
+by definition does not exist; the practical mitigation is to upgrade a database
+on a host the operator controls, and that is an operational instruction, not a
+mechanism.
+
+**A deleted mission row orphans its events silently.** `verify_states()` replays
+only missions that still exist, so deleting the `missions` row of a mission that
+really ran — leaving its chained and mirrored events in place — passes at exit 0.
+Making a mission disappear is undetected; inventing one is not.
+
+**A forged approval is honoured at runtime on a journal-less host.**
+`require_approval` trusts the local chain and never consults the anchor, so a
+self-consistent forged `approval-granted` tail plus a matching row is executed.
+On a journaled host the later `audit verify` catches it as an anchor conflict.
+
 ## Recommended Phase 4 first commit
 
 **Chain the domain tables**, starting with `tool_executions`. It is the largest

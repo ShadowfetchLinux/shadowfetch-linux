@@ -105,6 +105,8 @@ MAX_ATTEMPTS = 3
 
 
 def requeue_refusal(event, attempt):
+    # NOTE: callers must pass an attempt they did not take on trust. See
+    # Store.attempts_taken(), which reads the CHAIN rather than the column.
     """Why this edge may not requeue execution, or None.
 
     The budget started inside Store.retry(). Phase 3 moved it into
@@ -2126,6 +2128,26 @@ class Store:
         with self.db() as db:
             db.execute("UPDATE missions SET " + ",".join(k + "=?" for k in fields) + " WHERE id=?", [*fields.values(), mid])
 
+    def attempts_taken(self, db, mid):
+        """How many attempts this mission has actually had.
+
+        The `attempt` column is unwitnessed, so resetting it bought unlimited
+        retries; and transition() used to accept the CALLER'S attempt kwarg, so
+        transition(mid, "queued", attempt=0) walked straight past the budget.
+
+        The chain knows: every requeue appends a retry-queued event, and those
+        cannot be removed without breaking the hash chain. The first run is
+        attempt 1, so the count of retry-queued events plus one is the number of
+        attempts taken. The column is still consulted and the HIGHER of the two
+        wins -- an attacker can lower the column and cannot lower the chain.
+        """
+        chained = db.execute(
+            "SELECT COUNT(*) FROM events WHERE mission=? AND event='retry-queued'",
+            (mid,)).fetchone()[0]
+        row = db.execute("SELECT attempt FROM missions WHERE id=?", (mid,)).fetchone()
+        stored = (row["attempt"] if row else 0) or 0
+        return max(int(stored), int(chained) + 1)
+
     def transition(self, mid, target, *, detail=None, actor=ACTOR_ORCHESTRATOR,
                    expect=None, **fields):
         """Move a mission to `target`, or refuse and change nothing.
@@ -2163,10 +2185,10 @@ class Store:
             allowed, event, reason = transition_allowed(current, target)
             if not allowed:
                 raise TransitionError(f"Refused {current} -> {target}: {reason}")
-            attempt = fields.get("attempt")
-            if attempt is None:
-                attempt = db.execute("SELECT attempt FROM missions WHERE id=?",
-                                     (mid,)).fetchone()["attempt"]
+            # NOT fields.get("attempt"): the caller's own number was taken on
+            # trust, so transition(mid, "queued", attempt=0) walked past the
+            # budget entirely.
+            attempt = self.attempts_taken(db, mid)
             refusal = requeue_refusal(event, attempt)
             if refusal:
                 # RECORDED, then refused. A budget that stops a retry silently
@@ -2214,8 +2236,7 @@ class Store:
             # The same budget transition() enforces. This method reached the
             # legitimate failed -> queued edge and requeued a mission already at
             # the ceiling, because the guard was written into the other verb.
-            attempt = db.execute("SELECT attempt FROM missions WHERE id=?",
-                                 (mid,)).fetchone()["attempt"]
+            attempt = self.attempts_taken(db, mid)
             refusal = requeue_refusal(event, attempt)
             if refusal:
                 # Recorded, then refused, exactly as transition() does it: the
@@ -4404,6 +4425,10 @@ def audit_exit_code(report):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    # --json is accepted BEFORE or AFTER the subcommand. Written after -- which
+    # is where anyone would naturally put it -- it used to be swallowed as an
+    # unknown argument, so `audit verify --json` was not JSON mode at all and
+    # returned a different exit code from the documented one.
     parser.add_argument("--json", action="store_true", help="Machine-readable JSON output")
     parser.add_argument("--version", action="version", version="shadowfetch-missions " + VERSION)
     sub = parser.add_subparsers(dest="command", required=True)
