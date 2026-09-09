@@ -148,6 +148,7 @@ attacks:
 	python3 tools/attacks/attack_lifecycle.py
 	python3 tools/attacks/attack_concurrency.py
 	python3 tools/attacks/attack_verifier.py
+	python3 tools/attacks/attack_domain.py
 
 source-gate:
 	@test -x $(SOURCE_GATE) || { echo "Missing source gate: $(SOURCE_GATE)" >&2; exit 1; }

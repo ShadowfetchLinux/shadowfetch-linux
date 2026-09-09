@@ -64,6 +64,97 @@ APPROVAL_WITNESSED_FIELDS = ("approval", "subject", "scope_sha256", "granted_by"
                              "method", "granted_at", "expires_at", "reason")
 
 
+class DomainWitness:
+    """Which event commits a domain record, and which of its facts that event
+    covers. `closing` names the event that represents the record's one
+    legitimate later mutation, if it has one."""
+
+    __slots__ = ("table", "key", "event", "immutable", "closing", "closed",
+                 "closed_when")
+
+    def __init__(self, table, key, event, immutable, closing=None, closed=(),
+                 closed_when=None):
+        self.table, self.key, self.event = table, key, event
+        self.immutable, self.closing, self.closed = immutable, closing, closed
+        # The column that says the later mutation has happened. Without it the
+        # closing digest would be checked against rows that have not closed yet.
+        self.closed_when = closed_when
+
+
+# Every security-relevant domain record in one place. A receipt reprints these
+# rows as fact, and until Stage A they were directly editable while the chain
+# still verified -- so the audit could be intact over a receipt that lied about
+# which executable ran, what the sandbox enforced, or whether the tests passed.
+#
+# Deliberately ONE table rather than six digest sites: six hand-written sites
+# are six chances to forget a field, which is how the approval witness came to
+# cover scope_sha256 and nothing else.
+DOMAIN_WITNESSES = (
+    DomainWitness(
+        "agent_sessions", "id", "session-opened",
+        # What was true when the process started, and cannot honestly change.
+        ("id", "mission_id", "task_id", "provider_id", "provider_version",
+         "provider_trust", "attempt", "executable", "executable_trust",
+         "requested_sandbox", "effective_sandbox", "enforcement",
+         "credentials_requested", "credentials_granted", "read_grants",
+         "network_requested", "egress_requested", "network_effective",
+         "command", "started_at"),
+        closing="session-closed", closed_when="ended_at",
+        # How it ended. Written once, later, and witnessed by its own event.
+        closed=("id", "ended_at", "exit_code", "outcome", "firebreak_session")),
+    DomainWitness(
+        "tool_executions", "id", "tool-observed",
+        # args_redacted is covered as well as args_digest: the digest identifies
+        # what ran, and the redacted form is what a person actually reads.
+        ("id", "session_id", "seq", "at", "tool", "args_redacted", "args_digest",
+         "requested_action", "decision", "approval_id", "started_at", "ended_at",
+         "exit_status", "result_digest", "bytes_changed", "files_changed")),
+    DomainWitness(
+        "test_runs", "id", "test-run",
+        ("id", "mission_id", "task_id", "command", "executable", "sandbox_mode",
+         "network_requested", "network_effective", "enforcement", "guard_state",
+         "started_at", "duration_ms", "exit_code", "log_path", "result")),
+    DomainWitness(
+        "git_changes", "id", "git-structure-recorded",
+        # Every structural finding, because these are precisely the fields a
+        # reviewer reads to decide whether a change installs host execution.
+        ("id", "mission_id", "repo_path", "head_before", "head_after",
+         "refs_changed", "remotes_changed", "hooks_changed", "exec_config_keys",
+         "mode_changes", "symlink_changes", "new_executables",
+         "build_entrypoints", "observed_at")),
+    DomainWitness(
+        "reviews", "id", "review-opened",
+        ("id", "mission_id", "requested_at", "summary", "diff_path",
+         "diff_truncated", "blast_radius"),
+        # "reviewed" keeps its existing name: its detail is the bare decision,
+        # which consumers already read as a machine value.
+        closing="reviewed", closed_when="decided_at",
+        # WHO decided and WHAT they decided -- the human half of the record.
+        closed=("id", "decided_at", "decision", "decided_by")),
+    DomainWitness(
+        "artifacts", "id", "artifact-recorded",
+        ("id", "mission_id", "task_id", "path", "sha256", "bytes", "kind",
+         "created_at")),
+)
+DOMAIN_BY_TABLE = {w.table: w for w in DOMAIN_WITNESSES}
+DOMAIN_BY_EVENT = {w.event: w for w in DOMAIN_WITNESSES}
+DOMAIN_BY_CLOSING = {w.closing: w for w in DOMAIN_WITNESSES if w.closing}
+
+
+def domain_digest(fields, record):
+    """One digest over a domain record's declared facts.
+
+    Values are stringified, and a NULL is distinguished from the string "None"
+    by mapping it to a sentinel -- otherwise a column set to the literal text
+    "None" would collide with one that was never set.
+    """
+    payload = {}
+    for name in fields:
+        value = record.get(name)
+        payload[name] = None if value is None else str(value)
+    return hashlib.sha256(b"sf-domain-v1" + canonical(payload)).hexdigest()
+
+
 # The transition table. Every edge names the reason it exists, and that reason
 # is what a refusal quotes back -- a person who is told "a completed mission
 # cannot run again" can act on it; "invalid state" cannot be acted on.
@@ -470,7 +561,7 @@ def difference(before, after):
     """Historical text rendering of a workspace change set; see git_change for structure."""
     return git_change(before, after).text
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 """Operational-state schema version, stored in PRAGMA user_version.
 
 v0/v1  the 4.0.0 shape: mission kind only, provider identity buried in the
@@ -492,7 +583,15 @@ ACTOR_WORKER = "worker"
 # Fields covered by an event's hash, in a fixed order. seq is included, so
 # reordering or renumbering rows is detectable and not merely implausible.
 HASHED_FIELDS = ("seq", "at", "mission", "task_id", "session_id",
-                 "tool_execution_id", "actor", "event", "detail")
+                 "tool_execution_id", "actor", "event", "detail",
+                 "record_sha256")
+
+# Fields added to HASHED_FIELDS after rows already existed. They are omitted
+# from the hashed payload when NULL, so a row written before the field keeps the
+# hash it was written with and a chain that is honest does not break on upgrade.
+# Rows written after it ARE covered, and moving the value either way -- clearing
+# it on a new row, setting it on an old one -- changes the hash and is detected.
+LATE_HASHED_FIELDS = ("record_sha256",)
 
 
 def canonical(payload: dict) -> bytes:
@@ -511,6 +610,9 @@ def event_hash(prev_hash: str, row: dict) -> str:
     """sha256(prev_hash || canonical(row)). Chaining is what makes a single
     altered row invalidate everything after it."""
     payload = {k: row.get(k) for k in HASHED_FIELDS}
+    for late in LATE_HASHED_FIELDS:
+        if payload.get(late) is None:
+            payload.pop(late, None)
     return hashlib.sha256((prev_hash or "").encode("utf-8") + canonical(payload)).hexdigest()
 
 
@@ -637,6 +739,12 @@ CREATE INDEX IF NOT EXISTS git_changes_mission ON git_changes(mission_id);
 
 # Columns added to tables that already existed. Adding rather than rewriting is
 # the whole migration strategy: a v2 reader keeps seeing exactly what it saw.
+# Additive, like every migration in this tree: a column nobody wrote is NULL,
+# and event_hash omits a NULL late field so existing chains keep verifying.
+V5_ADDED_COLUMNS = {
+    "events": (("record_sha256", "TEXT"),),
+}
+
 V3_ADDED_COLUMNS = {
     "missions": (("approval_id", "TEXT"),),
     "events": (("task_id", "TEXT"), ("session_id", "TEXT"),
@@ -754,11 +862,30 @@ class Store:
                 for column, kind in columns:
                     if column not in present:
                         db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+            # Column additions from LATER versions land here too, before any
+            # event is appended: a fresh database migrates v0 -> current in one
+            # pass, and start_chain() writes the genesis, so a column added
+            # after this line does not exist when that row is written.
+            if version < 5:
+                for table, columns in V5_ADDED_COLUMNS.items():
+                    present = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+                    for column, kind in columns:
+                        if column not in present:
+                            db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
             self.start_chain(db, from_version=version)
         if version < 4:
             # After start_chain(), so the pin is itself a chained event. An
             # upgrade from v3 already has a chain; one from v1/v2 just got one.
             self.pin_legacy_missions(db, from_version=version)
+        if version < 5:
+            # The v3->v5 upgrade path: a database that already has a chain adds
+            # the column here, and its existing rows keep their hashes because
+            # event_hash omits a NULL late field.
+            for table, columns in V5_ADDED_COLUMNS.items():
+                present = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+                for column, kind in columns:
+                    if column not in present:
+                        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
         db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         # Mirrored by __init__ once this transaction has committed; mirroring a
         # row that a later failure rolls back would anchor an event that never
@@ -906,7 +1033,8 @@ class Store:
             db.close()
 
     def _append(self, db, *, mission, event, detail="", actor=ACTOR_ORCHESTRATOR,
-                task_id=None, session_id=None, tool_execution_id=None, at=None):
+                task_id=None, session_id=None, tool_execution_id=None, at=None,
+                record_sha256=None):
         """Append one chained event. THE only INSERT into events.
 
         seq is chosen explicitly rather than left to AUTOINCREMENT because the
@@ -930,15 +1058,16 @@ class Store:
             "actor": actor,
             "event": event,
             "detail": clean(detail)[:10000],
+            "record_sha256": record_sha256,
         }
         prev = (head["hash"] if head and head["hash"] else GENESIS_PREV)
         row["prev_hash"] = prev
         row["hash"] = event_hash(prev, row)
         db.execute(
             "INSERT INTO events(seq,mission,at,event,detail,task_id,session_id,"
-            "tool_execution_id,actor,prev_hash,hash) "
+            "tool_execution_id,actor,prev_hash,hash,record_sha256) "
             "VALUES(:seq,:mission,:at,:event,:detail,:task_id,:session_id,"
-            ":tool_execution_id,:actor,:prev_hash,:hash)", row)
+            ":tool_execution_id,:actor,:prev_hash,:hash,:record_sha256)", row)
         return row
 
     def append_event(self, mission, event, detail="", **correlation):
@@ -1009,6 +1138,10 @@ class Store:
                 task_id=(row["task_id"] if row else None),
                 session_id=session_id, tool_execution_id=tid,
                 actor="provider",
+                record_sha256=domain_digest(
+                    DOMAIN_BY_TABLE["tool_executions"].immutable,
+                    dict(db.execute("SELECT * FROM tool_executions WHERE id=?",
+                                    (tid,)).fetchone())),
                 detail=f"{tool}: {requested_action or 'no action reported'}")
         self.mirror(appended)
         return tid
@@ -1062,6 +1195,10 @@ class Store:
                  exit_code, str(log_path) if log_path else None, result))
             row = self._append(db, mission=mission_id, event="test-run",
                                task_id=task_id,
+                               record_sha256=domain_digest(
+                                   DOMAIN_BY_TABLE["test_runs"].immutable,
+                                   dict(db.execute("SELECT * FROM test_runs WHERE id=?",
+                                                   (rid,)).fetchone())),
                                detail=f"exit {exit_code} in {duration_ms}ms: "
                                       + " ".join(str(c) for c in command)[:300])
         self.mirror(row)
@@ -1108,6 +1245,10 @@ class Store:
                 if delta.get(key))
             row = self._append(
                 db, mission=mission_id, event="git-structure-recorded",
+                record_sha256=domain_digest(
+                    DOMAIN_BY_TABLE["git_changes"].immutable,
+                    dict(db.execute("SELECT * FROM git_changes WHERE id=?",
+                                    (gid,)).fetchone())),
                 detail=("structural changes: " + ", ".join(structural)) if structural
                        else "no structural repository change")
         self.mirror(row)
@@ -1145,6 +1286,10 @@ class Store:
                  str(diff_path) if diff_path else None, 1 if diff_truncated else 0,
                  json.dumps(blast_radius or {})))
             row = self._append(db, mission=mission_id, event="review-opened", at=at,
+                               record_sha256=domain_digest(
+                                   DOMAIN_BY_TABLE["reviews"].immutable,
+                                   dict(db.execute("SELECT * FROM reviews WHERE id=?",
+                                                   (rid,)).fetchone())),
                                detail="awaiting a human decision")
         self.mirror(row)
         return rid
@@ -1160,6 +1305,18 @@ class Store:
                 return None
             db.execute("UPDATE reviews SET decided_at=?,decision=?,decided_by=? "
                        "WHERE id=?", (at, decision, decided_by, row["id"]))
+            # The decision and its event, in ONE transaction. The caller used to
+            # append "reviewed" separately afterwards, so an interruption
+            # between them left a decided review that the log did not record --
+            # and the decision is the human half of the whole audit trail.
+            witness = DOMAIN_BY_TABLE["reviews"]
+            decided = dict(db.execute("SELECT * FROM reviews WHERE id=?",
+                                      (row["id"],)).fetchone())
+            appended = self._append(
+                db, mission=mission_id, event="reviewed", actor=ACTOR_USER, at=at,
+                record_sha256=domain_digest(witness.closed, decided),
+                detail=decision)
+        self.mirror(appended)
         return row["id"]
 
     def reviews(self, mission_id):
@@ -1180,12 +1337,30 @@ class Store:
 
     # ------------------------------------------------- artifacts -----
     def record_artifact(self, mission_id, *, task_id, path, sha256, size, kind):
+        """An artifact, and the chained event that commits its existence.
+
+        This wrote a row and NO event at all, which docs/AUDIT_EVENTS.md already
+        listed as a gap: an artifact's path and digest are reprinted on the
+        receipt, and nothing recorded that the engine had produced them. One
+        transaction, like every other record/event pair.
+        """
         aid = "art-" + uuid.uuid4().hex[:16]
+        at = now()
         with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
             db.execute(
                 "INSERT INTO artifacts(id,mission_id,task_id,path,sha256,bytes,"
                 "kind,created_at) VALUES(?,?,?,?,?,?,?,?)",
-                (aid, mission_id, task_id, str(path), sha256, size, kind, now()))
+                (aid, mission_id, task_id, str(path), sha256, size, kind, at))
+            appended = self._append(
+                db, mission=mission_id, event="artifact-recorded", task_id=task_id,
+                at=at,
+                record_sha256=domain_digest(
+                    DOMAIN_BY_TABLE["artifacts"].immutable,
+                    dict(db.execute("SELECT * FROM artifacts WHERE id=?",
+                                    (aid,)).fetchone())),
+                detail=f"{kind}: {escape_path(path)} ({size} bytes)")
+        self.mirror(appended)
         return aid
 
     def artifacts(self, mission_id):
@@ -1575,8 +1750,12 @@ class Store:
                  json.dumps(list(credentials_granted)), json.dumps(list(read_grants)),
                  network_requested, json.dumps(list(egress_requested)),
                  network_effective, executable, executable_trust, command, at))
+            witness = DOMAIN_BY_TABLE["agent_sessions"]
+            stored = dict(db.execute("SELECT * FROM agent_sessions WHERE id=?",
+                                     (sid,)).fetchone())
             row = self._append(db, mission=mission_id, event="session-opened",
                                task_id=task_id, session_id=sid, at=at,
+                               record_sha256=domain_digest(witness.immutable, stored),
                                detail=f"{provider_id} {provider_version or ''} "
                                       f"attempt {attempt}".strip())
         self.mirror(row)
@@ -1597,8 +1776,12 @@ class Store:
                 (at, exit_code, outcome,
                  json.dumps(usage) if usage is not None else None,
                  firebreak_session, session_id))
+            witness = DOMAIN_BY_TABLE["agent_sessions"]
+            closed = dict(db.execute("SELECT * FROM agent_sessions WHERE id=?",
+                                     (session_id,)).fetchone())
             appended = self._append(db, mission=row["mission_id"], event="session-closed",
                                     task_id=row["task_id"], session_id=session_id, at=at,
+                                    record_sha256=domain_digest(witness.closed, closed),
                                     detail=f"exit {exit_code}; {outcome or 'no outcome recorded'}")
         self.mirror(appended)
 
@@ -1968,7 +2151,88 @@ class Store:
         if report["states"]["problems"]:
             report["problems"].extend(report["states"]["problems"])
             report["ok"] = False
+
+        # The rows the RECEIPT quotes. Kept as its own verdict, because "the log
+        # verifies", "the mission rows agree with it" and "the records it cites
+        # are the ones that were recorded" are three different claims.
+        report["domain"] = self.verify_domain_records(rows)
+        if report["domain"]["problems"]:
+            report["problems"].extend(report["domain"]["problems"])
+            report["ok"] = False
         return report
+
+    def verify_domain_records(self, rows=None):
+        """Compare every domain row against the event that committed it.
+
+        The chain proves no EVENT was altered and verify_states() proves the
+        mission rows agree with it. These tables were the remaining gap: a
+        receipt reprints which executable ran, what the sandbox enforced, which
+        tools ran under which decision and whether the tests passed, and all of
+        it was directly editable while the chain still verified.
+
+        A row with no committing event is reported the same way a mission with
+        no history is -- it was written by something other than the engine.
+        Rows that predate the digest (written before schema v5) carry no
+        record_sha256 on their event and are counted, not accused: the engine
+        genuinely did not record one, and calling that forgery would be the
+        false accusation this whole surface exists to avoid.
+        """
+        if rows is None:
+            with self.db() as db:
+                rows = [dict(r) for r in db.execute("SELECT * FROM events ORDER BY seq")]
+        witnessed, closing = {}, {}
+        for row in rows:
+            digest = row.get("record_sha256")
+            if not digest:
+                continue
+            if row["event"] in DOMAIN_BY_EVENT:
+                witnessed.setdefault((row["event"], digest), []).append(row["seq"])
+            if row["event"] in DOMAIN_BY_CLOSING:
+                closing.setdefault((row["event"], digest), []).append(row["seq"])
+
+        result = {"records": 0, "verified": 0, "unwitnessed": 0, "problems": [],
+                  "by_table": {}}
+        with self.db() as db:
+            for witness in DOMAIN_WITNESSES:
+                try:
+                    stored = [dict(r) for r in db.execute(
+                        "SELECT * FROM %s" % witness.table)]
+                except sqlite3.Error:
+                    continue            # a table this schema does not have yet
+                counts = {"rows": len(stored), "verified": 0, "unwitnessed": 0,
+                          "mismatched": 0}
+                for record in stored:
+                    result["records"] += 1
+                    digest = domain_digest(witness.immutable, record)
+                    if (witness.event, digest) in witnessed:
+                        counts["verified"] += 1
+                        result["verified"] += 1
+                    elif any(e == witness.event for (e, _d) in witnessed):
+                        counts["mismatched"] += 1
+                        result["problems"].append(
+                            f"{witness.table} {record.get(witness.key)!r}: no "
+                            f"{witness.event} event witnesses this row as it now "
+                            "stands. The receipt reprints it as fact; it was "
+                            "changed after it was recorded, or written outside "
+                            "the engine")
+                    else:
+                        # No witnessed event of this kind exists at all: either
+                        # this database predates the digest, or every one was
+                        # removed -- and a removed event breaks the chain, which
+                        # verify_chain reports on its own.
+                        counts["unwitnessed"] += 1
+                        result["unwitnessed"] += 1
+                    if witness.closing and record.get(witness.closed_when):
+                        shut = domain_digest(witness.closed, record)
+                        if any(e == witness.closing for (e, _d) in closing) \
+                                and (witness.closing, shut) not in closing:
+                            result["problems"].append(
+                                f"{witness.table} {record.get(witness.key)!r}: the "
+                                f"{witness.closing} event does not witness how this "
+                                "record ended as it now stands")
+                result["by_table"][witness.table] = counts
+        result["verdict"] = "disagrees" if result["problems"] else "agrees"
+        return result
 
     def verify_states(self, rows=None, *, first_chained_seq=None, chain_ok=True):
         """Replay every mission's event trail through the transition table.
@@ -4199,8 +4463,9 @@ def review(store, mid, decision):
         # would have made it worse. This is not a duplicate of the state event
         # -- "completed" is what the mission became, "reviewed" is what the
         # person chose, and a mission can reach "undone" from four states.
+        # decide_review() appends the "reviewed" event itself now, in the same
+        # transaction as the decision it records.
         store.decide_review(mid, decision, decided_by=f"uid:{os.getuid()}")
-        store.event(mid, "reviewed", decision, actor=ACTOR_USER)
         return store.get(mid)
 
 
@@ -4578,6 +4843,12 @@ def main(argv=None):
                 states = result.get("states") or {}
                 print(f"mission states    {states.get('verdict', 'unchecked')} "
                       f"({states.get('replayed', 0)} replayed against the transition table)")
+                domain = result.get("domain") or {}
+                print(f"domain records    {domain.get('verdict', 'unchecked')} "
+                      f"({domain.get('verified', 0)} of {domain.get('records', 0)} "
+                      f"witnessed by the event that recorded them"
+                      + (f", {domain['unwitnessed']} predate the digest"
+                         if domain.get("unwitnessed") else "") + ")")
                 print(f"head              seq {result['head_seq']} "
                       f"{(result['head'] or '')[:16]}")
                 print(f"external anchor   {anchor.get('verdict')} "
