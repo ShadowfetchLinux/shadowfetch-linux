@@ -45,12 +45,6 @@ import os
 import pwd
 import re
 import shutil
-
-# Only root-owned directories. PATH belongs to whoever launched us, and on a
-# stock install ~/.local/bin precedes /usr/bin and is writable by the desktop
-# user, so a program resolved through it cannot be trusted to report a security
-# fact about the machine.
-TRUSTED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 import subprocess
 import sys
 import tarfile
@@ -60,6 +54,47 @@ from pathlib import Path
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_VERSION = "4.0.0"
+
+
+# --------------------------------------------------------------------------- #
+# Trusted executables
+# --------------------------------------------------------------------------- #
+# PERMANENT INVARIANT: an executable whose output this file turns into a
+# statement about the machine is named by an explicit ABSOLUTE path, never
+# resolved through PATH -- and the child's PATH is pinned too, because
+# resolving the program is not enough when that program resolves its own
+# helpers through whatever it inherits.
+#
+# Two call sites in this file used shutil.which() and both were wrong in the
+# same way -- the directory that was CHECKED and the directory that ANSWERED
+# were not the same directory:
+#
+#   * `snapper` produces the restore-point listing an agent reads back. The
+#     which() was constrained to a fixed TRUSTED_PATH, but the exec that
+#     followed handed the bare name "snapper" to subprocess with the caller's
+#     own environment, so the real PATH chose the binary that the constrained
+#     lookup had approved. A `snapper` in ~/.local/bin answered a check that
+#     had only ever looked at /usr/bin.
+#   * the Passport is an attestation of this machine's security posture. Its
+#     candidate loop tried the BARE NAME "shadowfetch-passport" BEFORE the
+#     absolute path, so PATH won whenever it had an answer -- the exact
+#     opposite of what the comment beside it claimed.
+#
+# The snapper candidate list is deliberately the same list the update
+# authority uses (sfupdate.trusted.TRUSTED_PATHS): one set of places snapper
+# may live, not two. It is spelled out here rather than imported because
+# shadowfetch-fireline only Recommends the package that ships that module,
+# and an MCP server that refused to start without it would be a worse
+# failure than a listing that says it has no trusted snapper.
+_TRUSTED_SNAPPER = ("/usr/bin/snapper", "/usr/sbin/snapper",
+                    "/bin/snapper", "/sbin/snapper")
+_TRUSTED_PASSPORT = ("/usr/bin/shadowfetch-passport",)
+
+# The fixed PATH every child of this file gets. This is phoenix.trusted's
+# SAFE_PATH spelled out: /usr/local is NOT in it, because on a stock install
+# that is where unpackaged binaries are dropped and nothing this file runs is
+# expected to live there.
+TRUSTED_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 
 
 # --------------------------------------------------------------------------- #
@@ -783,8 +818,25 @@ class _ToolError(Exception):
 # --------------------------------------------------------------------------- #
 # Shared helpers
 # --------------------------------------------------------------------------- #
+def _trusted_env() -> dict:
+    """The environment every child of this file gets.
+
+    A fixed system PATH and no loader or shell-startup hooks. Resolving the
+    PROGRAM is not enough: shadowfetch-passport is a Python program and
+    `btrfs` is dynamically linked, so PYTHONPATH and LD_PRELOAD substitute
+    the program just as effectively as replacing the file would.
+    """
+    env = dict(os.environ)
+    env["PATH"] = TRUSTED_PATH
+    for hook in ("BASH_ENV", "ENV", "SHELLOPTS", "LD_PRELOAD",
+                 "LD_LIBRARY_PATH", "LD_AUDIT", "PYTHONPATH", "PYTHONSTARTUP"):
+        env.pop(hook, None)
+    return env
+
+
 def _run(cmd, timeout=20):
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                          env=_trusted_env())
 
 
 def _workspaces_root() -> Path:
@@ -841,18 +893,22 @@ def build_passport() -> Server:
             "(read-only; no identity, no upload, no changes).",
             {"type": "object", "properties": {}}, READ_ONLY)
     def _passport(args):
-        for cand in ("shadowfetch-passport", "/usr/bin/shadowfetch-passport"):
-            # Absolute paths first and PATH never: the Passport is an
-            # attestation of this machine's security posture that an agent then
-            # reads back, so anything able to set PATH for the MCP server could
-            # forge it. The same defect as the journalctl one, in another tool.
-            if Path(cand).exists() or shutil.which(cand, path=TRUSTED_PATH):
-                r = _run([cand, "--json"])
-                if r.returncode == 0 and r.stdout.strip():
-                    try:
-                        return json.dumps(json.loads(r.stdout), indent=2)
-                    except json.JSONDecodeError:
-                        return r.stdout
+        # Absolute path or nothing: the Passport is an attestation of this
+        # machine's security posture that an agent then reads back, so
+        # anything able to set PATH for the MCP server could forge it. The
+        # comment here used to say exactly that while the loop below it tried
+        # the BARE NAME FIRST -- PATH answered before /usr/bin ever did, and
+        # Path("shadowfetch-passport").exists() was a lookup in the current
+        # working directory. Same defect as the journalctl one, in another
+        # tool, hidden behind a correct comment.
+        passport = _trusted_tool(_TRUSTED_PASSPORT)
+        if passport is not None:
+            r = _run([passport, "--json"])
+            if r.returncode == 0 and r.stdout.strip():
+                try:
+                    return json.dumps(json.loads(r.stdout), indent=2)
+                except json.JSONDecodeError:
+                    return r.stdout
         # Degrade gracefully off a Shadowfetch system: a minimal, scrubbed view.
         vm = 0
         try:
@@ -884,11 +940,23 @@ def build_phoenix() -> Server:
             "List available Btrfs/snapper restore points (read-only).",
             {"type": "object", "properties": {}}, READ_ONLY)
     def _list(args):
-        if not shutil.which("snapper", path=TRUSTED_PATH):
+        # This listing is READ-ONLY and never names a restore target -- the
+        # number that reaches phoenix-restore comes from
+        # Fireproof1.RollbackTarget, not from here. It is still the recovery
+        # surface an agent reads, so the program that produces it is named by
+        # absolute path and classified, and the refusal says which it is:
+        # "not installed" and "installed but substitutable" are different
+        # facts, and reporting the second as the first would hide exactly the
+        # thing worth knowing.
+        snapper = _trusted_tool(_TRUSTED_SNAPPER)
+        if snapper is None:
+            if any(Path(cand).exists() for cand in _TRUSTED_SNAPPER):
+                return ("snapper is installed but is not a root-owned "
+                        "system binary, so this listing is not offered.")
             return "snapper is not installed; no restore points to list."
-        r = _run(["snapper", "--machine-readable", "csv", "list"])
+        r = _run([snapper, "--machine-readable", "csv", "list"])
         if r.returncode != 0:
-            r = _run(["snapper", "list"])
+            r = _run([snapper, "list"])
             return r.stdout or "no restore points found."
         return r.stdout or "no restore points found."
 

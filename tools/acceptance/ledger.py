@@ -106,10 +106,24 @@ class Ledger:
 
 
 def write_receipt(path: Path, receipt: dict[str, Any]) -> str:
-    """Write a receipt with its own digest over everything else in it."""
+    """Write a receipt with its own digest over everything else in it.
+
+    The digest is stamped into the CALLER'S receipt as well as the file. It was
+    computed over a private copy and returned, so the caller went on holding a
+    receipt with no digest in it -- and `_record()` reads
+    `receipt["receipt_sha256"]` to name the run in the manifest, so a case that
+    PASSED with sixteen checks against two running machines raised KeyError on
+    the way to being recorded. A receipt read back from disk carries the field;
+    one still in hand did not, and only the promotion path noticed.
+
+    Excluding the key from the body keeps it idempotent: stamping the caller's
+    dict cannot change the digest a second call computes.
+    """
     body = {key: value for key, value in receipt.items() if key != "receipt_sha256"}
+    digest = digest_of(body)
+    receipt["receipt_sha256"] = digest
     receipt = dict(body)
-    receipt["receipt_sha256"] = digest_of(body)
+    receipt["receipt_sha256"] = digest
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:

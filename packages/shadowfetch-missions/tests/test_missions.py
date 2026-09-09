@@ -470,6 +470,80 @@ class MissionTests(unittest.TestCase):
         self.assertFalse([d for d in directives if "EnvironmentFile" in d],
                          "the unit reads one provider's credential file by name")
 
+    def test_the_receipt_note_names_the_list_it_explains_and_nothing_else(self):
+        """This is the worst direction a stale string can point.
+
+        The note was a literal: "egress_allowlist and masked_paths are not
+        filtered or masked by Firebreak; no syscall profile is applied." Both of
+        the first two became enforced -- by nftables in the sandbox's own
+        network namespace and by mounts in its own mount namespace -- and the
+        sentence did not change, so the artifact a person reads before ACCEPTING
+        an agent's work told them to discount protection they had. It also named
+        two fields that were not in `declared_but_not_enforced` at all, which is
+        a note explaining a list it had stopped describing.
+        """
+        note = m.enforcement_note(["syscall_profile"])
+        self.assertIn("syscall_profile", note)
+        for gone in ("egress_allowlist", "masked_paths"):
+            self.assertNotIn(gone, note,
+                             "the note names a field that is not in the list")
+
+        # Every field in the list is named, and no field outside it is.
+        both = m.enforcement_note(["alpha_field", "beta_field"])
+        self.assertIn("alpha_field", both)
+        self.assertIn("beta_field", both)
+        self.assertNotIn("syscall_profile", both)
+
+        # An empty list must not read as a clean bill of health for the sandbox.
+        empty = m.enforcement_note([])
+        self.assertIn("declared", empty)
+        self.assertIn("not a claim", empty,
+                      "an empty gap list reads as 'nothing to worry about'")
+
+    def test_the_receipt_note_is_built_from_the_receipt_s_own_list(self):
+        """Not merely consistent today: derived, so it cannot drift again."""
+        mission = self.approved()
+        unenforced = m.unenforced_fields()
+        note = m.enforcement_note(unenforced)
+        for field in unenforced:
+            self.assertIn(field, note)
+        self.assertEqual(note, m.enforcement_note(list(unenforced)))
+        self.assertIsNotNone(mission)
+
+    def test_a_workspace_root_owned_by_someone_else_is_refused_at_the_boundary(self):
+        """Found on a QA base image: `~/Workspaces` owned by root, so the
+        desktop user could not create the checkpoint store and the first call
+        to touch it died with a raw
+        `PermissionError: '/home/<user>/Workspaces/.sf-checkpoints'` -- from
+        whichever call happened to be first, saying nothing about the cause.
+
+        Nothing in the packages creates that directory as root; the shipped
+        tool makes it as the invoking user. But an image, a restore or a stray
+        sudo can, and then every mission on that machine fails somewhere far
+        from the reason. This says the reason once, at the boundary, and does
+        not attempt a repair -- changing the ownership of a directory the
+        caller does not own is a privileged operation, and this codebase makes
+        those explicit rather than convenient.
+        """
+        foreign = self.base / "not-mine"
+        foreign.mkdir()
+        with patch.dict(os.environ, {"SHADOWFETCH_AGENT_WORKSPACES": str(foreign)}), \
+                patch.object(m.os, "getuid", lambda: os.stat(foreign).st_uid + 1):
+            with self.assertRaises(m.MissionError) as caught:
+                m.workspace_root()
+        message = str(caught.exception)
+        self.assertIn(str(foreign), message)
+        self.assertIn("belongs to uid", message)
+        self.assertIn("SHADOWFETCH_AGENT_WORKSPACES", message,
+                      "the refusal does not say what to do about it")
+
+    def test_a_root_that_does_not_exist_yet_is_not_a_refusal(self):
+        """It is created on first use; refusing here would break a fresh
+        install, which is the ordinary case."""
+        fresh = self.base / "not-created-yet"
+        with patch.dict(os.environ, {"SHADOWFETCH_AGENT_WORKSPACES": str(fresh)}):
+            self.assertEqual(m.workspace_root(), fresh.resolve())
+
     def test_secrets_are_redacted(self):
         with patch.dict(os.environ, {"CODEX_API_KEY": "private-test-credential"}):
             self.assertNotIn("private-test-credential", m.clean("key private-test-credential"))

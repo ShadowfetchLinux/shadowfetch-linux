@@ -26,6 +26,7 @@ test files pin the literal string.  Those sites are NOT enforced; the list makes
 that visible and makes any NEW unpinned site fail.
 """
 
+import ast
 import os
 import re
 import subprocess
@@ -151,26 +152,18 @@ PKEXEC_ABSOLUTE_EXEMPT = {
         "tools/iso_gate_4_0_0.py:817 and "
         "packages/shadowfetch-defaults/tests/test_workbench_3_5_0.py:158 "
         "assert the literal",
-    "packages/shadowfetch-control-center/data/usr/share/shadowfetch/"
-    "control-center/sfcc/workbench_page.py":
-        "packages/shadowfetch-control-center/tests/"
-        "test_privileged_invocation.py asserts the literal",
-    "packages/shadowfetch-control-center/data/usr/share/shadowfetch/"
-    "control-center/sfcc/software_page.py":
-        "packages/shadowfetch-control-center/tests/"
-        "test_privileged_invocation.py asserts the literal",
-    "packages/shadowfetch-welcome/src/shadowfetch-welcome":
-        "packages/shadowfetch-welcome/tests/test_catalog_actions.py:130 "
-        "asserts the literal",
+    # workbench_page.py, software_page.py and shadowfetch-welcome left this
+    # list by adopting the shared desktop library (W-30): none of them builds a
+    # privileged argv any more, so none of them names pkexec at all. Removing
+    # an entry is how a site leaves -- the test below fails if an entry names a
+    # site that has been fixed, which is what made these three visible.
     # Outside Stage V's file territory (shadowfetch-fireproof UI, and the
     # Control Center Ember page): recorded, not yet fixed.
     "packages/shadowfetch-fireproof/data/usr/bin/fireproof":
         "outside Stage V file territory",
     "packages/shadowfetch-fireproof/data/usr/bin/shadowfetch-fireproof":
         "outside Stage V file territory",
-    "packages/shadowfetch-control-center/data/usr/share/shadowfetch/"
-    "control-center/sfcc/ember_page.py":
-        "outside Stage V file territory",
+    # ember_page.py left this list too: it names pkexec nowhere now.
 }
 
 
@@ -179,10 +172,88 @@ class PkexecResolutionTests(unittest.TestCase):
 
     BARE = re.compile(r"""["'](pkexec)["']""")
 
+    # THREE SPELLINGS OF "pkexec" ARE NOT A PATH LOOKUP, and a line scanner
+    # cannot tell them apart from one that is:
+    #
+    #   "pkexec": ("/usr/bin/pkexec", "system")   the table that RESOLVES it
+    #   trusted_program("pkexec")                 a lookup INTO that table
+    #   "...PKEXEC back to the bare word "pkexec"..."   prose explaining the fix
+    #
+    # The third matters as much as the first two. This file's own `code_lines`
+    # docstring says why: the house style is to name the defect a change
+    # removed, so a scanner that cannot tell code from prose pushes the next
+    # author into deleting the explanation. It blanks whole-line comments and
+    # does not blank docstrings, and the shared desktop library's loader
+    # explains this exact defect in one.
+    RESOLVERS = ("trusted_program", "program")
+
+    @staticmethod
+    def _docstring_nodes(tree):
+        found = set()
+        for node in ast.walk(tree):
+            body = getattr(node, "body", None)
+            if isinstance(body, list) and body:
+                first = body[0]
+                if (isinstance(first, ast.Expr)
+                        and isinstance(first.value, ast.Constant)
+                        and isinstance(first.value.value, str)):
+                    found.add(id(first.value))
+        return found
+
+    def _bare_python_sites(self, path):
+        """Lines where a quoted `pkexec` really is a name for PATH to answer."""
+        try:
+            tree = ast.parse(read(path))
+        except SyntaxError:
+            return None                      # fall back to the line scanner
+        docstrings = self._docstring_nodes(tree)
+        allowed = set()
+        for node in ast.walk(tree):
+            # A lookup into the resolution table.
+            if isinstance(node, ast.Call):
+                name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+                if name in self.RESOLVERS:
+                    for arg in node.args:
+                        if isinstance(arg, ast.Constant):
+                            allowed.add(id(arg))
+            # A subscript INTO the table: PROGRAMS["pkexec"][0] is the
+            # absolute path being read out, which is the opposite of a lookup
+            # through PATH.
+            if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+                allowed.add(id(node.slice))
+            # The table itself: a key whose value names an absolute path.
+            if isinstance(node, ast.Dict):
+                for key, value in zip(node.keys, node.values):
+                    if not isinstance(key, ast.Constant):
+                        continue
+                    text = ast.dump(value)
+                    if "'/usr/" in text or "'/bin/" in text or "'/sbin/" in text:
+                        allowed.add(id(key))
+        lines = []
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Constant) and node.value == "pkexec"
+                    and id(node) not in allowed and id(node) not in docstrings):
+                lines.append(node.lineno)
+        # A docstring MENTIONS the word inside a longer string; the walk above
+        # only sees the whole docstring constant, so a mention is already gone.
+        return sorted(set(lines))
+
     def _bare_sites(self):
         sites = {}
         for path in shipped_files():
             rel = str(path.relative_to(ROOT))
+            # A python file is one python runs, however its shebang spells
+            # it. `#!/usr/bin/env python3` is the common spelling here and was
+            # missed, so two files fell back to the line scanner and reported
+            # `desktop.trusted_program("pkexec")` -- a resolution -- as a PATH
+            # lookup.
+            first = read(path).splitlines()[:1]
+            if path.suffix == ".py" or (first and "python" in first[0] and first[0].startswith("#!")):
+                found = self._bare_python_sites(path)
+                if found is not None:
+                    if found:
+                        sites[rel] = found
+                    continue
             for lineno, line in code_lines(path):
                 if self.BARE.search(line):
                     sites.setdefault(rel, []).append(lineno)
@@ -202,10 +273,23 @@ class PkexecResolutionTests(unittest.TestCase):
                          "these sites no longer resolve pkexec through PATH; "
                          "delete them from PKEXEC_ABSOLUTE_EXEMPT: %s" % stale)
 
-    def test_busutil_names_pkexec_absolutely(self):
+    def test_the_desktop_library_names_pkexec_absolutely(self):
+        """This read busutil.py, where the literal used to live.
+
+        W-30 moved the trusted program table into the shared desktop library so
+        both front-ends resolve through ONE of them; busutil re-exports the
+        name. Asserting the literal back into busutil would be asserting the
+        duplication back in, so the assertion follows the implementation.
+        """
+        library = (PACKAGES / "shadowfetch-defaults/data/usr/lib/shadowfetch/"
+                              "desktop/sf_desktop.py")
+        text = read(library)
+        self.assertIn('"pkexec": ("/usr/bin/pkexec"', text)
+        self.assertIn('PKEXEC = PROGRAMS["pkexec"][0]', text)
+        # And busutil still offers the name, so no call site had to change.
         busutil = (PACKAGES / "shadowfetch-control-center/data/usr/share/"
                               "shadowfetch/control-center/sfcc/busutil.py")
-        self.assertIn('PKEXEC = "/usr/bin/pkexec"', read(busutil))
+        self.assertIn("PKEXEC", read(busutil))
 
 
 class PolkitActionTests(unittest.TestCase):

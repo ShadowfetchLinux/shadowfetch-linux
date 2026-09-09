@@ -402,7 +402,15 @@ class Guest:
                 raise GuestError("OVMF 4M firmware is not installed on this host")
             if not variables.exists():
                 variables.write_bytes(template.read_bytes())
-            argv[1:1] = [
+            # argv[0:2] is the "-name <value>" PAIR, so the firmware drives go
+            # in at 2. Inserting at 1 put them between the flag and its value:
+            # QEMU then read "-drive" as the machine name and the pflash
+            # specification as a positional disk image, and refused to start
+            # with "Could not open 'if=pflash,...': No such file or directory".
+            # Every --firmware uefi run died that way before the guest agent
+            # could come up, which is a harness fault reported as an ERROR
+            # rather than a fact about the artifact.
+            argv[2:2] = [
                 "-drive",
                 f"if=pflash,format=raw,readonly=on,file={code}",
                 "-drive",
@@ -498,6 +506,43 @@ class Guest:
             except socket.timeout:
                 pass
             return chunks.decode("utf-8", "replace")
+        finally:
+            connection.close()
+
+    def sendkeys(self, keys: list[str], gap: float = 0.06) -> None:
+        """Type real key events into the machine through QEMU's input device.
+
+        Needed because setting a text field through the accessibility bus does
+        not tell a Qt application that a PERSON typed: Calamares' users page
+        listens for QLineEdit::textEdited, so five fields set through AT-SPI
+        read back correctly and leave the installer's Next button disabled.
+        These keys arrive on the same path a physical keyboard takes.
+
+        One monitor connection for the whole string: reconnecting between
+        characters is slower than the guest's input handling and dropped the
+        first key of every field.
+        """
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.settimeout(30.0)
+        try:
+            connection.connect(str(self.hmp_socket))
+            time.sleep(0.2)
+            try:
+                connection.recv(65536)  # banner
+            except socket.timeout:
+                pass
+            for key in keys:
+                if not re.fullmatch(r"[a-z0-9_\-]+(-[a-z0-9_]+)*", key):
+                    raise GuestError(f"refusing to send an unrecognised key {key!r}")
+                connection.sendall(f"sendkey {key}\n".encode())
+                time.sleep(gap)
+            time.sleep(0.3)
+            connection.settimeout(2.0)
+            try:
+                while connection.recv(65536):
+                    pass
+            except socket.timeout:
+                pass
         finally:
             connection.close()
 

@@ -72,7 +72,15 @@ LB_DIR    := $(ROOT)/live-build
 LB_BUILD_LOG := $(BUILD_DIR)/live-build-$(VERSION).log
 LB_BUILD_MARKER := $(BUILD_DIR)/.live-build-$(VERSION)-started
 QA_EVIDENCE_DIR := $(ROOT)/work/qa-$(VERSION)/evidence
-ISO_GATE_LOG := $(QA_EVIDENCE_DIR)/iso/iso-gate.log
+# RUN-STAMPED, and deliberately not the path ISO-01 records as its evidence.
+# This was $(QA_EVIDENCE_DIR)/iso/iso-gate.log -- exactly the file the manifest
+# pins -- so `make iso-gate` teed its own verdict into its own evidence, and
+# the proof that the ISO gate passed was the gate saying so. It also meant a
+# second run overwrote the file whose SHA-256 the manifest had recorded, so
+# `acceptance.py verify` then failed on a hash mismatch for a case nobody had
+# touched. A gate never writes into the file it will be graded on.
+ISO_GATE_RUN := $(shell date -u +%Y%m%dT%H%M%SZ)
+ISO_GATE_LOG := $(QA_EVIDENCE_DIR)/iso/runs/iso-gate-$(ISO_GATE_RUN).log
 # Stage Q: ONE implementation per gate family plus a version DATA file.
 # These used to be $(ROOT)/tools/<family>_$(VERSION_TOKEN).py, so cutting a
 # release meant copying four modules and hand-editing the version strings in
@@ -189,10 +197,19 @@ acceptance-gate: release-data
 # Stage R: automated VM acceptance. The harness boots the artifact under test in
 # QEMU/KVM, executes one case against the running machine, captures evidence,
 # binds it to the artifact digest and appends a hash-chained receipt -- in ONE
-# workflow. There is deliberately no target that marks a case passed: recording
-# is a switch on the run, reachable only at the end of a run that happened and
-# only for a PASS. That gap between "ran the test" and "wrote PASS in the
-# manifest" is how thirteen required cases went unproven.
+# workflow. There is no TARGET here that marks a case passed: recording is a
+# switch on the run, reachable only at the end of a run that happened and only
+# for a PASS.
+#
+# BE PRECISE ABOUT WHAT THAT CLOSES, because this comment used to overstate it.
+# It closes the gap for the harness. It does NOT close it for the system:
+# `tools/release/acceptance.py record <case> --status pass --evidence <file>`
+# is a supported command with no run behind it, and it is how every currently
+# recorded pass in the manifest was written. What now stands between that
+# command and a false pass is not this target -- it is that `record` stamps the
+# artifact digest into each evidence entry and `verify` refuses evidence that
+# names a different image or none at all. A person can still type a pass; they
+# can no longer type one about nothing.
 # Exit status: 0 PASS, 1 FAIL, 2 harness error, 3 BLOCKED. BLOCKED is not a pass.
 .PHONY: vm-acceptance vm-acceptance-list vm-acceptance-status vm-acceptance-verify
 VM_ACCEPTANCE := $(ROOT)/tools/acceptance/vm_acceptance.py

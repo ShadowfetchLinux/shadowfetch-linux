@@ -306,11 +306,35 @@ class ReceiptV2(MigrationHarness):
 
     def test_it_names_the_controls_that_are_not_enforced(self):
         """Listing these anywhere else and not in the artifact a person reads
-        when deciding to accept the work would be the omission that matters."""
+        when deciding to accept the work would be the omission that matters.
+
+        This asserted the literal "Do not read them as controls", which was the
+        sentence for a NON-EMPTY list. The list emptied -- masked_paths in
+        Stage E, egress_allowlist in Stage C, syscall_profile in Stage F -- so
+        that sentence is now correctly absent, and asserting it would demand
+        the receipt describe gaps it does not have.
+
+        The note is DERIVED from the list now, for a reason worth keeping in
+        view: it used to be a literal naming three fields, two of them became
+        enforced, and the sentence did not change -- so the artifact a person
+        reads before ACCEPTING agent work told them that a working destination
+        filter and a working path mask were decoration.
+        """
         _mid, receipt, _raw = self.receipt()
         self.assertIn("declared_but_not_enforced", receipt)
         self.assertIn("enforcement_note", receipt)
-        self.assertIn("Do not read them as controls", receipt["enforcement_note"])
+        note = receipt["enforcement_note"]
+        gaps = receipt["declared_but_not_enforced"]
+        self.assertEqual(note, sf.enforcement_note(gaps),
+                         "the note is written beside the list instead of from it")
+        for field in gaps:
+            self.assertIn(field, note, "a gap the receipt does not name")
+        if gaps:
+            self.assertIn("Do not read them as controls", note)
+        else:
+            # And an empty list must not read as a clean bill of health for the
+            # sandbox: it is a statement about the DECLARED fields only.
+            self.assertIn("not a claim", note)
 
     def test_no_credential_value_reaches_it(self):
         secret = probe_secret("receipt")

@@ -35,8 +35,24 @@ MACHINE PROTOCOL (stdout, one event per line - consumed by the Welcome UI):
   SF-LOCKWAIT <hint>               waiting for the apt/dpkg lock
   SF-LOCKFREE                      the lock became free, continuing
   SF-POINT <n>                     the Phoenix Point (first pre snapshot of
-                                   this transaction) protecting the install
-  SF-NOPOINT <reason>              no Phoenix Point exists for this install
+                                   this transaction) protecting the install.
+                                   Emitted only for a Point that has been
+                                   RECORDED in Fireproof's update record, so
+                                   the number offered here and the number
+                                   `fireproof rollback` restores are one
+                                   number, not two.
+  SF-NOPOINT <reason>              no Phoenix Point is offered.  reason is
+                                   one of: no-authority (shadowfetch-fireproof,
+                                   which owns the one snapshot and state
+                                   implementation, is not installed),
+                                   not-btrfs, unavailable (btrfs, but snapper
+                                   cannot produce a Point here), no-snapshot
+                                   (a Point should have appeared and did not),
+                                   pending-update (an update is still waiting
+                                   on a good boot, and its Point outranks this
+                                   one), not-recorded (a Point exists but could
+                                   not be written to the update record, so
+                                   nothing may offer it)
   SF-AUDIT-DIRTY                   dpkg --audit is non-empty after a failure
   SF-CANCELLED                     the user cancelled during stage 1
   SF-DONE                          success
@@ -48,6 +64,49 @@ from the local cache, ignores cancel requests, and is wrapped in automatic
 Phoenix Points by the shipped 79phoenix-space + 80snapper DPkg hooks - this
 helper creates no snapshots of its own.
 
+ONE SNAPSHOT AUTHORITY, AND THIS PROGRAM IS NOT IT.
+
+This is the second program in the distribution that commits packages as root,
+and it has to be: fireproofd's only verb is the full upgrade of everything
+upgradable, and a NAMED CATALOG BUNDLE is not that.  What must not happen is a
+second system DECIDING snapshot behaviour.  Stage U deleted exactly that shape
+from shadowfetch-update, where a second updater derived a Point with its own
+awk, relabelled the Point Fireproof labels, and recorded it NOWHERE - so
+/var/lib/shadowfetch/fireproof-state.json still described the previous
+transaction and `fireproof rollback` would have restored the wrong system.
+
+This file carried two thirds of that same defect, and it was measured before
+it was fixed: with a previous Fireproof update recorded at Point 41, a bundle
+install printed SF-POINT 43 (its own transaction's Point, which the Welcome
+failure card turns into `pkexec /usr/libexec/phoenix-restore 43`) while
+fireproof-state.json stayed byte-for-byte unchanged and Fireproof1.RollbackTarget
+still answered `pkexec /usr/libexec/phoenix-restore 41`.  Two programs, two
+different answers to "what does the rollback button restore".  It never
+relabelled, which is the one third it did not have.
+
+So:
+
+  * the Point comes ONLY from sfupdate.snapshots, the single implementation
+    Stage U extracted.  There is no snapper parser here and no snapper
+    invocation here.
+  * NOTHING is relabelled.  sfupdate.snapshots.label_point is the only snapper
+    mutation in the product and it belongs to fireproofd.  A bundle install's
+    Point keeps the description snapper's own 80snapper hook wrote, which is
+    the honest one.
+  * the transaction is RECORDED through sfupdate.state - the one store, in the
+    shape fireproofd writes - BEFORE the Point is offered to anybody.  A Point
+    this program cannot record is a Point it does not name.
+  * fireproof-pending is NOT written.  That flag means "a commit is waiting on
+    a good boot to be judged", and fireproof-postboot restores from it when a
+    desktop does not come back.  An update still under that assessment has to
+    keep priority: if the desktop breaks after an update AND a later bundle
+    install, the Point that repairs it is the update's, not the bundle's.
+
+When shadowfetch-fireproof is not installed there is no authority to record
+into, and this program then offers NO Point at all (SF-NOPOINT no-authority)
+rather than a number nothing has recorded.  That is the whole defect, and
+printing it anyway would be keeping it.
+
 Exit codes: 0 ok, 2 usage, 3 bad id/record, 4 not enough disk space,
 5 download failed, 6 commit failed, 7 privilege error, 10 cancelled.
 
@@ -57,6 +116,7 @@ already configured on this system, and only inside the install verb.
 
 import fcntl
 import grp
+import hashlib
 import json
 import os
 import pwd
@@ -67,7 +127,11 @@ import stat
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
+from pathlib import Path
+
+SOURCE = "shadowfetch-bundle-install"
 
 CATALOG_DIR = "/usr/share/shadowfetch/welcome/catalog"
 STATE_DIR = "/var/lib/shadowfetch"
@@ -75,6 +139,52 @@ LOG_DIR = "/var/log/shadowfetch"
 DONE_FILE = os.path.join(STATE_DIR, "ignition-done")
 CHOICE_FILE = os.path.join(STATE_DIR, "ignition-choice.json")
 LIMITS_FILE = "/etc/security/limits.d/95-shadowfetch-audio.conf"
+
+
+def _load_update_authority():
+    """Import sfupdate - the ONE snapshot and state implementation - or None.
+
+    Installed, this file is /usr/libexec/shadowfetch-bundle-install and the
+    modules are /usr/lib/shadowfetch/{sfupdate,phoenix}, so the search starts
+    at this file's own location.  Never PYTHONPATH: the caller controls that
+    and this program runs as root.
+
+    The source-tree fallback is only consulted when the installed directory
+    does not hold sfupdate, because in the source tree the two live in
+    different package directories.  It cannot fire on a real system - the
+    directories it looks for would have to be created under /usr/libexec, /usr
+    or / and all three already require root.
+
+    None is an honest answer: shadowfetch-welcome does not depend on
+    shadowfetch-fireproof, so a machine can legitimately have Welcome without
+    the update authority.  Every caller below turns None into "no Point is
+    offered", never into a Point derived some other way.
+    """
+    here = Path(__file__).resolve()
+    installed = here.parent.parent / "lib" / "shadowfetch"
+    roots = [installed]
+    if not (installed / "sfupdate").is_dir():
+        for parent in here.parents:
+            roots.append(parent
+                         / "packages/shadowfetch-fireproof/data/usr/lib/shadowfetch")
+            roots.append(parent / "packages/shadowfetch-phoenix/usr/lib/shadowfetch")
+    found = [str(root) for root in roots
+             if root.is_dir() and str(root) not in sys.path]
+    sys.path[:0] = found
+    try:
+        from sfupdate import snapshots, state
+    except ImportError:
+        return None, None
+    return snapshots, state
+
+
+sfsnap, sfstate = _load_update_authority()
+
+#: The one update record.  Named here so the whole file spells it one way and
+#: a test can point the harness somewhere else; the DEFAULT is the authority's
+#: own constant, never a second opinion about where the record lives.
+STATE_FILE = sfstate.STATE_FILE if sfstate is not None else None
+PENDING_FILE = sfstate.PENDING_FILE if sfstate is not None else None
 
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 PKG_RE = re.compile(r"^[a-z0-9][a-z0-9+.-]+$")
@@ -94,6 +204,44 @@ APT_ENV = dict(
     LC_ALL="C.UTF-8",
     PATH="/usr/sbin:/usr/bin:/sbin:/bin",
 )
+
+
+# PERMANENT INVARIANT: an executable that establishes, enforces or attests a
+# security fact is named by an explicit ABSOLUTE path and its child PATH is
+# pinned too.  Pinning the child PATH (APT_ENV above) was already here; the
+# programs themselves were still bare names, resolved by whatever PATH this
+# root process inherited.  Each of these decides something:
+#
+#   apt-get   performs the root package transaction itself
+#   dpkg      --audit decides whether a previous transaction left the system
+#             broken, i.e. whether a repair runs and whether SF-AUDIT-DIRTY is
+#             reported - the forged-clean-scan shape, one layer down
+#   gpasswd   grants membership of `pipewire`, which the limits file below
+#             gives realtime priority 95 and unlimited memory locking
+APT_GET_PATHS = ("/usr/bin/apt-get", "/bin/apt-get")
+DPKG_PATHS = ("/usr/bin/dpkg", "/bin/dpkg")
+GPASSWD_PATHS = ("/usr/bin/gpasswd", "/usr/sbin/gpasswd", "/bin/gpasswd")
+
+
+def trusted_program(candidates):
+    """First candidate that is a root-owned, non-group/other-writable file.
+
+    Deliberately not shutil.which and deliberately not $PATH: a user-writable
+    directory must never be able to answer, and a name that PATH resolves is
+    exactly such an answer.  None means "no trusted one exists", which callers
+    turn into a refusal - never into a fallback.
+    """
+    for candidate in candidates:
+        try:
+            st = os.lstat(candidate)
+        except OSError:
+            continue
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != 0:
+            continue
+        if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+            continue
+        return candidate
+    return None
 
 
 def emit(name, payload=""):
@@ -340,6 +488,16 @@ def run_apt(argv, stage, log_fh, allow_cancel):
 # ---- snapper / Phoenix Point discovery -----------------------------------
 
 def root_is_btrfs():
+    """Filesystem type of / read from the KERNEL.
+
+    This decides one thing and one thing only: WHICH SENTENCE the Welcome
+    failure card shows, "no Phoenix Point, rollback unavailable on this
+    filesystem" against the generic one.  Whether a Point exists and which
+    number it is are decided by sfupdate.snapshots and by nothing here.  The
+    fact is read from /proc/mounts rather than from findmnt for the reason
+    phoenix.trusted gives: a layout fact taken from the kernel cannot be
+    substituted, so it needs no trust classification.
+    """
     try:
         with open("/proc/mounts", "r", encoding="utf-8") as fh:
             for line in fh:
@@ -351,67 +509,105 @@ def root_is_btrfs():
     return False
 
 
-def snapper_snapshots():
-    """[(number, type), ...] for the root config, or None when unavailable."""
-    # Preferred: machine-readable CSV (snapper >= 0.9).
+def phoenix_baseline():
+    """Highest snapshot number before this transaction, or None.
+
+    None means "no Point can come out of this install", and it is what stops
+    the code below from looking for one.  Both facts - can this machine
+    produce a Point, and what is the highest number now - belong to
+    sfupdate.snapshots.  This program owns no snapper parser and runs no
+    snapper: it used to own both, and the number it derived went straight to
+    `pkexec /usr/libexec/phoenix-restore` while Fireproof went on naming a
+    different one.
+    """
+    if sfsnap is None or not sfsnap.phoenix_available():
+        return None
+    return sfsnap.max_number()
+
+
+def bundle_change_set_hash(catalog_id, pkgs):
+    """The change-set hash for this bundle, namespaced so it cannot collide.
+
+    fireproofd's change_set_hash is a bare sha256 hexdigest of an apt change
+    set, and a hash recorded here lands in the same failed_sets history.  The
+    `bundle:` prefix is what stops a rolled-back BUNDLE from ever being read
+    as a rolled-back UPGRADE and suppressing a legitimate update.
+    """
+    body = "\n".join([catalog_id] + sorted(pkgs))
+    return "bundle:" + hashlib.sha256(body.encode()).hexdigest()
+
+
+def record_transaction(catalog_id, pkgs, point, commit_ok, log_fh):
+    """Write this install into Fireproof's ONE update record.  True on success.
+
+    THE DEFECT THIS EXISTS TO CLOSE, as measured before the fix: a bundle
+    install committed packages as root and told nobody, so with a previous
+    Fireproof update recorded at Point 41 this program printed SF-POINT 43
+    while Fireproof1.RollbackTarget still answered 41 - the rollback button
+    restoring the machine to before the UPDATE, silently discarding an install
+    the user had just finished, and the two surfaces disagreeing by two Points.
+
+    The record goes through sfupdate.state in the shape fireproofd writes,
+    because a second copy of the writer is the same defect one level down.
+    Two fields are this program's own and both are there to keep the record
+    honest rather than uniform:
+
+      source   which program committed.  A reader that assumes every record is
+               an upgrade is then wrong in a way it can see.
+      verdict  "not-verified" on success: this program runs no verify battery
+               and inventing "ok" would be the forged-clean-scan shape.  On a
+               failed commit it is "restore-recommended", which is not a
+               judgement of the machine but the same evidence fireproofd acts
+               on - the commit did not complete.
+
+    fireproof-pending is deliberately NOT written; see the module docstring.
+
+    Returns "recorded", or the SF-NOPOINT reason why it did not.
+    """
+    if sfstate is None:
+        return "no-authority"
+    if point is None:
+        return "no-snapshot"
+    # WHILE AN UPDATE IS STILL PENDING, THIS RECORDS NOTHING.
+    #
+    # sfupdate.state.rollback_target takes the POINT from fireproof-pending
+    # when one exists but the TXN ID from last_txn, always. That was consistent
+    # while fireproofd wrote both. Overwriting last_txn here between a commit
+    # and its first good boot splits them: RollbackTarget would then offer the
+    # UPDATE's Point carrying the BUNDLE's txn id, and the RecordRollback that
+    # follows a restore would file the bundle's change-set hash in failed_sets
+    # instead of the update's - so the update that had just been rolled back
+    # would be offered again with no "Don't proceed" and no warning. That is
+    # the failed_sets suppression, defeated.
+    #
+    # The correct rollback target in this window is the update's Point anyway:
+    # a desktop that does not come back may be the update's doing, and its
+    # Point is the one that repairs that. So nothing is recorded and no Point
+    # is offered - the bundle is undone by the update's restore, and no two
+    # surfaces name different numbers.
+    pending = sfstate.read_pending(PENDING_FILE)
+    if pending is not None:
+        log_fh.write("an update is pending (txn %s, Point %s); this install's "
+                     "Point %d is not recorded and not offered\n"
+                     % (pending.get("txn"), pending.get("pre_point"), point))
+        return "pending-update"
     try:
-        r = subprocess.run(
-            ["snapper", "--machine-readable", "csv", "list"],
-            capture_output=True, text=True, timeout=20,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    rows = []
-    if r.returncode == 0 and r.stdout.strip():
-        lines = r.stdout.strip().splitlines()
-        header = [h.strip().lower() for h in lines[0].split(",")]
-        if "number" in header and "type" in header:
-            ni, ti = header.index("number"), header.index("type")
-            for line in lines[1:]:
-                parts = line.split(",")
-                if len(parts) <= max(ni, ti):
-                    continue
-                try:
-                    rows.append((int(parts[ni]), parts[ti].strip().lower()))
-                except ValueError:
-                    continue
-            return rows
-    # Fallback: the human table. Field positions vary across versions, so
-    # scan each row for the first integer field and the first type word.
-    try:
-        r = subprocess.run(["snapper", "list"], capture_output=True,
-                           text=True, timeout=20)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if r.returncode != 0:
-        return None
-    for line in r.stdout.splitlines():
-        fields = [f.strip() for f in line.split("|")]
-        num = None
-        typ = None
-        for f in fields:
-            if num is None and f.isdigit():
-                num = int(f)
-            if typ is None and f.lower() in ("single", "pre", "post"):
-                typ = f.lower()
-        if num is not None and typ is not None:
-            rows.append((num, typ))
-    return rows
-
-
-def snapper_max_number():
-    rows = snapper_snapshots()
-    if rows is None:
-        return None
-    return max((n for n, _ in rows), default=0)
-
-
-def first_pre_after(baseline):
-    rows = snapper_snapshots()
-    if rows is None:
-        return None
-    candidates = [n for n, t in rows if t == "pre" and n > baseline]
-    return min(candidates) if candidates else None
+        state = sfstate.load_state(STATE_FILE)
+        state["last_txn"] = {
+            "txn": str(uuid.uuid4()),
+            "hash": bundle_change_set_hash(catalog_id, pkgs),
+            "date": sfstate.now_iso(),
+            "pre_point": point,
+            "verdict": "not-verified" if commit_ok else "restore-recommended",
+            "kernels": [],
+            "source": SOURCE,
+            "bundle": catalog_id,
+        }
+        sfstate.save_state(state, STATE_FILE)
+    except (OSError, ValueError) as exc:
+        log_fh.write("could not record the transaction: %s\n" % exc)
+        return "not-recorded"
+    return "recorded"
 
 
 # ---- post-config steps (data-driven, known tokens only) ------------------
@@ -443,9 +639,17 @@ def post_config_audio_realtime(log_fh):
     except KeyError:
         log_fh.write("no pipewire group on this system; skipping\n")
         return
-    r = subprocess.run(["gpasswd", "-a", user, "pipewire"],
-                       capture_output=True, text=True)
-    log_fh.write("gpasswd -a %s pipewire -> %d\n" % (user, r.returncode))
+    gpasswd = trusted_program(GPASSWD_PATHS)
+    if gpasswd is None:
+        # The group carries realtime scheduling and unlimited memory locking.
+        # No trusted gpasswd means the membership is not granted, not that
+        # some other gpasswd grants it.
+        log_fh.write("no trusted gpasswd at %s; skipping group membership\n"
+                     % ", ".join(GPASSWD_PATHS))
+        return
+    r = subprocess.run([gpasswd, "-a", user, "pipewire"],
+                       capture_output=True, text=True, env=APT_ENV)
+    log_fh.write("%s -a %s pipewire -> %d\n" % (gpasswd, user, r.returncode))
 
 
 POST_CONFIG = {"audio-realtime": post_config_audio_realtime}
@@ -504,14 +708,27 @@ def verb_install(catalog_id):
         log_fh.close()
         sys.exit(10)
 
+    apt_get = trusted_program(APT_GET_PATHS)
+    if apt_get is None:
+        log_fh.close()
+        die(6, "no-apt",
+            "no trusted apt-get at %s - nothing was installed"
+            % ", ".join(APT_GET_PATHS))
+    dpkg = trusted_program(DPKG_PATHS)
+    if dpkg is None:
+        log_fh.close()
+        die(6, "no-dpkg",
+            "no trusted dpkg at %s - nothing was installed"
+            % ", ".join(DPKG_PATHS))
+
     # If a previous transaction died mid-dpkg, repair before adding to it.
-    audit = subprocess.run(["dpkg", "--audit"], capture_output=True,
+    audit = subprocess.run([dpkg, "--audit"], capture_output=True,
                            text=True, env=APT_ENV)
     if audit.stdout.strip():
         log_fh.write("dpkg --audit non-empty; running apt-get -f install\n")
         emit("STAGE", "commit")
         emit("PROGRESS", "commit 0.0 Repairing an interrupted installation")
-        rc, _ = run_apt(["apt-get", "-y", "-f", "install"], "commit",
+        rc, _ = run_apt([apt_get, "-y", "-f", "install"], "commit",
                         log_fh, allow_cancel=False)
         if rc != 0:
             log_fh.close()
@@ -523,7 +740,7 @@ def verb_install(catalog_id):
     # disk, and partially downloaded debs resume next time.
     emit("STAGE", "download")
     rc, cancelled = run_apt(
-        ["apt-get", "-y", "-d", "-o", "DPkg::Lock::Timeout=120", "install"]
+        [apt_get, "-y", "-d", "-o", "DPkg::Lock::Timeout=120", "install"]
         + pkgs,
         "download", log_fh, allow_cancel=True)
     if cancelled:
@@ -536,30 +753,45 @@ def verb_install(catalog_id):
             "the download did not complete - nothing was changed on disk, "
             "and it will resume where it stopped")
 
-    # Baseline for Phoenix Point discovery. The 79phoenix-space and
-    # 80snapper DPkg hooks wrap the commit in pre/post snapshots on their
-    # own; the first pre snapshot after this baseline is THE Point for the
-    # whole transaction.
-    baseline = snapper_max_number() if root_is_btrfs() else None
+    # Baseline for Phoenix Point discovery, from the ONE authority. The
+    # 79phoenix-space and 80snapper DPkg hooks wrap the commit in pre/post
+    # snapshots on their own; the first pre snapshot after this baseline is
+    # THE Point for the whole transaction. This helper creates no snapshots
+    # and relabels none.
+    baseline = phoenix_baseline()
 
     # STAGE 2 - install from the local cache. No cancel: interrupting dpkg
     # is the one thing that can genuinely hurt, so this stage is
     # "finishing - safe to leave running".
     emit("STAGE", "commit")
     rc, _ = run_apt(
-        ["apt-get", "-y", "-o", "DPkg::Lock::Timeout=120", "install"] + pkgs,
+        [apt_get, "-y", "-o", "DPkg::Lock::Timeout=120", "install"] + pkgs,
         "commit", log_fh, allow_cancel=False)
 
-    point = first_pre_after(baseline) if baseline is not None else None
-    if point is not None:
+    # RECORD FIRST, OFFER SECOND. A Point that only this program knows about
+    # is the whole defect: the failure card below turns it into
+    # `pkexec /usr/libexec/phoenix-restore <n>` while Fireproof keeps naming
+    # the previous transaction. Whatever cannot be recorded is not named.
+    point = sfsnap.first_pre_after(baseline) if baseline is not None else None
+    outcome = record_transaction(catalog_id, pkgs, point, rc == 0, log_fh)
+    if outcome == "recorded":
+        log_fh.write("recorded pre_point %d in %s\n" % (point, STATE_FILE))
         emit("POINT", str(point))
+    elif point is not None:
+        # pending-update / not-recorded / no-authority: a Point exists and is
+        # deliberately not named, because nothing recorded it.
+        emit("NOPOINT", outcome)
+    elif sfsnap is None:
+        emit("NOPOINT", "no-authority")
     elif not root_is_btrfs():
         emit("NOPOINT", "not-btrfs")
+    elif baseline is None:
+        emit("NOPOINT", "unavailable")
     else:
         emit("NOPOINT", "no-snapshot")
 
     if rc != 0:
-        audit = subprocess.run(["dpkg", "--audit"], capture_output=True,
+        audit = subprocess.run([dpkg, "--audit"], capture_output=True,
                                text=True, env=APT_ENV)
         log_fh.write("dpkg --audit after failure:\n" + audit.stdout + "\n")
         if audit.stdout.strip():

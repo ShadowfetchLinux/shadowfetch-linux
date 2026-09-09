@@ -857,6 +857,35 @@ def check_workspace_name(_truth: dict) -> list[Finding]:
 # buttons that failed AFTER the user entered an admin password.  The one gate
 # that checked this (package_gate_4_0_0.py:331) looked at a single call site.
 # This one enumerates them.
+# The ONE implementation of the desktop facts W-30 names.  Until Stage W these
+# lived twice -- once behind sfcc/busutil.py, once inside shadowfetch-welcome --
+# and this check could only hold the two copies to the same paths and the same
+# argv, which is why it also emitted a BLOCKED finding saying so.  The module
+# moved to the package both front-ends depend on, and the check changed shape
+# with it: it no longer asks whether two copies agree, it asks whether there is
+# one.  Those are different claims and only the second one is deduplication.
+DESKTOP_LIBRARY = ("packages/shadowfetch-defaults/data/usr/lib/shadowfetch/"
+                   "desktop/sf_desktop.py")
+DESKTOP_LIBRARY_DIR = "/usr/lib/shadowfetch/desktop"
+DESKTOP_LIBRARY_MODULE = "sf_desktop"
+DESKTOP_LIBRARY_PACKAGE = "shadowfetch-defaults"
+
+# A file at the shared path proves nothing on its own; these are the facts it
+# has to actually implement for the front-ends to have stopped implementing
+# them.  Each name is one of the things the audit found written twice.
+DESKTOP_LIBRARY_API = (
+    "def trusted_program(",     # which binary runs, from a fixed table
+    "def trusted_env(",         # and what PATH its children inherit
+    "def load_catalog(",        # the bundle catalog, list shape
+    "def catalog_by_id(",       # the same records, Welcome's dict shape
+    "def installed_map(",       # "already on your system", one dpkg-query
+    "def hwscan_is_fresh(",     # the freshness rule
+    "def load_hwscan(",         # fact file or CLI
+    "def hwscan_cached(",       # fact file only, for the UI thread
+    "def bundle_install_argv(", # the privileged argv
+    "def start_detached(",      # launch
+)
+
 HELPER_PATHS = {
     "bundle-install": "/usr/libexec/shadowfetch-bundle-install",
     "hwscan-cli": "/usr/libexec/shadowfetch-hwscan",
@@ -864,29 +893,504 @@ HELPER_PATHS = {
     "catalog-dir": "/usr/share/shadowfetch/welcome/catalog",
     "phoenix-restore": "/usr/libexec/phoenix-restore",
 }
-HELPER_CONSUMERS = (
-    # The Control Center's copy of these paths moved to sfcc/desktop.py, which
-    # busutil re-exports. Reading busutil here would report five false drifts
-    # against a file that no longer spells any of them out.
+
+# The two desktop front-end entry points.  Each has to LOAD the library, and
+# neither may spell a helper path out again -- a second spelling is the drift
+# coming back, whether or not it currently agrees.
+FRONT_ENDS = (
     "packages/shadowfetch-control-center/data/usr/share/shadowfetch/"
     "control-center/sfcc/desktop.py",
     "packages/shadowfetch-welcome/src/shadowfetch-welcome",
 )
+
+# "One module, imported by both" is a claim about an INSTALLED system, not
+# about this tree: it is false if the module is not shipped, and false if a
+# front-end's package does not pull in the package that ships it.  Both
+# front-ends raise ImportError without it, so both need a hard Depends.
+LIBRARY_INSTALL = ("packages/shadowfetch-defaults/debian/"
+                   "shadowfetch-defaults.install")
+FRONT_END_CONTROL = {
+    "packages/shadowfetch-welcome/debian/control": "shadowfetch-welcome",
+    "packages/shadowfetch-control-center/debian/control":
+        "shadowfetch-control-center",
+}
+
+# Every file this check reads.  The name is older than the contents: in Stage X
+# it held the two front-ends and nothing else, because comparing their copies
+# was the most the gate could do.
+HELPER_CONSUMERS = (FRONT_ENDS + (DESKTOP_LIBRARY, LIBRARY_INSTALL)
+                    + tuple(FRONT_END_CONTROL))
+
+# Where the privileged bundle argv may be built (the library) and where it must
+# instead be delegated (everywhere else).
 BUNDLE_CALL_SITES = (
-    "packages/shadowfetch-control-center/data/usr/share/shadowfetch/"
-    "control-center/sfcc/desktop.py",
+    DESKTOP_LIBRARY,
     "packages/shadowfetch-control-center/data/usr/share/shadowfetch/"
     "control-center/sfcc/software_page.py",
     "packages/shadowfetch-control-center/data/usr/share/shadowfetch/"
     "control-center/sfcc/workbench_page.py",
     "packages/shadowfetch-welcome/src/shadowfetch-welcome",
 )
-# The builder writes the constant unquoted (`[pkexec, BUNDLE_HELPER, ...]`
-# where pkexec is itself a named path), the call sites wrote it quoted. Both
-# spellings are the same argv and both have to be checked.
-_PKEXEC_BUNDLE = re.compile(
-    r'\[\s*(?:"pkexec"|pkexec)\s*,\s*([A-Za-z_.]+)\s*,\s*("install")?',
-    re.MULTILINE)
+# Every desktop file that must DELEGATE to the library rather than implement a
+# desktop fact of its own: both front-end entry points, and the two Control
+# Center pages that carry an Install button.  The library is deliberately not
+# here -- it is the one place these things are built.
+DELEGATING_SITES = tuple(dict.fromkeys(
+    FRONT_ENDS + tuple(rel for rel in BUNDLE_CALL_SITES if rel != DESKTOP_LIBRARY)))
+
+# A program whose argv either asks the user for an administrator password or
+# runs as root once they have typed it, plus Shadowfetch's own helpers, whose
+# resolution is the library's trusted-program table and nothing else.  A
+# delegating site may not assemble one of these argvs AT ALL.  That is the
+# honest form of this rule: not a list of forbidden spellings that a new
+# spelling walks past, but one legal source for the whole shape.
+PRIVILEGED_HEADS = ("pkexec", "sudo", "doas", "pfexec", "run0")
+PRIVILEGED_PREFIXES = ("shadowfetch-", "phoenix-", "ember-")
+
+# Calls that enumerate a directory.  A function that walks a directory and
+# decodes JSON out of it is a catalog reader whatever it has been named.
+DIR_ENUMERATORS = ("glob", "iglob", "listdir", "scandir", "iterdir", "rglob",
+                   "walk")
+
+# How a front-end may get hold of the library.  `import sf_desktop` resolves
+# through sys.modules BEFORE sys.path, so a module already registered under
+# that name is returned and an existence check performed a line earlier decides
+# nothing (ATTACK B).  spec_from_file_location executes the file that was
+# checked and never consults sys.modules.
+FILE_LOADERS = ("spec_from_file_location", "SourceFileLoader")
+
+
+def _constant_truth(test):
+    """True/False when the source itself decides a branch, else None."""
+    if isinstance(test, ast.Constant):
+        return bool(test.value)
+    return None
+
+
+def walk_reachable(node):
+    """ast.walk, minus the branches the source itself decides are dead.
+
+    ATTACK C: `imports_module()` counted `if False:\n    import sf_desktop` as
+    proof that a front-end loads the shared library.  That import binds nothing
+    at runtime, so the front-end was free to bind the name to anything at all
+    and still satisfy the check.
+    """
+    yield node
+    if isinstance(node, (ast.If, ast.While)):
+        yield from walk_reachable(node.test)
+        decided = _constant_truth(node.test)
+        bodies = ([node.body, node.orelse] if decided is None
+                  else [node.body] if decided else [node.orelse])
+        for body in bodies:
+            for child in body:
+                yield from walk_reachable(child)
+        return
+    for child in ast.iter_child_nodes(node):
+        yield from walk_reachable(child)
+
+
+def parse_fragment(source):
+    """An AST for a source fragment that may be indented (a nested def)."""
+    try:
+        return ast.parse(source)
+    except (SyntaxError, IndentationError):
+        pass
+    try:
+        return ast.parse("if True:\n" + "\n".join(
+            "    " + line for line in source.splitlines()))
+    except (SyntaxError, IndentationError):
+        return None
+
+
+def _fold_args(node, env, depth):
+    """The folded elements of a tuple/list argument, or of a single one."""
+    elements = node.elts if isinstance(node, (ast.Tuple, ast.List)) else [node]
+    parts = [_fold_str(element, env, depth + 1) for element in elements]
+    return None if any(part is None for part in parts) else parts
+
+
+def _fold_call(node, env, depth):
+    func = node.func
+    name = getattr(func, "id", None)
+    attr = getattr(func, "attr", None)
+    args = [_fold_str(argument, env, depth + 1) for argument in node.args]
+    whole = bool(args) and all(argument is not None for argument in args)
+    if name in ("Path", "PurePath", "PosixPath", "PurePosixPath", "str"):
+        # Path("/usr/libexec", "shadowfetch-bundle-install") joins; str() is a
+        # single argument and os.path.join of one element is that element.
+        return os.path.join(*args) if whole else None
+    if attr == "join" and getattr(getattr(func, "value", None), "attr", None) == "path":
+        return os.path.join(*args) if whole else None            # os.path.join
+    if attr == "join" and node.args:                             # "/".join([...])
+        separator = _fold_str(func.value, env, depth + 1)
+        parts = _fold_args(node.args[0], env, depth)
+        return None if separator is None or parts is None else separator.join(parts)
+    if attr == "format" and not node.keywords:
+        template = _fold_str(func.value, env, depth + 1)
+        if template is None or not whole:
+            return None
+        try:
+            return template.format(*args)
+        except (IndexError, KeyError, ValueError):
+            return None
+    if attr in ("normpath", "realpath", "abspath") and whole:
+        return os.path.normpath(args[0])
+    return None
+
+
+def _fold_str(node, env, depth=0):
+    """The string `node` evaluates to, when the source decides it.
+
+    This exists because the check it replaces asked `path in code`, and
+    `"/usr/libexec/" "shadowfetch-bundle-install"` is not that substring while
+    naming that exact file.  CPython folds adjacent literals before this
+    scanner ever sees them, which is precisely why the AST catches for free the
+    form the source grep could not see at all; `+`, os.path.join, a pathlib
+    `/`, %-formatting, .format, str.join, f-strings and names bound to any of
+    those are the forms an author reaches for next.
+    """
+    if depth > 12:
+        return None
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.Name):
+        values = env.get(node.id) or []
+        # A name bound to two different strings folds to neither: this scanner
+        # reports what the source proves.  Both bound values are still scanned
+        # where they are written, so nothing is lost by declining here.
+        return values[0] if len(values) == 1 else None
+    if isinstance(node, ast.JoinedStr):
+        parts = []
+        for piece in node.values:
+            inner = piece.value if isinstance(piece, ast.FormattedValue) else piece
+            folded = _fold_str(inner, env, depth + 1)
+            if folded is None:
+                return None
+            parts.append(folded)
+        return "".join(parts)
+    if isinstance(node, ast.BinOp):
+        left = _fold_str(node.left, env, depth + 1)
+        if isinstance(node.op, ast.Add):
+            right = _fold_str(node.right, env, depth + 1)
+            return None if left is None or right is None else left + right
+        if isinstance(node.op, ast.Div):          # Path("/usr/libexec") / helper
+            right = _fold_str(node.right, env, depth + 1)
+            return None if left is None or right is None else os.path.join(left, right)
+        if isinstance(node.op, ast.Mod):          # "%s/%s" % (directory, helper)
+            parts = _fold_args(node.right, env, depth)
+            if left is None or parts is None:
+                return None
+            try:
+                return left % tuple(parts)
+            except (TypeError, ValueError):
+                return None
+        return None
+    if isinstance(node, ast.Call):
+        return _fold_call(node, env, depth)
+    return None
+
+
+def fold_env(tree):
+    """Names bound to a string this scanner can decide from the source alone.
+
+    Collected wherever they are bound rather than at module level only -- a
+    second implementation hidden inside a function body is still a second
+    implementation -- and iterated to a fixed point, so that
+    `_HELPER = _DIR + "/shadowfetch-bundle-install"` resolves once `_DIR` has.
+    """
+    env = {}
+    for _ in range(4):
+        changed = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                targets = [t for t in node.targets if isinstance(t, ast.Name)]
+                value = node.value
+            elif (isinstance(node, ast.AnnAssign) and node.value
+                  and isinstance(node.target, ast.Name)):
+                targets, value = [node.target], node.value
+            else:
+                continue
+            folded = _fold_str(value, env)
+            if folded is None:
+                continue
+            for target in targets:
+                bucket = env.setdefault(target.id, [])
+                if folded not in bucket:
+                    bucket.append(folded)
+                    changed = True
+        if not changed:
+            break
+    return env
+
+
+def _prose_ids(tree):
+    """Node ids of docstrings and bare string statements: prose, not code.
+
+    The house style is to name the file a constant points at, so a scanner that
+    cannot tell a path in a sentence from a path in an argv teaches the next
+    author to delete the sentence.  code_text() does this by line number for
+    the substring scans; the AST scans need the node identities.
+    """
+    return {id(node.value) for node in ast.walk(tree)
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)}
+
+
+def assembled_path_hits(text):
+    """(line, reserved path) for every reserved helper path this source names
+    with anything other than one plain literal.
+
+    The verifier's plant assembled `/usr/libexec/shadowfetch-bundle-install`
+    out of two adjacent literals and walked past `path in code` with a complete
+    second bundle installer behind it.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    env = fold_env(tree)
+    prose = _prose_ids(tree)
+    reserved = tuple(HELPER_PATHS.values())
+    hits, seen = [], set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.expr) or id(node) in prose:
+            continue
+        # Constants are NOT skipped. `"/usr/libexec/" "shadowfetch-bundle-"
+        # "install"` reaches this scanner as ONE Constant already folded by
+        # CPython, and the source it was folded from is exactly what the
+        # substring scan cannot see. A path that IS written as one plain
+        # literal is de-duplicated by the caller, which skips any path the
+        # substring scan has already reported for this file.
+        value = _fold_str(node, env)
+        if not value:
+            continue
+        for path in reserved:
+            if value == path or value.startswith(path.rstrip("/") + "/"):
+                key = (getattr(node, "lineno", 0), path)
+                if key not in seen:
+                    seen.add(key)
+                    hits.append(key)
+    return sorted(hits)
+
+
+def privileged_argv_displays(text):
+    """(line, program) for every list/tuple in this source whose FIRST element
+    is a privileged program or a Shadowfetch helper.
+
+    Every display, not only the ones passed as the first positional argument of
+    run/Popen/CommandWorker: the check this replaces looked nowhere else, so a
+    builder that RETURNED the argv was invisible, `Popen(_install_argv(id))`
+    passed an ast.Call, and `argv = [...]` bound one line earlier was never
+    looked at.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    env = fold_env(tree)
+    prose = _prose_ids(tree)
+    hits, seen = [], set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.List, ast.Tuple)) or not node.elts:
+            continue
+        if id(node) in prose:
+            continue
+        head = _fold_str(node.elts[0], env)
+        if not head:
+            continue
+        program = head.rsplit("/", 1)[-1]
+        if program in PRIVILEGED_HEADS or program.startswith(PRIVILEGED_PREFIXES):
+            key = (getattr(node, "lineno", 0), head)
+            if key not in seen:
+                seen.add(key)
+                hits.append(key)
+    return sorted(hits)
+
+
+def catalog_reader_functions(text):
+    """(line, name) for every function here that walks a directory and decodes
+    JSON out of it -- the shape of load_catalog(), whatever it is called.
+
+    The check this replaces grepped for `def load_catalog(` and
+    `def hwscan_cached(`.  A rename defeated it, and nothing else did.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        enumerates = decodes = False
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Call):
+                continue
+            attr = getattr(inner.func, "attr", None)
+            name = getattr(inner.func, "id", None)
+            if attr in DIR_ENUMERATORS or name in DIR_ENUMERATORS:
+                enumerates = True
+            if (attr in ("load", "loads")
+                    and getattr(getattr(inner.func, "value", None), "id", None) == "json"):
+                decodes = True
+        if enumerates and decodes:
+            found.append((node.lineno, node.name))
+    return sorted(found)
+
+
+def library_program_paths(text):
+    """The absolute program paths the shared library declares in PROGRAMS.
+
+    Read so that a front-end naming one of them can be told apart from a
+    front-end naming a program the table does not carry at all. The first is
+    this check's own duplication; the second is a hole in the table.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict)):
+            continue
+        if not any(getattr(target, "id", None) == "PROGRAMS"
+                   for target in node.targets):
+            continue
+        paths = set()
+        for value in node.value.values:
+            if isinstance(value, ast.Tuple) and value.elts:
+                first = value.elts[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    paths.add(first.value)
+        return paths
+    return set()
+
+
+def library_resolution(text):
+    """How this front-end gets the library: by file, by name, or not at all."""
+    kinds = set()
+    if imports_module(text, DESKTOP_LIBRARY_MODULE):
+        kinds.add("name")
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return kinds
+    for node in walk_reachable(tree):
+        if isinstance(node, ast.Call):
+            called = getattr(node.func, "attr", None) or getattr(node.func, "id", None)
+            if called in FILE_LOADERS:
+                kinds.add("file")
+    return kinds
+
+
+def builder_bundle_argvs(builder):
+    """(helper constant, verb as written) for every pkexec argv this builder
+    produces.
+
+    Read from the AST rather than with a regex over the RAW function source:
+    `[pkexec, helper, "install", id]` and `["pkexec", BUNDLE_HELPER, "install",
+    id]` are the same argv and both are read here, and a comment can no longer
+    supply one.  A verb laundered through a variable is not the literal
+    "install" and is still reported -- that property is the point of the check
+    and is kept exactly.
+    """
+    tree = parse_fragment(builder)
+    if tree is None:
+        return []
+    out = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.List, ast.Tuple)) or len(node.elts) < 2:
+            continue
+        head = node.elts[0]
+        if not (getattr(head, "id", None) == "pkexec"
+                or (isinstance(head, ast.Constant) and head.value == "pkexec")):
+            continue
+        helper = node.elts[1]
+        constant = (getattr(helper, "id", None)
+                    or getattr(helper, "attr", None)
+                    or (helper.value if isinstance(helper, ast.Constant) else ""))
+        verb = node.elts[2] if len(node.elts) > 2 else None
+        spelled = (f'"{verb.value}"'
+                   if isinstance(verb, ast.Constant) and isinstance(verb.value, str)
+                   else None)
+        out.append((str(constant), spelled))
+    return out
+
+
+def builder_resolves_pkexec_by_table(builder):
+    """True when the builder resolves pkexec through trusted_program().
+
+    Read from the AST, because the substring check this replaces ran over the
+    raw source: `# trusted_program("pkexec")` in a comment satisfied it while
+    the code called shutil.which("pkexec").  That plant was measured, not
+    theorised -- it reported "DRIFT findings: 0".
+    """
+    tree = parse_fragment(builder)
+    if tree is None:
+        return False
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call)
+                and (getattr(node.func, "id", None) == "trusted_program"
+                     or getattr(node.func, "attr", None) == "trusted_program")
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "pkexec"):
+            return True
+    return False
+
+
+def imports_module(text: str, name: str) -> bool:
+    """True when this source really imports `name`.
+
+    Reading the import statement rather than searching for the word: both
+    front-ends also name the module in the ImportError they raise without it,
+    so a file that stopped importing it would still have contained the string.
+    `import something as sf_desktop` binds the name and imports another module,
+    which is the same failure wearing the right label.
+
+    Reading only REACHABLE statements, because it used to read all of them:
+    `if False:` + `import sf_desktop` satisfied this function while the name
+    was bound to something else entirely (ATTACK C).
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return False
+    for node in walk_reachable(tree):
+        if isinstance(node, ast.Import):
+            if any(alias.name == name for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom) and node.module == name:
+            return True
+    return False
+
+
+def code_text(text: str) -> str:
+    """`text` with comments and docstrings blanked, line numbers preserved.
+
+    Every count below is about CODE.  The house style here is to name the
+    defect a change removed and to say which file a constant points at, so a
+    scanner that cannot tell a path in a sentence from a path in an argv either
+    fires on the explanation or teaches the next author to delete it.  That is
+    the same reason tools/tests/test_privileged_operations.py reads code_lines()
+    rather than the file.  String literals that are not docstrings are KEPT:
+    the constants this check is about are string literals.
+    """
+    lines = text.splitlines()
+    prose = set()
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        tree = None          # debian/control and *.install are not Python
+    if tree is not None:
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Expr)
+                    and isinstance(node.value, ast.Constant)
+                    and isinstance(node.value.value, str)):
+                prose.update(range(node.lineno,
+                                   (node.end_lineno or node.lineno) + 1))
+    return "\n".join("" if (number in prose or line.lstrip().startswith("#"))
+                      else line
+                      for number, line in enumerate(lines, 1))
 
 
 def bundle_builder_source(text: str):
@@ -908,24 +1412,251 @@ def bundle_builder_source(text: str):
     return None
 
 
+def depends_field(text: str, package: str) -> str:
+    """The Depends field of one binary stanza in a debian/control, as one
+    string.  Comment lines are dropped the way dpkg drops them, so a `#` note
+    inside the field cannot be read as a dependency."""
+    lines = [line for line in text.splitlines() if not line.startswith("#")]
+    stanza, collecting, field, in_field = [], False, [], False
+    for line in lines:
+        if line.startswith("Package:"):
+            collecting = line.split(":", 1)[1].strip() == package
+        if not collecting:
+            continue
+        stanza.append(line)
+    for line in stanza:
+        if line.startswith("Depends:"):
+            in_field = True
+            field.append(line.split(":", 1)[1])
+            continue
+        if in_field:
+            if line[:1].isspace() and line.strip():
+                field.append(line.strip())
+            elif line.strip() and not line[:1].isspace():
+                break
+    return " ".join(field)
+
+
 def check_desktop_helpers(_truth: dict) -> list[Finding]:
-    """The two desktop front-ends agree on helper paths and pkexec argv."""
+    """There is ONE desktop library, both front-ends load it, and nothing
+    restates what it says.
+
+    Every finding below is a way for the duplication to come back: a front-end
+    spelling a helper path again -- in any spelling that folds to the same
+    file -- a front-end assembling a privileged argv at all, a function that
+    reads the catalog directory whatever it is called, the library losing one
+    of the facts it was created to hold, or the packaging silently making
+    "both import one module" untrue on an installed system while it stays true
+    in this tree.
+
+    DETECTED, not ENFORCED.  The two words are not interchangeable here
+    (docs/PRIVILEGED_OPERATIONS.md: ENFORCED means the enforcement layer
+    prevents the behaviour AND an adversarial test proves it).  This is a
+    CI-time scanner over source SHAPE: it reads what the tree says, it stops no
+    process from doing anything, and a spelling it cannot fold is a spelling it
+    cannot see -- a program name reached through a dict subscript, a path built
+    with chr(), a privileged helper under a name prefix nobody added to
+    PRIVILEGED_PREFIXES.  Those three were planted and MISSED, deliberately
+    measured rather than guessed.
+
+    The row this check first shipped under said ENFORCED over "one
+    implementation of catalog/hwscan/launch/installed-map/privileged argv".
+    The barrier underneath was `path in code` plus a grep for
+    `def load_catalog(`, and an adversarial verifier walked a complete second
+    catalog reader and a complete second bundle installer past it on the first
+    attempt, with every test green.  The word was wrong before the code was.
+
+    What IS enforced on this seam is smaller and lives in the library:
+    sf_desktop.py resolves every program it runs from PROGRAMS, so a front-end
+    that CALLS the library cannot be handed a $PATH-resolved binary.  What this
+    check adds is DETECTION of a front-end that stops calling it.
+    """
     findings = []
-    for rel in HELPER_CONSUMERS:
+
+    # -- the library itself ------------------------------------------------
+    try:
+        library = read(DESKTOP_LIBRARY)
+    except OSError as exc:
+        return [Finding(
+            "DRIFT", "desktop-helpers", DESKTOP_LIBRARY,
+            f"the one shared desktop library is unreadable ({exc}); with no "
+            f"library there is nothing for the two front-ends to share",
+            "W-30: sf_desktop.py is the single implementation of catalog, "
+            "hwscan, launch and the privileged install argv")]
+
+    library_code = code_text(library)
+    for api in DESKTOP_LIBRARY_API:
+        if library_code.count(api) != 1:
+            findings.append(Finding(
+                "DRIFT", "desktop-helpers", site(DESKTOP_LIBRARY, api),
+                f"the shared library defines `{api}` {library_code.count(api)} times, "
+                f"expected exactly once; every front-end reads this fact from "
+                f"here and from nowhere else",
+                "restore the definition, or move its callers with it"))
+
+    for label, path in HELPER_PATHS.items():
+        count = library_code.count(path)
+        if count != 1:
+            findings.append(Finding(
+                "DRIFT", "desktop-helpers", site(DESKTOP_LIBRARY, path),
+                f"the {label} path {path!r} is written {count} times in the "
+                f"library; the whole point of the library is that it is the "
+                f"one place this path is written",
+                "name it once and refer to the constant"))
+
+    # -- and nothing else implements them ----------------------------------
+    #
+    # Four scans, because the two this replaces were string greps that a rename
+    # or a second spelling defeated: an adversarial verifier planted a complete
+    # second catalog reader and a complete second privileged argv builder in a
+    # front-end and got 0 findings out of them.  The first scan below is the
+    # original substring one, kept because it catches a reserved path named
+    # inside a longer string, which the folding scan deliberately does not.
+    # The other three read SHAPE: what a string actually resolves to, what a
+    # list display's head actually is, and what a function actually does.
+    labels = {path: label for label, path in HELPER_PATHS.items()}
+    declared = library_program_paths(library)
+    for rel in DELEGATING_SITES:
         try:
             text = read(rel)
         except OSError as exc:
             findings.append(Finding("DRIFT", "desktop-helpers", rel,
                                     f"unreadable ({exc})"))
             continue
+        code = code_text(text)
         for label, path in HELPER_PATHS.items():
-            if path not in text:
+            if path in code:
                 findings.append(Finding(
-                    "DRIFT", "desktop-helpers", rel,
-                    f"does not name the shared {label} path {path!r}; the two "
-                    f"desktop front-ends must agree on where the helper lives",
-                    "keep both copies identical, or import one constant"))
+                    "DRIFT", "desktop-helpers", site(rel, path),
+                    f"a desktop front-end spells the {label} path {path!r} out "
+                    f"again. Two spellings of one path is how the front-ends "
+                    f"came to disagree in the first place, and a second copy "
+                    f"that happens to match today is still a second copy",
+                    f"read it from the shared library ({DESKTOP_LIBRARY})"))
+        for lineno, path in assembled_path_hits(text):
+            if path in code:
+                continue                  # already reported by the scan above
+            findings.append(Finding(
+                "DRIFT", "desktop-helpers", f"{rel}:{lineno}",
+                f"a desktop front-end assembles the {labels[path]} path "
+                f"{path!r} out of fragments. It is the same file wearing a "
+                f"spelling a substring search cannot see, which is how a second "
+                f"bundle installer was planted in a front-end and reported clean",
+                f"read it from the shared library ({DESKTOP_LIBRARY})"))
+        for lineno, program in privileged_argv_displays(text):
+            # Two different findings wearing one shape, and collapsing them
+            # would be the same mistake this check was pulled up for.
+            #
+            #   a bare name, or a path the library ALREADY declares -- this
+            #   stage's duplication, and in the bare case the session's $PATH
+            #   decides which binary the administrator password is typed into;
+            #
+            #   an absolute path to a program the table does not carry at all
+            #   -- a real gap, in another package's page AND in the table, and
+            #   not something this stage's files can close. DETECTED.
+            if not program.startswith("/") or program in declared:
+                findings.append(Finding(
+                    "DRIFT", "desktop-helpers", f"{rel}:{lineno}",
+                    f"a desktop front-end builds a privileged argv itself: the "
+                    f"list at this line begins with {program!r}. Every argv that "
+                    f"asks for an administrator password, and every argv naming "
+                    f"a Shadowfetch helper, is built by the shared library and "
+                    f"nowhere else -- a front-end that assembles one has taken "
+                    f"back the decision about which binary the password is typed "
+                    f"into, which is the divergence W-30's fifth item is about",
+                    f"call bundle_install_argv() / trusted_program() in "
+                    f"{DESKTOP_LIBRARY}"))
+            else:
+                findings.append(Finding(
+                    "BLOCKED", "desktop-helpers", f"{rel}:{lineno}",
+                    f"a desktop page builds a privileged argv from its own "
+                    f"declaration of {program!r}, a program the shared library's "
+                    f"trusted-program table does not carry. The path is absolute, "
+                    f"so the session's PATH does not choose the binary -- but the "
+                    f"table is supposed to be the one place a Shadowfetch program "
+                    f"is named and classified, and this is a second place.",
+                    f"add it to PROGRAMS in {DESKTOP_LIBRARY} with a trust "
+                    f"classification, then have the page call "
+                    f"trusted_program(...) instead of its own constant. Both "
+                    f"halves are outside this stage's territory."))
+        for lineno, name in catalog_reader_functions(text):
+            findings.append(Finding(
+                "DRIFT", "desktop-helpers", f"{rel}:{lineno}",
+                f"`{name}()` walks a directory and decodes JSON out of it: that "
+                f"is a second catalog reader, whatever it is called. Two "
+                f"front-ends disagreeing about the contents of one directory -- "
+                f"one of them rejecting the array form -- is the defect W-30 "
+                f"names, and the function's NAME is not what made the old one a "
+                f"reader",
+                f"call load_catalog() / catalog_by_id() in {DESKTOP_LIBRARY}"))
+        if rel not in FRONT_ENDS:
+            continue                      # only the entry points load the library
+        resolution = library_resolution(text)
+        if not resolution or DESKTOP_LIBRARY_DIR not in code:
+            findings.append(Finding(
+                "DRIFT", "desktop-helpers", rel,
+                f"this front-end does not load the shared desktop library "
+                f"({DESKTOP_LIBRARY_DIR}/{DESKTOP_LIBRARY_MODULE}.py), so "
+                f"whatever it is using for the catalog, the hwscan rule or the "
+                f"privileged argv is a second implementation",
+                "load the library the way sfcc/desktop.py does"))
+        elif "file" not in resolution:
+            findings.append(Finding(
+                "BLOCKED", "desktop-helpers", site(rel, "import sf_desktop"),
+                "this front-end checks that the library file exists and then "
+                "resolves the module BY NAME. `import` consults sys.modules "
+                "before sys.path, so a module already registered under that "
+                "name is returned and the existence check just performed "
+                "decides nothing: a planted sf_desktop was accepted, with "
+                "PKEXEC back to the bare word and the install argv resolved "
+                "through $PATH again. It needs code execution inside the "
+                "process already, so it is defence in depth and not a privilege "
+                "boundary -- but it is the PATH-shadowing shape this program "
+                "has been bitten by before, and the loader's own docstring "
+                "rests its safety case on the aliasing. sfcc/desktop.py was "
+                "fixed; this front-end belongs to another package.",
+                "load the file that was just checked: spec = "
+                "importlib.util.spec_from_file_location('sf_desktop', location "
+                "/ 'sf_desktop.py'); module = importlib.util.module_from_spec("
+                "spec); sys.modules['sf_desktop'] = module; "
+                "spec.loader.exec_module(module)"))
 
+    # -- the packaging that makes that true on an installed system ---------
+    try:
+        install = read(LIBRARY_INSTALL)
+    except OSError as exc:
+        findings.append(Finding("DRIFT", "desktop-helpers", LIBRARY_INSTALL,
+                                f"unreadable ({exc})"))
+    else:
+        shipped = any(DESKTOP_LIBRARY_DIR.lstrip("/") in line
+                      and "sf_desktop.py" in line
+                      for line in install.splitlines())
+        if not shipped:
+            findings.append(Finding(
+                "DRIFT", "desktop-helpers", LIBRARY_INSTALL,
+                f"{DESKTOP_LIBRARY_PACKAGE} does not ship the shared library "
+                f"to {DESKTOP_LIBRARY_DIR}. Both front-ends import it by that "
+                f"absolute path, so an unshipped library is two ImportErrors "
+                f"on an installed system and a green tree here",
+                f"add sf_desktop.py to {LIBRARY_INSTALL}"))
+
+    for rel, package in sorted(FRONT_END_CONTROL.items()):
+        try:
+            control = read(rel)
+        except OSError as exc:
+            findings.append(Finding("DRIFT", "desktop-helpers", rel,
+                                    f"unreadable ({exc})"))
+            continue
+        if DESKTOP_LIBRARY_PACKAGE not in depends_field(control, package):
+            findings.append(Finding(
+                "DRIFT", "desktop-helpers", site(rel, "Depends:"),
+                f"{package} imports the shared desktop library but does not "
+                f"Depends on {DESKTOP_LIBRARY_PACKAGE}, which ships it. The "
+                f"front-end raises ImportError without it; Recommends or "
+                f"nothing at all means that is allowed to happen",
+                f"Depends: {DESKTOP_LIBRARY_PACKAGE} (= ${{binary:Version}})"))
+
+    # -- the privileged argv is built once and delegated everywhere else ---
     for rel in BUNDLE_CALL_SITES:
         try:
             text = read(rel)
@@ -934,23 +1665,37 @@ def check_desktop_helpers(_truth: dict) -> list[Finding]:
                                     f"unreadable ({exc})"))
             continue
         builder = bundle_builder_source(text)
-        scope = text if builder is None else builder
-        calls = _PKEXEC_BUNDLE.findall(scope)
-        bundle_calls = [c for c in calls if "BUNDLE" in c[0].upper()
-                        or c[0] == "helper"]
-        if not bundle_calls:
-            # A site that DELEGATES is not a site that drifted. The Control
-            # Center pages call desktop.bundle_install_argv() now, so the argv
-            # is spelled once, in the builder, which is checked on its own
-            # source above. Demanding the literal at every page would push the
+        if builder is None:
+            # A site that DELEGATES is not a site that drifted. Every page and
+            # both front-ends call bundle_install_argv() now, so the argv is
+            # spelled once, in the builder, which is checked on its own source
+            # below. Demanding the literal at every call site would push the
             # copies back out, which is the drift this check exists to stop.
-            if builder is None and "bundle_install_argv(" in text:
+            if "bundle_install_argv(" in text:
                 continue
             findings.append(Finding(
                 "DRIFT", "desktop-helpers", rel,
-                "no pkexec bundle-install call found and nothing delegates to "
-                "bundle_install_argv(); this file is one of the call sites the "
-                "argv contract covers"))
+                "this file is one of the sites the privileged bundle-install "
+                "argv contract covers, and it neither builds the argv nor "
+                "delegates to bundle_install_argv()"))
+            continue
+        if rel != DESKTOP_LIBRARY:
+            findings.append(Finding(
+                "DRIFT", "desktop-helpers", site(rel, "def bundle_install_argv"),
+                "a second bundle_install_argv() outside the shared library. "
+                "The duplication W-30 removed was exactly this: the correct "
+                "argv existing in two places, one of which named pkexec by a "
+                "bare word the session's PATH resolved",
+                f"delete it and call the one in {DESKTOP_LIBRARY}"))
+            continue
+        calls = builder_bundle_argvs(builder)
+        bundle_calls = [c for c in calls if "BUNDLE" in c[0].upper()
+                        or c[0] == "helper"]
+        if not bundle_calls:
+            findings.append(Finding(
+                "DRIFT", "desktop-helpers", site(rel, "def bundle_install_argv"),
+                "the shared builder no longer produces a pkexec bundle-install "
+                "argv; every Install button in both front-ends is built here"))
             continue
         for constant, verb in bundle_calls:
             if verb != '"install"':
@@ -959,17 +1704,29 @@ def check_desktop_helpers(_truth: dict) -> list[Finding]:
                     f'pkexec {constant} is called without the "install" verb; the '
                     f"helper exits 2 AFTER the admin password prompt",
                     'the contract is ["pkexec", <helper>, "install", <catalog id>]'))
+        if not builder_resolves_pkexec_by_table(builder):
+            findings.append(Finding(
+                "DRIFT", "desktop-helpers", site(rel, "def bundle_install_argv"),
+                "the shared builder does not resolve pkexec through the trusted "
+                "program table. A bare name here is resolved by whatever PATH "
+                "the session hands the process, and this argv is what asks for "
+                "an administrator password",
+                'pkexec = trusted_program("pkexec")'))
 
     findings.append(Finding(
-        "BLOCKED", "desktop-helpers", "sfcc/busutil.py + shadowfetch-welcome",
-        "load_catalog(), the hwscan freshness rule and the five helper paths are "
-        "still implemented twice, in two divergent shapes (busutil returns a list "
-        "filtered by kind and tolerates a JSON array; Welcome returns a dict keyed "
-        "by id and does not). The gate holds them to the same PATHS and the same "
-        "argv; it cannot make them one implementation.",
-        "ADR/W-30: a shared desktop library imported by both. That is a new "
-        "installed module in two packages (debian/*.install), outside Stage X "
-        "territory."))
+        "BLOCKED", "desktop-helpers",
+        "sfcc/busutil.py:nm_connectivity_full + shadowfetch-welcome:NMWatcher",
+        "`net`, the one member of W-30's list this stage did not move, is still "
+        "implemented twice. The Control Center reads NetworkManager's "
+        "Connectivity property through dbus-python; Welcome reads the same "
+        "property from the same daemon through Qt DBus and falls back to "
+        "polling nm-online. Catalog, hwscan, launch, the installed-package map "
+        "and the privileged install argv are now one implementation and are "
+        "checked above; connectivity is not.",
+        "sharing it means one of the two front-ends changing its D-Bus stack -- "
+        "dbus-python inside a Qt event loop, or QtDBus inside the Control "
+        "Center. DETECTED, not fixed, and deliberately not papered over with a "
+        "third wrapper that would make three implementations."))
     return findings
 
 
@@ -988,13 +1745,33 @@ def check_release_pointer(truth: dict) -> list[Finding]:
         return [Finding("DRIFT", "release-pointer", worker, f"unreadable ({exc})")]
 
     implemented = pointer["key"] in text
-    if pointer["status"] == "NOT IMPLEMENTED" and implemented:
+    # THE READER AND THE WRITER ARE TWO FACTS, and the status has to be checked
+    # against both. This fired only when the status was the exact string
+    # "NOT IMPLEMENTED", so once it became "READER IMPLEMENTED, WRITER PENDING"
+    # neither branch could reach it -- the gate over a status string could no
+    # longer notice that the string was stale, which is the failure it exists
+    # to catch, one level up. The status is now derived from what the two files
+    # actually contain and compared with what is written down.
+    try:
+        publisher = read(pointer["written_by"])
+    except OSError:
+        publisher = ""
+    writes = pointer["key"] in publisher
+    expected = {
+        (False, False): "NOT IMPLEMENTED",
+        (True, False): "READER IMPLEMENTED, WRITER PENDING",
+        (False, True): "WRITER IMPLEMENTED, READER PENDING",
+        (True, True): "IMPLEMENTED",
+    }[(implemented, writes)]
+    if pointer["status"] != expected:
         findings.append(Finding(
-            "DRIFT", "release-pointer", site(worker, pointer["key"]),
-            f"the worker now reads {pointer['key']}, but tools/truth/release.json "
-            f"still records the pointer as NOT IMPLEMENTED",
-            "update release_pointer.status in tools/truth/release.json"))
-    elif not implemented:
+            "DRIFT", "release-pointer", site("tools/truth/release.json", "status"),
+            f"the reader {'does' if implemented else 'does not'} read "
+            f"{pointer['key']} and the writer {'does' if writes else 'does not'} "
+            f"write it, so the status is {expected!r}; release.json records "
+            f"{pointer['status']!r}",
+            f"set release_pointer.status to {expected!r} in tools/truth/release.json"))
+    if not implemented:
         findings.append(Finding(
             "BLOCKED", "release-pointer", site(worker, "async function latestRelease"),
             '"the current release" is still derived by sorting an unpaginated '

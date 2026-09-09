@@ -344,17 +344,26 @@ AUDIT = (
 # an assumption: there is no syscall-filter profile anywhere in this stack.
 SECCOMP_PROFILE = {
     "field": "seccomp_profile",
+    # STILL NOT DECLARABLE, and now ENFORCED anyway. Those two are not in
+    # tension: the filter is Firebreak's, identical for every sandbox, and no
+    # provider can ask for a different one. A manifest property would be a
+    # provider choosing its own syscall surface, which is the thing a sandbox
+    # boundary exists in order not to depend on.
     "declared": False,
     "validated": False,
     "narrowed": False,
     "passed": False,
-    "firebreak_flag": None,
-    "enforced": "no",
-    "status": "NOT REPRESENTED",
+    "firebreak_flag": "--seccomp <fd>",
+    "enforced": "yes",
+    "status": "NOT DECLARABLE, ALWAYS APPLIED",
     "evidence": {"declared": "executed", "enforced": "executed"},
-    "notes": "The manifest schema has no seccomp/syscall-profile property, SandboxSpec has "
-             "no field for one, and Firebreak never passes bwrap --seccomp. bwrap's own "
-             "default no-new-privs is the only syscall-level restriction in play.",
+    "notes": "The manifest schema has no seccomp/syscall-profile property and SandboxSpec "
+             "has no field for one, deliberately: the profile is not a provider's to "
+             "choose. Firebreak assembles a classic-BPF program in its own source, seals "
+             "it in a memfd and passes bwrap --seccomp <fd>; 46 syscalls answer EPERM, and "
+             "a self-test loads the real program and makes a denied and a permitted call "
+             "under it before any argv exists, refusing the run rather than degrading if "
+             "either answer is wrong.",
 }
 
 BY_FIELD = {row["field"]: row for row in AUDIT}
@@ -539,10 +548,25 @@ class DeclaredTests(unittest.TestCase):
                 self.assertEqual(found is not None, row["declared"], row["manifest_key"])
 
     def test_no_seccomp_or_syscall_profile_is_declarable(self):
+        """Not declarable, which is a different claim from not applied.
+
+        This test also asserted `--seccomp` appeared nowhere in Firebreak, and
+        that was true and worth pinning while no filter existed. Stage F built
+        one. The claim that survives -- and that matters more -- is that a
+        PROVIDER cannot ask for a syscall surface of its own: the profile is
+        Firebreak's, the same for every sandbox, and a manifest property would
+        be provider code choosing its own restraint.
+        """
         text = json.dumps(self.schema).lower()
         for word in ("seccomp", "syscall", "landlock", "apparmor"):
             self.assertNotIn(word, text, SECCOMP_PROFILE["notes"])
-        self.assertNotIn("--seccomp", FIREBREAK_BIN.read_text())
+        self.assertFalse(
+            [f for f in dataclasses.fields(P.SandboxSpec)
+             if "seccomp" in f.name or "syscall" in f.name],
+            "SandboxSpec grew a field for a profile a provider could choose")
+        # And the filter itself is there, which is why the assertion above is
+        # the one that carries the meaning now.
+        self.assertIn("--seccomp", FIREBREAK_BIN.read_text())
 
 
 # --------------------------------------------------------------------------- #
@@ -845,8 +869,17 @@ class FirebreakSurfaceTests(unittest.TestCase):
         self.assertEqual(net, "none")
         self.assertEqual(credentials, ["OPENAI_API_KEY"])
         self.assertEqual(grants, [grant])
-        # and nothing masks or filters egress
-        self.assertNotIn("--seccomp", command)
+        # A SYSCALL FILTER, ALWAYS. This asserted `--seccomp` was absent, and
+        # was right to while nothing filtered syscalls. Stage F applies one to
+        # every sandbox, so the honest assertion is that it is present and that
+        # the descriptor it names was actually opened -- a flag with nothing
+        # behind it is the failure this file exists to catch.
+        self.assertIn("--seccomp", command)
+        descriptor = command[command.index("--seccomp") + 1]
+        self.assertTrue(descriptor.isdigit(), descriptor)
+        self.assertGreater(int(descriptor), 2,
+                           "the filter was handed one of the standard streams")
+        # This mission declared no masked path, so nothing masks one.
         self.assertNotIn("--tmpfs /home/agent/.ssh", joined)
 
     def test_firebreak_refuses_limits_the_manifest_schema_would_accept(self):

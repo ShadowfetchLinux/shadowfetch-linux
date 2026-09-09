@@ -126,6 +126,48 @@ def evidence_quality_errors(path: Path, kind: str) -> list[str]:
     return errors
 
 
+def artifact_errors(data: dict[str, Any], manifest: Path) -> list[str]:
+    """Re-hash the ISO this manifest claims to be about.
+
+    THE GATE NEVER OPENED IT. `verify` checked that `artifact.iso_sha256` was a
+    non-empty string and stopped, so a manifest could name the digest of an
+    image that did not exist, or of a different image entirely, and
+    `make acceptance-gate` would print ACCEPTANCE_PASSED. Two tools downstream
+    -- evidence.py and package_release_evidence -- already re-hash the real
+    file and refuse on mismatch, so the check existed twice and zero times in
+    the gate the release criteria actually point at.
+
+    Absence is an error, not a skip. A manifest that describes an artifact
+    nobody can produce is not "not yet verifiable"; it is describing nothing.
+    """
+    artifact = data.get("artifact")
+    if not isinstance(artifact, dict):
+        return ["artifact must be an object"]
+    declared = artifact.get("iso_sha256")
+    path_value = artifact.get("iso_path")
+    if not isinstance(path_value, str) or not path_value:
+        return ["artifact.iso_path is not recorded, so nothing can be verified"]
+    if not isinstance(declared, str) or len(declared) != 64:
+        return ["artifact.iso_sha256 must contain 64 hexadecimal characters"]
+    iso = Path(path_value)
+    if not iso.is_absolute():
+        iso = manifest.parents[2] / path_value
+    if not iso.is_file():
+        return [f"artifact.iso_path names no file: {iso}"]
+    errors: list[str] = []
+    actual = sha256_file(iso)
+    if actual != declared.lower():
+        errors.append(
+            f"artifact.iso_sha256 does not describe {iso}: manifest says "
+            f"{declared}, the file is {actual}")
+    size = artifact.get("iso_size_bytes")
+    on_disk = iso.stat().st_size
+    if isinstance(size, int) and size != on_disk:
+        errors.append(
+            f"artifact.iso_size_bytes says {size}, {iso} is {on_disk} bytes")
+    return errors
+
+
 def waiver_errors(case: dict[str, Any]) -> list[str]:
     """A waived case must carry a written, attributed reason."""
     waiver = case.get("waiver")
@@ -234,6 +276,17 @@ def verify(args: argparse.Namespace) -> int:
     if args.phase == "final":
         selected_phases.add("postpublish")
 
+    # Checked BEFORE the cases, and in both phases: a manifest whose artifact
+    # digest does not describe the file on disk is wrong whether or not any
+    # case has been recorded yet.
+    artifact_problems = artifact_errors(data, manifest)
+    artifact_digest = (data.get("artifact") or {}).get("iso_sha256") or ""
+    if args.allow_pending:
+        for problem in artifact_problems:
+            print(f"REPORT: {problem}")
+    else:
+        errors.extend(artifact_problems)
+
     selected = [
         case
         for case in data["cases"]
@@ -291,6 +344,25 @@ def verify(args: argparse.Namespace) -> int:
                 errors.append(
                     f"{label}: SHA-256 mismatch, expected {expected_hash}, got {actual_hash}"
                 )
+            # BOUND TO THE ARTIFACT, or it is evidence about nothing. An entry
+            # was {kind, path, sha256} and nothing more: the size and entropy
+            # floors below stop a 0-byte file and a blank screenshot, and they
+            # cannot tell a real result from a plausible-looking one. ICE-01, a
+            # REQUIRED case, passed on twelve bytes reading b'ice\noffline\n'
+            # -- over the 8-byte floor, over the 1.5-bit entropy floor, and
+            # about no particular image. The VM harness has always bound its
+            # receipts to the artifact digest; this is the manifest learning to
+            # ask for the same thing.
+            bound = item.get("artifact_sha256")
+            if not isinstance(bound, str) or len(bound) != 64:
+                errors.append(
+                    f"{label}: no artifact_sha256, so this evidence is not "
+                    "about any particular image; re-record it against the "
+                    "artifact under test")
+            elif bound.lower() != str(artifact_digest).lower():
+                errors.append(
+                    f"{label}: recorded against artifact {bound[:16]}..., but "
+                    f"this manifest is about {str(artifact_digest)[:16]}...")
             errors.extend(
                 f"{label}: {error}"
                 for error in evidence_quality_errors(evidence_path, kind)
@@ -376,6 +448,7 @@ def record(args: argparse.Namespace) -> int:
 
     if args.clear_evidence:
         case["evidence"] = []
+    unbound: list[str] = []
     if args.evidence:
         evidence_root = evidence_root_for(manifest, data)
         evidence_root.mkdir(parents=True, exist_ok=True)
@@ -396,13 +469,22 @@ def record(args: argparse.Namespace) -> int:
             problems = evidence_quality_errors(source, kind)
             if problems:
                 raise ValueError(f"unusable evidence {source}: " + "; ".join(problems))
-            recorded.append(
-                {
-                    "kind": kind,
-                    "path": relative.as_posix(),
-                    "sha256": sha256_file(source),
-                }
-            )
+            entry = {
+                "kind": kind,
+                "path": relative.as_posix(),
+                "sha256": sha256_file(source),
+            }
+            # Stamped here, from the manifest, so a person cannot forget it and
+            # cannot choose it. Recording before the artifact exists is allowed
+            # -- the source gate runs before an image is cut -- but it produces
+            # UNBOUND evidence, which a strict verify refuses, so such a case
+            # has to be re-recorded against the image it is meant to be about.
+            digest = (data.get("artifact") or {}).get("iso_sha256")
+            if isinstance(digest, str) and len(digest) == 64:
+                entry["artifact_sha256"] = digest.lower()
+            else:
+                unbound.append(relative.as_posix())
+            recorded.append(entry)
         case["evidence"] = recorded
 
     if args.status == "pass" and not case["evidence"]:
@@ -412,6 +494,15 @@ def record(args: argparse.Namespace) -> int:
         f"RECORDED case={args.case_id} status={args.status} "
         f"evidence={len(case['evidence'])}"
     )
+    if unbound:
+        # Said loudly, at the moment it happens, rather than discovered at the
+        # gate weeks later. This recording will not satisfy `verify`.
+        print(
+            "UNBOUND: this manifest records no artifact digest, so "
+            + ", ".join(unbound)
+            + " is evidence about no particular image. Record the artifact "
+              "first, then re-record this case.",
+            file=sys.stderr)
     return 0
 
 

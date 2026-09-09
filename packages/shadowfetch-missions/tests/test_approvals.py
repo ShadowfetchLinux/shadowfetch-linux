@@ -101,7 +101,15 @@ class PolicyDecisions(unittest.TestCase):
         # path_masking left in Stage E and network_destination in Stage C, each
         # by gaining a mechanism. Only the syscall profile remains, and it is
         # not observable at all.
-        self.assertEqual(matrix["syscalls"]["mediation"], pol.NOT_OBSERVABLE)
+        # `syscalls` left this list in Stage F. It said "no seccomp profile is
+        # applied and none is expressible", which was true; a classic-BPF
+        # filter is applied to every sandbox now and 46 calls answer EPERM.
+        # Mediation is the right word because the calls are PREVENTED -- what
+        # is still not observed is WHICH permitted syscalls a payload makes,
+        # and that is a different question from this row.
+        self.assertEqual(matrix["syscalls"]["mediation"], pol.FULLY_MEDIATED)
+        self.assertEqual(matrix["tool_actions_inside_a_turn"]["mediation"],
+                         pol.NOT_OBSERVABLE)
         self.assertEqual(matrix["path_masking"]["mediation"], pol.FULLY_MEDIATED)
         # PARTIAL, and not a hedge. A declared allowlist becomes a default-DROP
         # ruleset and IS full mediation; the same posture with no hosts declared
@@ -134,6 +142,47 @@ class PolicyDecisions(unittest.TestCase):
             closed.mediation["network_destination"]["mediation"],
             pol.FULLY_MEDIATED)
         self.assertFalse(closed.mediation["network_destination"]["relied_on"])
+
+
+class ScopeDeserialisation(unittest.TestCase):
+    """A permissive deserialiser for a security-critical field.
+
+    `tuple("corp*")` is `('c','o','r','p','*')`, and `'*'` in that tuple is the
+    wildcard that makes an approval cover every destination. A scope stored with
+    `egress_hosts` as a STRING rather than a list would therefore widen itself
+    into a grant for everything. The normal path always writes a JSON array, so
+    this was not reachable -- and the deserialiser of an approval scope is the
+    wrong place to be relaxed about a thing that decides coverage.
+    """
+
+    def test_a_string_where_a_list_belongs_is_refused(self):
+        for field in ("egress_hosts", "paths", "credential_ids"):
+            with self.subTest(field=field):
+                with self.assertRaises(ValueError):
+                    pol.Scope.from_json(json.dumps({field: "corp*"}))
+
+    def test_the_widening_that_would_have_caused_is_not_reachable(self):
+        """The concrete consequence, written down so the reason survives."""
+        with self.assertRaises(ValueError):
+            pol.Scope.from_json(json.dumps({"egress_hosts": "corp*"}))
+        # And through the honest shape, a wildcard still means what a human
+        # typed: everything.
+        wide = pol.Scope.from_json(json.dumps({"egress_hosts": ["*"]}))
+        self.assertEqual(wide.egress_hosts, ("*",))
+
+    def test_absent_and_empty_are_both_nothing(self):
+        for blob in ("{}", json.dumps({"egress_hosts": None}),
+                     json.dumps({"egress_hosts": []})):
+            with self.subTest(blob=blob):
+                self.assertEqual(pol.Scope.from_json(blob).egress_hosts, ())
+
+    def test_a_round_trip_survives(self):
+        scope = pol.Scope(capability="code_change", provider="codex",
+                          workspace="/w", network="allowlist",
+                          credential_ids=("CODEX_API_KEY",),
+                          paths=("/usr/share",),
+                          egress_hosts=("api.openai.com",))
+        self.assertEqual(pol.Scope.from_json(scope.to_json()), scope)
 
 
 class ScopeContainment(unittest.TestCase):

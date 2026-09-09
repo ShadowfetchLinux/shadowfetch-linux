@@ -297,7 +297,7 @@ as unenforced. There is nothing else there to test.
 | **INTEGRATION TESTED** | YES -- measured through the real Firebreak: `with allowlist -> allowed REACHED, denied blocked:TimeoutError`; `no allowlist -> both REACHED`; `net=none -> both blocked`. |
 | **ADVERSARIAL TESTED** | YES -- attack_concurrency.py `21-an-allowlist-reaches-a-destination-it-never-allowed` (loopback contained, the allowlisted address reached, an un-allowlisted address blocked) and attack_approval.py `egress-widened-after-approval`, which now reports THE DESTINATION CHANGE WAS PREVENTED: `Scope.egress_hosts` carries the destinations, so widening the ceiling after a grant stops the approval covering the mission. |
 | **ENFORCEMENT LAYER** | nftables in a network namespace the launcher owns, installed by the process that created it, before the payload runs. |
-| **USER-FACING CLAIM ALLOWED?** | YES, with three limits stated. (a) FILTERING IS BY ADDRESS: a name is resolved once, on the host, at launch, so an address set that changes afterwards is unreachable until the next run. (b) IPv4 only -- the ruleset matches `ip daddr`, so IPv6 falls to the default drop. (c) DNS QUERIES LEAVE: the sandbox resolves through the NAT's forwarder at 10.0.2.3, which the ruleset permits, so a payload can encode data in query names. An allowlist narrows where bytes may be SENT; it is not a claim that nothing can be signalled out. |
+| **USER-FACING CLAIM ALLOWED?** | YES, with three limits stated. (a) FILTERING IS BY ADDRESS: a name is resolved once, on the host, at launch, so an address set that changes afterwards is unreachable until the next run. (b) IPv4 only -- the ruleset matches `ip daddr`, so an IPv6 destination is not filtered by it, and is unreachable one step earlier instead: slirp4netns provides no IPv6 route, so the connection fails with `Network is unreachable` rather than reaching the default drop. Same outcome, different mechanism, and the difference matters the day the NAT is given IPv6. (c) DNS QUERIES LEAVE: the sandbox resolves through the NAT's forwarder at 10.0.2.3, which the ruleset permits, so a payload can encode data in query names. An allowlist narrows where bytes may be SENT; it is not a claim that nothing can be signalled out. |
 | **NOTES** | Declaring NO hosts while the network is on is the case to watch: a NAT is attached and no ruleset is installed, so the sandbox reaches anything. That is why `POLICY_MEDIATION["network_destination"]` is `partially_mediated` in the static table and decided PER MISSION in `_mediation_for()` -- `fully_mediated` with declared hosts, `observable_only` without, and the decision lists it in `advisory_fields` in the second case. |
 
 ---
@@ -396,10 +396,59 @@ before-and-after rather than replacing one claim with another.
 sandbox spec remains. `unenforced_fields()` is `["syscall_profile"]`, which is
 the next row rather than a gap in an existing one.
 
-**Not representable at all:** syscall filtering. There is no schema property
-and no `bwrap --seccomp` anywhere in the tree (`SANDBOX_ENFORCEMENT` marks it
-`not_representable`, sf_providers.py:915; `test_no_seccomp_or_syscall_profile_is_declarable`,
-tests/test_sandbox_spec_audit.py:511).
+**Enforced, and still not declarable — the two are not in tension.** Syscall
+filtering. Firebreak assembles a classic-BPF program in its own source — no
+libseccomp, no helper binary, nothing resolved through a search path — seals it
+in a memfd and passes `bwrap --seccomp <fd>`; 46 syscalls answer EPERM. A
+self-test loads the real program in a throwaway child and makes a denied AND a
+permitted call under it before any argv exists, so a kernel that will not take
+the filter refuses the run rather than starting it unfiltered, and
+`enforcement()` reads the descriptor back and compares it byte-for-byte with the
+digest of what this build assembles. There is still no manifest property and no
+`SandboxSpec` field, deliberately: the profile is Firebreak's, identical for
+every sandbox, and a provider choosing its own syscall surface is exactly what a
+sandbox boundary exists in order not to permit.
+
+**Measured, against a byte-identical pre-change control.** 25 of the 46 rows
+changed an observed outcome and 16 were outright successes a payload could
+perform — `add_key`, `keyctl`, `request_key`, `io_uring_setup`,
+`process_vm_readv`/`writev`, `ptrace`, `kcmp`, `adjtimex`, `clock_adjtime`,
+`name_to_handle_at` all went from REACHED to `blocked:EPERM`. The escalation is
+the load-bearing part: `mount` and `chroot` are EPERM at first attempt only
+because bwrap drops capabilities, and that is one `unshare(CLONE_NEWUSER)` from
+being undone — measured before, `unshare ok -> mount REACHED`; after,
+`unshare ok -> mount blocked:EPERM`, and the same for `chroot`, `pivot_root`,
+`fsopen` and `open_tree`. `unshare` itself is still permitted, deliberately, and
+now buys nothing, because a seccomp filter is inherited into the namespace it
+creates and cannot be removed.
+
+**Why the rest of the table is not decoration**, also measured: a filter denying
+only `open`/`openat`/`openat2` on this kernel gave `open blocked:EPERM` and
+`io_uring_openat REACHED:fd5`, which then read `/etc/hostname` through the
+smuggled descriptor. Inside a filtered sandbox the same probe reports
+`blocked-at-setup:EPERM`.
+
+**The residuals, stated rather than rounded up.** 21 of the 46 rows changed
+nothing today — they were already EPERM and stayed EPERM through the escalation,
+so they are defence in depth and not new enforcement; the source table carries
+the measured baseline per row so a later reader cannot round that up. Nested
+user namespaces are still creatable on purpose, because glibc, node and chrome
+build their own (`bwrap --disable-userns` works here and is deliberately not
+shipped). A 32-bit payload dies with SIGSYS, because seccomp matches syscall
+NUMBERS and 165 is `mount` on x86_64 and `getpgrp` on i386, so the architecture
+gate refuses the personality rather than filtering the wrong table. No `ptrace`
+means no debugger inside the sandbox; no `perf_event_open` means no `perf`; no
+`syslog` means no `dmesg`; no nested bwrap. And only the PAYLOAD is filtered:
+systemd-run, the namespace helper and slirp4netns are Firebreak's own code.
+
+**Landlock is not used, and the reason is a measurement.** ABI 9 is present on
+this kernel, and `bubblewrap 0.11.0` here has no Landlock support at all
+(`bwrap --help` and `strings /usr/bin/bwrap` both return zero matches). A
+ruleset installed before bwrap is inherited across `execve` and would forbid
+bwrap its own bind mounts; using it would need a shim between bwrap and the
+payload. What it expresses — filesystem paths and TCP ports — is already the
+mount namespace's job and the egress filter's, and neither of those can express
+a syscall.
 
 ## Where the evidence is thinnest
 

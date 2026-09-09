@@ -13,7 +13,25 @@ Depends:
  ${misc:Depends},
  python3,
  python3-pyqt6,
- flatpak
+ flatpak,
+# /usr/bin/shadowfetch-welcome imports /usr/lib/shadowfetch/desktop/sf_desktop.py
+# -- the one shared desktop library (W-30) -- for the bundle catalog, the
+# hwscan freshness rule, the five helper paths and the privileged install
+# argv. It raises ImportError without it, on purpose: a wizard that silently
+# shows an empty catalog is worse than one that says the install is broken.
+# So this is Depends and not Recommends.
+#
+# READ THIS BEFORE CHANGING EITHER FILE. shadowfetch-defaults already Depends
+# on shadowfetch-welcome (shadowfetch-workbench reads this package's catalog
+# records and runs its bundle installer), so the two packages are now a
+# Depends CYCLE. That is deliberate and it is the cheaper of the two evils:
+# the alternative was to let the first-boot wizard depend on
+# shadowfetch-control-center, which already Recommends this package, and that
+# inverts the pillar order. Neither package has a maintainer script that needs
+# the other configured first, so dpkg breaks the cycle in either order without
+# consequence. The cycle disappears the day the bundle catalog and
+# /usr/libexec/shadowfetch-bundle-install move out of this package.
+ shadowfetch-defaults (= ${binary:Version})
 # The Ignition model cards are rendered from the hwscan fact file, and Welcome
 # runs /usr/libexec/shadowfetch-hwscan itself to produce one. shadowfetch-hwscan
 # names this package as a consumer in its own description; nothing named it

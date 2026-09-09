@@ -125,17 +125,45 @@ class SessionRecords(MigrationHarness):
         self.assertEqual(row["enforcement"]["network"]["status"], "enforced")
         # This session declares no egress hosts, so the honest answer is
         # not_applicable rather than a warning about a control it never asked
-        # for. What must never appear is "enforced".
+        # for -- and not "enforced" either, which would be a claim about a
+        # filter that was never built for this session.
         self.assertEqual(row["enforcement"]["egress_allowlist"]["status"],
                          "not_applicable")
         self.assertEqual(row["enforcement"]["masked_paths"]["status"],
                          "not_applicable")
 
-    def test_an_egress_allowlist_is_recorded_as_requested_never_as_enforced(self):
+    def test_the_requested_egress_list_and_the_enforcement_status_are_separate(self):
+        """This asserted "recorded as requested, NEVER as enforced", and it was
+        right to: nothing filtered destinations.
+
+        It was also VACUOUS, which is the part worth keeping in mind. The
+        fixture computed the enforcement map from a spec carrying no egress
+        hosts, and passed `egress_requested` beside it as a separate argument —
+        so the map said `not_applicable` for a reason that had nothing to do
+        with the claim in the test's name, and the assertion would have gone on
+        passing after Stage C built the filter.
+
+        What the row actually has to do is keep the two apart: the REQUESTED
+        list is what a caller asked for, and the status is what the spec earned.
+        """
         row = self.store.session(self.open_one())
+        # Recorded verbatim, whatever the spec did with it.
         self.assertEqual(list(row["egress_requested"]), ["api.example"])
-        self.assertIn(row["enforcement"]["egress_allowlist"]["status"],
-                      ("not_enforced", "not_applicable"))
+        # ...and the status follows the SPEC, which declared none.
+        self.assertEqual(row["enforcement"]["egress_allowlist"]["status"],
+                         "not_applicable")
+
+        # A spec that really declares hosts earns the other answer. Asserted
+        # here so the two halves cannot drift apart again: if the filter is
+        # ever removed, this fails; if the request stops being recorded, the
+        # assertion above fails.
+        declared = P.SandboxSpec(workspace_mode="workspace-write",
+                                 network="allowlist",
+                                 egress_allowlist=("api.example",),
+                                 memory_mb=512, cpu_seconds=60, processes=16)
+        self.assertEqual(
+            P.sandbox_enforcement(declared)["egress_allowlist"]["status"],
+            "enforced")
 
     def test_only_credential_identities_are_stored(self):
         """A value has never reached this row and must not."""
@@ -229,7 +257,10 @@ class EnforcementTableIsHonest(unittest.TestCase):
         audited = {row["field"]: row for row in AUDIT}
         for field, entry in P.SANDBOX_ENFORCEMENT.items():
             if field == "syscall_profile":
-                continue                     # tracked in the audit as SECCOMP_PROFILE
+                # Tracked in the audit as SECCOMP_PROFILE, whose "declared" is
+                # False and whose "enforced" is now yes -- the two are not in
+                # tension, and the audit row carries the reason.
+                continue
             with self.subTest(field=field):
                 self.assertIn(field, audited, "production names a field the audit does not")
                 expected = audited[field]["enforced"]
@@ -241,10 +272,26 @@ class EnforcementTableIsHonest(unittest.TestCase):
                 else:
                     self.assertEqual(status, P.NOT_ENFORCED)
 
-    def test_the_unenforced_list_is_exactly_the_known_gaps(self):
-        """masked_paths left in Stage E, egress_allowlist in Stage C. Only the
-        syscall profile remains, and it is not even representable."""
-        self.assertEqual(P.unenforced_fields(), ["syscall_profile"])
+    def test_the_unenforced_list_is_empty_and_that_is_a_narrow_claim(self):
+        """Every field the sandbox spec can DECLARE now reaches a mechanism.
+
+        masked_paths left this list in Stage E, egress_allowlist in Stage C and
+        syscall_profile in Stage F -- each by gaining a layer and a measurement,
+        which is the only way out of it.
+
+        An empty list is the narrowest possible claim and must not be read as a
+        broad one: it says nothing about fields the spec cannot express, about
+        what a permitted syscall does, or about what leaves through a permitted
+        channel. The receipt sentence built from this list says so in as many
+        words, and that is asserted in test_missions.
+        """
+        self.assertEqual(P.unenforced_fields(), [])
+        # ...and the list is still derived, not a literal: a field whose status
+        # regresses has to reappear here.
+        self.assertEqual(
+            sorted(f for f, (status, _) in P.SANDBOX_ENFORCEMENT.items()
+                   if status in (P.NOT_ENFORCED, P.NOT_REPRESENTABLE)),
+            [])
 
     def test_a_field_with_nothing_declared_is_not_applicable_rather_than_a_warning(self):
         spec = P.SandboxSpec(workspace_mode="workspace-write", network="none",

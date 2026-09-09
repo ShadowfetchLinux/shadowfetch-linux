@@ -27,12 +27,19 @@ MANIFEST_DIR = "usr/share/shadowfetch/providers"
 POLICY_PATH = "usr/share/shadowfetch/provider-policy/approved.json"
 ADAPTER_DIR = "usr/lib/shadowfetch/missions"
 
+# The four providers that ship, written out rather than globbed: the gate
+# refuses a payload whose manifests and whose sealed policy disagree in EITHER
+# direction, so this list is one half of that comparison and reading it from
+# the same directory the other half comes from would make the test agree with
+# itself. Adding a provider is meant to cost an edit here.
+SHIPPED_PROVIDERS = ("claude", "codex", "localmodel", "offline-media")
 SHIPPED = [
     POLICY_PATH,
     f"{MANIFEST_DIR}/provider-manifest.schema.json",
-    f"{MANIFEST_DIR}/codex.json",
-    f"{MANIFEST_DIR}/offline-media.json",
+    *(f"{MANIFEST_DIR}/{name}.json" for name in SHIPPED_PROVIDERS),
+    f"{ADAPTER_DIR}/sf_provider_claude.py",
     f"{ADAPTER_DIR}/sf_provider_codex.py",
+    f"{ADAPTER_DIR}/sf_provider_localmodel.py",
     f"{ADAPTER_DIR}/sf_provider_offline_media.py",
     f"{ADAPTER_DIR}/sf_providers.py",
     f"{ADAPTER_DIR}/sf_missions.py",
@@ -90,13 +97,13 @@ class ShippedPayloadPasses(unittest.TestCase):
     def test_the_real_payload_validates(self):
         result = validate_provider_payload(SHIPPED, MISSION_SOURCE, read=real_read)
         self.assertTrue(result["checked"])
-        self.assertEqual(result["providers"], ["codex", "offline-media"])
+        self.assertEqual(result["providers"], list(SHIPPED_PROVIDERS))
 
     def test_a_dict_of_owners_is_accepted(self):
         """The package gate passes its path->owner map, not a list."""
         owners = {p: ["shadowfetch-missions"] for p in SHIPPED}
         result = validate_provider_payload(owners, MISSION_SOURCE, read=real_read)
-        self.assertEqual(result["providers"], ["codex", "offline-media"])
+        self.assertEqual(result["providers"], list(SHIPPED_PROVIDERS))
 
 
 class RetiredPayloadStillRefused(unittest.TestCase):
@@ -285,7 +292,8 @@ class ThirdProviderNeedsNoGateEdit(unittest.TestCase):
                 "class ExampleAgentProvider(AgentProvider):\n    pass\n",
         })
         result = validate_provider_payload(paths, MISSION_SOURCE, read=read)
-        self.assertEqual(result["providers"], ["codex", "example-agent", "offline-media"])
+        self.assertEqual(result["providers"],
+                         sorted([*SHIPPED_PROVIDERS, "example-agent"]))
         self.assertEqual(gate_before,
                          (ROOT / "tools/providers/validate_manifest.py").read_bytes(),
                          "the gate source changed while accepting a third provider")

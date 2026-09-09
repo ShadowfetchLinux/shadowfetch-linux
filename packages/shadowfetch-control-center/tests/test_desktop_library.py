@@ -49,15 +49,21 @@ class ImportableWithoutADisplay(unittest.TestCase):
         imported without PyQt cannot be shared with a front-end that does not
         use it the same way, cannot be unit tested cheaply, and cannot be
         reused by a CLI."""
-        tree = ast.parse((SFCC / "desktop.py").read_text(encoding="utf-8"))
-        imported = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imported.update(alias.name.split(".")[0] for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imported.add(node.module.split(".")[0])
-        for banned in ("PyQt6", "dbus", "sfcc"):
-            self.assertNotIn(banned, imported)
+        # Both files: the loader, and the library it loads. Reading only
+        # sfcc/desktop.py stopped meaning anything the day the implementation
+        # moved to shadowfetch-defaults -- the loader has no imports to speak
+        # of, so the assertion passed while checking nothing.
+        for path in (SFCC / "desktop.py", Path(desktop.__file__)):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            imported = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imported.update(alias.name.split(".")[0] for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imported.add(node.module.split(".")[0])
+            for banned in ("PyQt6", "dbus", "sfcc"):
+                with self.subTest(file=path.name, banned=banned):
+                    self.assertNotIn(banned, imported)
 
     def test_it_can_be_imported_in_a_bare_interpreter(self):
         out = subprocess.run(
@@ -148,7 +154,10 @@ class TrustedProgramTable(unittest.TestCase):
         only one of them refuses unknown names."""
         self.assertIsNone(desktop.installed_command("definitely-not-installed"))
         self.assertIsNone(desktop.installed_command("../../bin/sh"))
-        source = (SFCC / "desktop.py").read_text(encoding="utf-8")
+        # The library's own source. This test read sfcc/desktop.py, which has
+        # been the LOADER since the module moved to shadowfetch-defaults, so it
+        # was failing on a sentence that had moved with the function.
+        source = Path(desktop.__file__).read_text(encoding="utf-8")
         self.assertIn("Never route a privileged launch through this function",
                       source)
 
@@ -334,32 +343,104 @@ class SystemSummaryDoesNotInventGoodNews(unittest.TestCase):
         self.assertIn("1 failed", detail)
 
 
-class SecondCopyIsStillThere(unittest.TestCase):
-    """W-30 is HALF done, and this is the half that is not.
+# SecondCopyIsStillThere lived here. It asserted that Welcome STILL had its own
+# load_catalog/HWSCAN_CLI and still spelled ["pkexec", BUNDLE_HELPER, "install"]
+# out for itself, and its docstring said to delete it the day Welcome adopted
+# the shared module. Welcome adopted it; the class was left behind and had been
+# failing ever since -- a suite reporting the opposite of the truth. The claim
+# it used to hold is now held from the other side, by
+# packages/shadowfetch-defaults/tests/test_shared_desktop_library.py and by the
+# desktop-helpers drift-gate check.
 
-    These tests pass while the duplication exists. When Welcome adopts
-    sfcc.desktop they fail, which is the signal to delete this class and stop
-    describing W-30 as partial -- rather than the finding quietly ageing out.
+
+class TheLoaderExecutesTheFileItChecked(unittest.TestCase):
+    """ATTACK B, as a test.
+
+    `_load()` checked that <dir>/sf_desktop.py existed, inserted <dir> on
+    sys.path and then ran `import sf_desktop` -- and `import` consults
+    sys.modules BEFORE sys.path, so the existence check it had just performed
+    decided nothing. An adversarial verifier registered a module under that
+    name and got it back:
+
+        sfcc.desktop.__file__ = /tmp/evil.py
+        PKEXEC = pkexec
+        argv   = ['pkexec', '/tmp/evil-helper', 'install', 'x']
+
+    PKEXEC is a bare name again there, and the argv that asks for an
+    administrator password is resolved through $PATH again. This needs code
+    execution inside the Control Center process already, so it is defence in
+    depth and not a privilege boundary -- but it is the PATH-shadowing shape
+    this program has been bitten by before, and the loader's docstring rests
+    its safety case on sfcc.desktop BEING the library.
+
+    A subprocess, because sfcc.desktop is imported at module scope up here and
+    the poisoning has to happen before the first import.
     """
 
-    @unittest.skipUnless(WELCOME.is_file(), "shadowfetch-welcome source absent")
-    def test_welcome_still_has_its_own_catalog_and_hwscan(self):
-        source = WELCOME.read_text(encoding="utf-8")
-        self.assertIn("def load_catalog(", source,
-                      "Welcome no longer implements load_catalog: it may have "
-                      "adopted sfcc.desktop, so delete this class")
-        self.assertIn("HWSCAN_CLI", source)
+    POISON = r'''
+import sys, types
+sys.path.insert(0, sys.argv[1])
+evil = types.ModuleType("sf_desktop")
+evil.__file__ = "/tmp/evil.py"
+evil.PKEXEC = "pkexec"
+evil.bundle_install_argv = lambda b: ["pkexec", "/tmp/evil-helper", "install", b]
+sys.modules["sf_desktop"] = evil
+from sfcc import desktop
+print(desktop.__file__)
+print(desktop.PKEXEC)
+print(sys.modules["sf_desktop"].__file__)
+'''
 
-    @unittest.skipUnless(WELCOME.is_file(), "shadowfetch-welcome source absent")
-    def test_welcomes_bundle_install_still_resolves_pkexec_through_path(self):
-        """The concrete cost of the second copy, and the reason this is
-        reported rather than shrugged at: the Control Center now names pkexec
-        by absolute path and Welcome does not, so the two front-ends do not
-        offer the same guarantee behind the same button."""
-        source = WELCOME.read_text(encoding="utf-8")
-        self.assertIn('["pkexec", BUNDLE_HELPER, "install"', source,
-                      "Welcome's bundle install argv changed; re-check whether "
-                      "it now names pkexec absolutely")
+    IDENTITY = r'''
+import sys
+sys.path.insert(0, sys.argv[1])
+from sfcc import desktop
+import sfcc.desktop
+print(sys.modules["sf_desktop"] is desktop)
+print(sfcc.desktop is desktop)
+print(desktop.__file__)
+'''
+
+    def run_child(self, script):
+        done = subprocess.run([sys.executable, "-c", script, str(SFCC.parent)],
+                              capture_output=True, text=True, timeout=120,
+                              env=dict(os.environ, QT_QPA_PLATFORM="offscreen"))
+        self.assertEqual(0, done.returncode, done.stderr[-2000:])
+        return done.stdout.split()
+
+    def test_a_module_planted_in_sys_modules_is_not_the_library(self):
+        loaded, pkexec, registered = self.run_child(self.POISON)
+        self.assertNotEqual("/tmp/evil.py", loaded,
+                            "the loader accepted a module it never checked")
+        self.assertTrue(loaded.endswith("sf_desktop.py"), loaded)
+        self.assertEqual("/usr/bin/pkexec", pkexec,
+                         "PKEXEC came from somewhere other than the library")
+        self.assertNotEqual("/tmp/evil.py", registered,
+                            "the poisoned entry was left in sys.modules for the "
+                            "next importer to find")
+
+    def test_the_module_is_still_one_object_under_both_names(self):
+        """The property the loader exists for, and the one a fix to ATTACK B
+        could easily break: loading by file must not make a SECOND module
+        object for anything that imports sf_desktop by name."""
+        same_entry, same_alias, loaded = self.run_child(self.IDENTITY)
+        self.assertEqual("True", same_entry)
+        self.assertEqual("True", same_alias)
+        self.assertTrue(loaded.endswith("sf_desktop.py"), loaded)
+
+    def test_the_loader_does_not_resolve_the_module_by_name(self):
+        """The shape, not just the behaviour: a later edit that reintroduces
+        `import sf_desktop` reintroduces the hole, because import consults
+        sys.modules first however carefully the file was checked."""
+        tree = ast.parse((SFCC / "desktop.py").read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    self.assertNotEqual("sf_desktop", alias.name)
+            if isinstance(node, ast.ImportFrom):
+                self.assertNotEqual("sf_desktop", node.module)
+        self.assertIn("spec_from_file_location",
+                      (SFCC / "desktop.py").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

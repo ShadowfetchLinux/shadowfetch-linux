@@ -294,5 +294,117 @@ check("firebreak no longer splits the checkpoint sentence",
 check("firebreak still prints its own unchanged receipt line",
       'print("checkpoint " + checkpoint + " taken", flush=True)' in firebreak_src)
 
+
+# --------------------------------------------------------------------------- #
+# The recovery and attestation surfaces resolve programs by ABSOLUTE PATH.
+#
+# PERMANENT INVARIANT: any executable used to establish, verify, enforce or
+# attest a security fact is invoked through an explicit trusted ABSOLUTE path,
+# and its own child PATH is pinned too, because a resolved program resolves its
+# helpers through whatever it inherits.
+#
+# Two call sites in sf_mcp.py broke it in the SAME way, and the shape is worth
+# naming because it survived a comment that described the correct behaviour:
+# the directory that was CHECKED (shutil.which(name, path=TRUSTED_PATH)) and
+# the directory that ANSWERED (the bare name handed to subprocess with the
+# caller's own environment) were not the same directory. The constrained lookup
+# approved "there is a snapper in /usr/bin" and then the exec ran whichever
+# snapper the caller's PATH found first.
+#
+# These checks are written as the ATTACK: a forged program is planted EARLIER on
+# PATH than the real one, and the surface must run the real one. The attack
+# needs a root-owned /usr/sbin/snapper to exist, which this build host does not
+# have -- without one every refusal would pass for the wrong reason ("nothing
+# installed") -- so the run happens inside `unshare -rm`, a user namespace where
+# our uid maps to 0, with a tmpfs over /usr/sbin. The script, _trusted_tool and
+# the exec are the shipped ones; only the filesystem is borrowed.
+# --------------------------------------------------------------------------- #
+MCP_SRC = (FL / "data/usr/lib/shadowfetch/mcp/sf_mcp.py").read_text()
+# Prose stripped: this file DOCUMENTS the defect by name, so a naive substring
+# scan would fail on the explanation and tempt somebody to delete it.
+MCP_CODE = "\n".join(line for line in MCP_SRC.splitlines()
+                     if not line.lstrip().startswith("#"))
+
+check("no PATH lookup survives in sf_mcp.py", "shutil.which" not in MCP_CODE)
+check("snapper is resolved from an absolute-path table",
+      '_TRUSTED_SNAPPER = ("/usr/bin/snapper"' in MCP_CODE
+      and "_trusted_tool(_TRUSTED_SNAPPER)" in MCP_CODE)
+check("the Passport is resolved from an absolute-path table",
+      '_TRUSTED_PASSPORT = ("/usr/bin/shadowfetch-passport",)' in MCP_CODE
+      and "_trusted_tool(_TRUSTED_PASSPORT)" in MCP_CODE)
+check("the snapper table is the update authority's table, not a second one",
+      '"/usr/bin/snapper", "/usr/sbin/snapper"' in MCP_CODE
+      and '"/bin/snapper", "/sbin/snapper"' in MCP_CODE)
+check("every child of sf_mcp.py gets a pinned PATH",
+      "env=_trusted_env()" in MCP_CODE
+      and 'TRUSTED_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"' in MCP_CODE)
+
+FORGE = tempfile.mkdtemp(prefix="sf-mcp-forge-")
+atexit.register(shutil.rmtree, FORGE, True)
+
+
+def _stub(name, body):
+    path = Path(FORGE) / name
+    path.write_text("#!/bin/sh\n" + body)
+    path.chmod(0o755)
+    return str(path)
+
+
+# The honest program, and the attacker's. The honest one reports the PATH it
+# was handed, which is how the child-environment half of the invariant is
+# measured rather than asserted.
+REAL_SNAPPER = _stub("real-snapper", 'echo "REAL-SNAPPER PATH=$PATH"\n')
+_stub("snapper", "echo FORGED-SNAPPER\n")
+
+
+def userns_ok():
+    probe = subprocess.run(
+        ["unshare", "-rm", "/bin/sh", "-c", "mount -t tmpfs tmpfs /usr/sbin"],
+        capture_output=True, text=True)
+    return probe.returncode == 0
+
+
+def phoenix_under_attack(install_real=True, mode="755"):
+    """list_restore_points with a forged `snapper` FIRST on PATH."""
+    steps = ["mount -t tmpfs tmpfs /usr/sbin", "chmod 755 /usr/sbin"]
+    if install_real:
+        steps.append("cp %s /usr/sbin/snapper" % REAL_SNAPPER)
+        steps.append("chmod %s /usr/sbin/snapper" % mode)
+    steps.append("exec %s %s phoenix" % (sys.executable, MCP[1]))
+    env = dict(os.environ)
+    env["PATH"] = FORGE + ":" + env.get("PATH", "")
+    payload = "\n".join(json.dumps(c) for c in
+                        [init, call("list_restore_points", {})]) + "\n"
+    result = subprocess.run(
+        ["unshare", "-rm", "/bin/sh", "-c", " && ".join(steps)],
+        input=payload, capture_output=True, text=True, env=env, timeout=60)
+    lines = [json.loads(l) for l in result.stdout.splitlines() if l.strip()]
+    if len(lines) < 2:
+        return "NO-REPLY:" + result.stderr[-400:]
+    return lines[1]["result"]["content"][0]["text"]
+
+
+if not userns_ok():
+    print("  SKIP  user namespaces unavailable: the PATH attack cannot be "
+          "staged on this host (no root-owned /usr/sbin/snapper to defend)")
+else:
+    listing = phoenix_under_attack()
+    check("a forged snapper earlier on PATH is never the one that runs",
+          "REAL-SNAPPER" in listing and "FORGED-SNAPPER" not in listing)
+    # The other half of the invariant: the child's own PATH. Without this the
+    # real snapper -- a shell script on a real system too -- would resolve its
+    # own helpers through the attacker's directory.
+    check("the child snapper is handed the pinned PATH, not the caller's",
+          "PATH=/usr/sbin:/usr/bin:/sbin:/bin" in listing
+          and FORGE not in listing)
+    substitutable = phoenix_under_attack(mode="775")
+    check("a group-writable snapper is refused, not run",
+          "REAL-SNAPPER" not in substitutable
+          and "FORGED-SNAPPER" not in substitutable
+          and "not a root-owned" in substitutable)
+    absent = phoenix_under_attack(install_real=False)
+    check("with no snapper installed the forged one still never runs",
+          "FORGED-SNAPPER" not in absent and "not installed" in absent)
+
 print(f"\n  {passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

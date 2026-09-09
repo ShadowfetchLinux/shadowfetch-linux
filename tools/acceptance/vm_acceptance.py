@@ -153,6 +153,8 @@ def command_run(args: argparse.Namespace) -> int:
         "upgrade_repo": args.upgrade_repo,
         "upgrade_from_version": args.upgrade_from_version,
         "interrupt_deadline": args.interrupt_deadline,
+        "installer_settle": args.installer_settle,
+        "install_timeout": args.install_timeout,
     }
     evidence = EvidenceSet(root, evidence_dir)
     ctx = Context(
@@ -162,6 +164,7 @@ def command_run(args: argparse.Namespace) -> int:
         evidence=evidence,
         artifact=artifact,
         options=options,
+        work_root=work_root(root, version),
     )
 
     started = utc_now()
@@ -260,6 +263,11 @@ def command_run(args: argparse.Namespace) -> int:
             "case": case.name,
             "manifest_case": case.manifest_case,
             "verdict": verdict,
+            # How the machine was driven, not just which case ran. INSTALL-01
+            # needs one PASS per firmware, and a ledger that does not record
+            # which firmware a run used cannot tell two runs of the same case
+            # apart -- which would let one firmware be recorded twice.
+            "firmware": args.firmware,
             "artifact_sha256": artifact["sha256"],
             "harness_digest": receipt["harness"]["digest"],
             "receipt_sha256": receipt_digest,
@@ -321,6 +329,18 @@ def _record(
             "stand; the release manifest is unchanged."
         )
         return 0
+    for requirement in case.required_runs:
+        criteria = dict(requirement)
+        criteria["verdict"] = "PASS"
+        criteria["artifact_sha256"] = receipt["artifact"]["sha256"]
+        if not ledger.find(**criteria):
+            print(
+                f"NOT RECORDED: {case.manifest_case} requires a PASSED run "
+                f"matching {requirement} against this same artifact, and the "
+                "ledger has no such run.",
+                file=sys.stderr,
+            )
+            return EXIT_BLOCKED
     for companion in case.companions:
         passes = [
             row
@@ -514,6 +534,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=90.0,
         help="how long to wait for a restore to be observably in flight before "
         "giving up; the power cut is aimed at that window, never timed",
+    )
+    run_parser.add_argument(
+        "--installer-settle",
+        type=float,
+        default=180.0,
+        help="how long to wait for the installer to register on the guest's "
+        "accessibility bus before giving up",
+    )
+    run_parser.add_argument(
+        "--install-timeout",
+        type=float,
+        default=5400.0,
+        help="how long the installation itself may run before the case fails",
     )
     run_parser.add_argument(
         "--record",

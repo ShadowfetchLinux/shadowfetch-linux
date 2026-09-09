@@ -579,24 +579,45 @@ described to users as controls.
   provider or nothing, and `provider_for()` makes ambiguity a visible error rather
   than a silent choice. `max_parallel` is still 1 and one execution lock still
   serialises the queue.
-* **No credential broker.** `credentials_for()` reads the worker's own environment.
-  There is no keyring, no per-mission credential scoping, no rotation, and no audit of
-  a credential's use beyond the receipt recording that the mission ran.
-* **No new providers.** The two that ship are the two that shipped in 4.0.0, moved
-  behind the interface with byte-identical argv. The third provider
-  (`conformance-echo`) exists only in `tests/fixtures/` and does not ship — that is
-  the point of it.
+* **No credential broker.** `credentials_for()` reads the worker's own environment,
+  and Firebreak passes the VALUE into the sandbox with `bwrap --setenv`. There is no
+  keyring, no per-mission credential scoping, no rotation, and no audit of a
+  credential's use beyond the receipt recording that the mission ran. The residual
+  is specific and worth stating in the words the `claude` manifest uses: an agent
+  that runs a shell inside the sandbox can read the token out of its own
+  environment. What DID change this phase is where the values come from: the worker
+  unit named one provider's credential file (`codex.env`), so a second provider's
+  key reached nothing at all while its readiness reported it present.
+  `load_provider_credentials()` reads the whole directory and takes only the
+  identities the registry declares, so a file dropped there cannot inject a name.
+* **Four providers ship, and adding them cost no engine edit.** `codex` and
+  `offline-media` moved behind the interface with byte-identical argv; `claude`
+  (Claude Code CLI, cloud, one credential identity, one egress destination) and
+  `localmodel` (on-device inference over one unix socket, no network, no
+  credential) were added afterwards as a manifest, an adapter, a sealed policy
+  entry and tests — no change to `sf_missions.py`, `sf_policy.py` or Firebreak,
+  which is the property Phase 2 was for. A fifth (`conformance-echo`) exists only
+  in `tests/fixtures/` and does not ship; that is the point of it. Two consequences
+  a reader should expect: three providers now serve `code_change`, so a mission
+  that names none is REFUSED rather than guessed at, and model selection is the
+  provider's decision — the engine bounds the string, because a model name becomes
+  an argv element, and nothing more.
 * **No UI redesign.** `missions_page.py` keeps its shape. The provider chooser is
   hidden while only one provider can perform the selected capability, so a
   single-provider install looks exactly as it did.
-* **Local AI is registered, not runnable.** `capabilities()["local_ai"]` is derived
-  from the registry rather than written down: `"deferred"` when no on-device provider
-  is registered, `"available"` when one is ready, and `"installed-unavailable"` when
-  one is approved but cannot run here. The shipped `localmodel` provider is in the
-  third state -- its bridge, `/usr/libexec/shadowfetch/local-model-bridge`, is not
-  packaged yet, so readiness reports it unavailable with a reason. The release
-  gate's `REMOVED_AI_PATH` blacklist still refuses any shipped path belonging to the
-  retired local-AI stack.
+* **Local AI is registered and packaged; whether it RUNS is a fact about the
+  machine.** `capabilities()["local_ai"]` is derived from the registry rather than
+  written down: `"deferred"` when no on-device provider is registered, `"available"`
+  when one is ready, and `"installed-unavailable"` when one is approved but cannot
+  run here. The `localmodel` bridge now ships from
+  `data/usr/libexec/shadowfetch/local-model-bridge` in the missions package — it was
+  written under `tests/fixtures/` by a stage that was not permitted to add a
+  packaged file, and was MOVED rather than copied, so the file the tests execute and
+  the file a person gets are the same file. On a machine with no inference service
+  answering on the granted socket, readiness reports unavailable with a reason and
+  `local_ai` reads `installed-unavailable`. The release gate's `REMOVED_AI_PATH`
+  blacklist still refuses any shipped path belonging to the RETIRED local-AI stack,
+  which is a different thing entirely.
 
 ---
 

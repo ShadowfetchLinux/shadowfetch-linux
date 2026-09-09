@@ -184,6 +184,55 @@ class RecordTests(unittest.TestCase):
         defaults.update(values)
         return argparse.Namespace(**defaults)
 
+    # -- the syscall filter ------------------------------------------------- #
+    def test_the_started_record_reports_the_syscall_profile_as_enforced(self):
+        """This field was `not_representable` for the whole of Phase 3: nothing
+        in the tree filtered syscalls and the record said so. It now names a
+        mechanism, and the row is built by reading the program back out of the
+        descriptor the argv hands bwrap -- not by echoing the request, which has
+        no way to ask for this at all."""
+        code, sandbox = self.execute()
+        self.assertEqual(code, 0)
+        started = self.records()[0]
+        row = started["enforcement"]["syscall_profile"]
+        self.assertEqual(row["status"], "enforced")
+        self.assertIn(fb.seccomp_digest(), row["mechanism"])
+        # And the argv that was actually spawned carries the descriptor.
+        argv = bwrap_argv(sandbox.spawned)
+        self.assertIn("--seccomp", argv)
+        self.assertEqual(argv[argv.index("--seccomp") + 1],
+                         started["sandbox_argv"][started["sandbox_argv"].index("--seccomp") + 1])
+
+    def test_the_recorded_profile_is_the_one_the_filter_denies(self):
+        """The mechanism sentence has to be checkable against the source rather
+        than believed: every syscall it names as having been reachable is in the
+        table, and the count it gives is the table's length."""
+        self.execute()
+        mechanism = self.records()[0]["enforcement"]["syscall_profile"]["mechanism"]
+        self.assertIn("%d syscalls answer EPERM" % len(fb.SECCOMP_DENY), mechanism)
+        for name in fb.seccomp_reachable():
+            self.assertIn(name, mechanism)
+
+    def test_a_kernel_that_refuses_the_filter_refuses_the_run_and_says_so(self):
+        """The egress filter's posture, applied to this control: a session that
+        cannot get the filter does not start, and the refusal is written down,
+        because a decision that leaves no trace is indistinguishable from nobody
+        having asked. Before Stage F there was no filter to fail and nothing
+        here to record."""
+        sandbox = FakeSandbox(0)
+        with patch.object(fb, "seccomp_selftest",
+                          side_effect=fb.SeccompUnavailable("this kernel refused it")), \
+                patch.object(fb.subprocess, "Popen", sandbox):
+            code = fb.main(["run", "--workspace", "project", "--no-checkpoint",
+                            "--session-id", "s-record", "--", "true"])
+        self.assertEqual(code, 1)
+        self.assertIsNone(sandbox.spawned, "a sandbox was started without the filter")
+        entries = self.records()
+        self.assertEqual([entry["record"] for entry in entries], ["refused"])
+        self.assertEqual(entries[0]["refused_before"], "syscall-filter")
+        self.assertIn("refused it", entries[0]["reason"])
+        self.assertEqual(entries[0]["session"], "s-record")
+
     # -- append safety ------------------------------------------------------ #
     def test_the_start_record_is_on_disk_before_the_sandbox_is_spawned(self):
         """A record written after the fact cannot describe a session that hung,
@@ -403,6 +452,43 @@ class RecordTests(unittest.TestCase):
                 self.assertTrue(unshares_network(spawned.argv),
                                 "posture " + posture + " ran on the host network")
 
+    def test_a_brokered_credential_does_not_also_reach_the_environment(self):
+        """Brokered or ambient, never both.
+
+        The point of brokering is that the value is read ONCE, refusably, on an
+        audit chain. An ambient copy beside the ticket would make the
+        single-issue rule bound nothing: anything the agent starts would read
+        the value out of its own environment without ever asking.
+        """
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "openai-value",
+                                     "ANTHROPIC_API_KEY": "anthropic-value"}):
+            _, spawned = self.execute(
+                "--credential-env", "OPENAI_API_KEY",
+                "--credential-env", "ANTHROPIC_API_KEY",
+                "--credential-broker", "ANTHROPIC_API_KEY")
+        joined = " ".join(spawned.argv)
+        self.assertIn("--setenv OPENAI_API_KEY openai-value", joined)
+        self.assertNotIn("ANTHROPIC_API_KEY anthropic-value", joined,
+                         "the brokered value is in the sandbox environment too")
+        self.assertNotIn("anthropic-value", joined)
+        record = self.records()[0]
+        # Both are GRANTED identities; they differ in how they arrive, and the
+        # record has to say which, or a reviewer reads one list and cannot tell
+        # a value readable by every process from one read once and recorded.
+        self.assertEqual(sorted(record["credential_names"]),
+                         ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"])
+        self.assertEqual(record["credential_delivery"],
+                         {"OPENAI_API_KEY": "environment",
+                          "ANTHROPIC_API_KEY": "broker"})
+
+    def test_brokering_a_credential_that_was_never_granted_is_refused(self):
+        """--credential-broker chooses the DELIVERY of a grant; it does not
+        make one. Accepting it alone would let a caller name an identity the
+        approval never covered and have Firebreak treat it as granted."""
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "openai-value"}):
+            code, _ = self.execute("--credential-broker", "OPENAI_API_KEY")
+        self.assertNotEqual(code, 0)
+
     def test_a_networked_sandbox_gets_a_resolver_it_can_actually_reach(self):
         """The host's /etc/resolv.conf is useless inside a network namespace.
 
@@ -431,6 +517,80 @@ class RecordTests(unittest.TestCase):
         honest -- what must not happen is a resolver that implies a route."""
         _, spawned = self.execute("--net", "none")
         self.assertNotIn(fb.SLIRP_RESOLVER, spawned.resolv or "")
+
+    def test_the_launch_chain_does_not_inherit_what_decides_its_own_code(self):
+        """An adversarial review broke the egress filter with one variable.
+
+        The namespace helper is `unshare ... python3 -c <helper>`, and that
+        interpreter runs OUTSIDE the sandbox, before `bwrap --clearenv` and
+        before `nft -f -` installs the ruleset. It inherited the caller's
+        environment wholesale, so a PYTHONPATH pointing at a sitecustomize.py
+        ran attacker code inside it, blanked the ruleset argument, and the
+        sandbox then reached 8.8.8.8 and the LAN with an allowlist naming
+        neither -- while the started record said `egress_allowlist: enforced`.
+        An LD_PRELOAD constructor fired in systemd-run, in unshare and in bwrap.
+
+        Measured after the fix, same attack: allowed REACHED, denied
+        blocked:TimeoutError, and the ruleset was never blanked.
+        """
+        hostile = {"LD_PRELOAD": "/tmp/evil.so",
+                   "PYTHONPATH": "/tmp/evil",
+                   "PYTHONSTARTUP": "/tmp/evil.py",
+                   "BASH_ENV": "/tmp/evil.sh",
+                   "NODE_OPTIONS": "--require /tmp/evil.js",
+                   "PATH": "/tmp/evil/bin"}
+        with patch.dict(os.environ, hostile):
+            built = fb.user_service_env()
+        for name in hostile:
+            if name == "PATH":
+                continue
+            self.assertNotIn(name, built,
+                             name + " reaches a process that runs before the "
+                             "sandbox exists")
+        self.assertEqual(built["PATH"], fb.TRUSTED_PATH,
+                         "the chain searches a path the caller chose")
+
+    def test_the_namespace_helper_interpreter_is_isolated(self):
+        """Belt and braces with the environment above: this one interpreter is
+        the process that installs the filter, and it runs before anything is
+        contained. -I ignores PYTHON* and the user site directory; -S skips
+        site processing entirely, which is what a sitecustomize.py rides in
+        on."""
+        _, spawned = self.execute("--net", "allow")
+        argv = spawned.argv
+        index = argv.index(fb.EGRESS_HELPER)
+        self.assertEqual(argv[index - 4:index],
+                         ["/usr/bin/python3", "-I", "-S", "-c"])
+
+    def test_firebreak_does_not_let_the_caller_choose_its_own_interpreter(self):
+        """`#!/usr/bin/env python3` asks PATH which python to be. For a program
+        that decides containment, that is the invariant this codebase applies
+        everywhere else: an executable that establishes a security fact is
+        named absolutely."""
+        source = Path(fb.__file__ if hasattr(fb, "__file__") else "")
+        binary = (Path(__file__).resolve().parents[1]
+                  / "data/usr/bin/shadowfetch-firebreak")
+        first = binary.read_text(encoding="utf-8").splitlines()[0]
+        self.assertEqual(first, "#!/usr/bin/python3")
+        self.assertIsNotNone(source)
+
+    def test_the_launcher_re_execs_itself_isolated_when_the_environment_is_hostile(self):
+        """A sitecustomize.py runs at interpreter start, BEFORE this module's
+        body -- so it can monkeypatch any function in the program that decides
+        containment while the record goes on saying enforced. Nothing can
+        defend against someone who replaces this file; this removes the cheaper
+        version, where they only influence its environment. Measured: with the
+        attack in place exactly ONE interpreter runs the attacker's code -- the
+        pre-exec launcher, which does nothing but exec -- and the helper, bwrap
+        and the payload are all clean."""
+        binary = (Path(__file__).resolve().parents[1]
+                  / "data/usr/bin/shadowfetch-firebreak")
+        text = binary.read_text(encoding="utf-8")
+        guard = text.index("_ISOLATION_MARKER")
+        self.assertLess(guard, text.index('VERSION = "4.0.0"'),
+                        "the guard runs after the program has already started")
+        self.assertIn('os.execve("/usr/bin/python3"', text)
+        self.assertIn('"-I", "-S"', text)
 
     def test_a_refusal_before_the_sandbox_starts_is_still_recorded(self):
         """The audit directory has to show that somebody asked.

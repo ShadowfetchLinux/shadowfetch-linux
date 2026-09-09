@@ -62,7 +62,21 @@ Recommends:
 Suggests:
  shadowfetch-fireline,
  shadowfetch-missions,
- shadowfetch-phoenix
+ shadowfetch-phoenix,
+# /usr/lib/shadowfetch/desktop/sf_desktop.py (this package, W-30) is the one
+# desktop library both front-ends import. One function in it,
+# load_ember_profiles(), reads /usr/share/shadowfetch/ember/profiles, and the
+# .conf cards in that directory are shipped by shadowfetch-control-center. It
+# has exactly one caller -- sfcc/ember_page.py -- and returns [] when the
+# directory is absent, so nothing in this package needs Mission Control
+# installed. Suggests, therefore, and not Recommends: this is a declaration
+# that the reach exists (tools/ship_list_check.py fails an undeclared one),
+# not a claim that the two are useful together.
+#
+# It is also a leftover. The Ember profile reader is not one of W-30's five
+# shared facts and belongs beside its only caller; when it moves to
+# sfcc/ember_page.py this line goes with it.
+ shadowfetch-control-center
 Description: Shadowfetch default user configuration
  Ships the Shadowfetch defaults applied to new user accounts (via
  /etc/skel): kdeglobals, kwinrc, konsole profile, fastfetch config.

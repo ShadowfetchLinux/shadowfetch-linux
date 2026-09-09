@@ -23,6 +23,7 @@ during setup. Vendor applications retain their own onboarding downloads,
 network behavior and account requirements.
 """
 
+import importlib.util
 import json
 import os
 import re
@@ -87,6 +88,64 @@ if __name__ == "__main__" and {"-h", "--help", "--version"}.intersection(sys.arg
             "that exact choice again the moment the machine is online - no re-login."
         )
     raise SystemExit(0)
+
+
+def _load_desktop():
+    """The one shared desktop library (W-30).
+
+    The bundle catalog, the hwscan freshness rule, the five helper paths and
+    the privileged install argv were implemented twice - once in this file and
+    once in the Control Center - in two divergent shapes, and
+    tools/drift_gate.py reported the pair as BLOCKED [desktop-helpers]. They
+    are now one module, /usr/lib/shadowfetch/desktop/sf_desktop.py, shipped by
+    shadowfetch-defaults and imported by both front-ends. This package Depends
+    on it, so the module is present on any installed system; the sibling
+    source tree satisfies it in a checkout.
+
+    Deliberately BELOW the --help/--version block, because asking this program
+    what it is has to keep working on a half-installed machine, and
+    deliberately ABOVE everything else, because a missing shared library is a
+    broken installation and must say so rather than quietly degrade into a
+    wizard with an empty catalog.
+    """
+    locations = [Path("/usr/lib/shadowfetch/desktop")]
+    locations += [
+        parent / "packages/shadowfetch-defaults/data/usr/lib/shadowfetch/desktop"
+        for parent in Path(__file__).resolve().parents]
+    for location in locations:
+        path = location / "sf_desktop.py"
+        if path.is_file():
+            # EXECUTE THE FILE THAT WAS JUST CHECKED. `import sf_desktop`
+            # consults sys.modules BEFORE sys.path, so a module already
+            # registered under that name is handed back and this existence
+            # check decides nothing. Measured against the Control Center's
+            # identical loader before it was fixed: a planted module was
+            # accepted, PKEXEC came back as the bare word "pkexec", and the
+            # install argv was $PATH-resolved again -- the same shape as the
+            # PATH-shadowing hole this codebase was bitten by in Phase 3.1.
+            # spec_from_file_location never consults sys.modules.
+            cached = sys.modules.get("sf_desktop")
+            if cached is not None and getattr(cached, "__file__", None) == str(path):
+                return cached
+            spec = importlib.util.spec_from_file_location("sf_desktop", path)
+            module = importlib.util.module_from_spec(spec)
+            # Registered BEFORE exec so nothing runs twice and no second module
+            # object appears; popped if exec raises, so a failed load cannot
+            # leave a half-built module behind for the next caller.
+            sys.modules["sf_desktop"] = module
+            try:
+                spec.loader.exec_module(module)
+            except BaseException:
+                sys.modules.pop("sf_desktop", None)
+                raise
+            return module
+    raise ImportError(
+        "sf_desktop.py was not found. shadowfetch-welcome requires the "
+        "matching shadowfetch-defaults package, which ships the shared desktop "
+        "library at /usr/lib/shadowfetch/desktop; repair the installation.")
+
+
+desktop = _load_desktop()
 
 from PyQt6.QtCore import Qt, QSize, QTimer, QObject, pyqtSignal, pyqtSlot, QThread
 from PyQt6.QtGui import QFont, QIcon
@@ -294,13 +353,16 @@ STATE_DIR = Path("/var/lib/shadowfetch")
 IGNITION_DONE = STATE_DIR / "ignition-done"
 IGNITION_CHOICE = STATE_DIR / "ignition-choice.json"
 IGNITION_SKIP = CONFIG_DIR / "ignition-skip"
-CATALOG_DIR = Path("/usr/share/shadowfetch/welcome/catalog")
 SIZES_JSON = Path("/usr/share/shadowfetch/welcome/sizes.json")
-BUNDLE_HELPER = "/usr/libexec/shadowfetch-bundle-install"
+# STATE_HELPER is this package's own /usr/libexec payload and stays spelled
+# out here. The five paths that used to sit beside it did not belong here: the
+# catalog directory, the bundle installer, the hwscan CLI, the hwscan fact
+# file and phoenix-restore were each written out a second time in this file,
+# and the Control Center held its own copy of all five. They now come from the
+# shared library - desktop.CATALOG_DIR, desktop.BUNDLE_INSTALL,
+# desktop.HWSCAN_CLI, desktop.HWSCAN_JSON, desktop.PHOENIX_RESTORE - which is
+# the module the Control Center reads them from too. One spelling each.
 STATE_HELPER = "/usr/libexec/shadowfetch-ignition-state"
-PHOENIX_RESTORE = "/usr/libexec/phoenix-restore"
-HWSCAN_CLI = "/usr/libexec/shadowfetch-hwscan"
-HWSCAN_JSON = STATE_DIR / "hwscan.json"
 
 IGNITION_ORDER = [
     "ignition-core", "ignition-creator", "ignition-developer",
@@ -531,20 +593,6 @@ def fmt_mb(size_bytes) -> str:
     return f"{mb:.1f} MB"
 
 
-def load_catalog() -> dict:
-    """id -> record for every readable catalog JSON. Never raises."""
-    entries = {}
-    if CATALOG_DIR.is_dir():
-        for p in sorted(CATALOG_DIR.glob("*.json")):
-            try:
-                rec = json.loads(p.read_text(encoding="utf-8"))
-            except Exception:  # noqa: BLE001 - a broken record hides itself
-                continue
-            if isinstance(rec, dict) and rec.get("id") and rec.get("kind"):
-                entries[rec["id"]] = rec
-    return entries
-
-
 def load_sizes() -> dict:
     """The build-time measured closure sizes; gracefully {} when absent."""
     try:
@@ -578,22 +626,19 @@ def bundle_size_line(rec: dict, sizes: dict) -> str:
 
 
 def dpkg_installed(pkgs) -> set:
-    """Which of pkgs are installed right now (unprivileged dpkg-query)."""
+    """Which of pkgs are installed right now, as a set of names.
+
+    One dpkg-query for the whole desktop, in the shared library, and the shape
+    the three call sites here already want. This used to be a second
+    implementation that ran dpkg-query as a bare name - the session's PATH
+    choosing the program whose output becomes "Already on your system (3 of
+    7)", a sentence the reader takes as a fact about their machine. The
+    library names it /usr/bin/dpkg-query and pins the child's PATH.
+    """
     if not pkgs:
         return set()
-    try:
-        r = subprocess.run(
-            ["dpkg-query", "-W", "-f", "${Package} ${db:Status-Status}\n"] + list(pkgs),
-            capture_output=True, text=True, timeout=10,
-        )
-    except Exception:  # noqa: BLE001
-        return set()
-    found = set()
-    for line in r.stdout.splitlines():
-        parts = line.split()
-        if len(parts) == 2 and parts[1] == "installed":
-            found.add(parts[0])
-    return found
+    return {name for name, present in desktop.installed_map(list(pkgs)).items()
+            if present}
 
 
 def root_is_btrfs() -> bool:
@@ -619,14 +664,6 @@ def load_pending():
     except Exception:  # noqa: BLE001
         pass
     return None
-
-
-def hwscan_cached() -> dict:
-    try:
-        data = json.loads(HWSCAN_JSON.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception:  # noqa: BLE001
-        return {}
 
 
 def hwscan_has_nvidia(scan: dict) -> bool:
@@ -914,32 +951,19 @@ class NMWatcher(QObject):
 
 
 class HwscanWorker(QThread):
-    """Fetch the hardware scan without ever blocking the choice screen.
+    """Keep the shared hardware scan off the choice screen's thread.
 
-    Reads /var/lib/shadowfetch/hwscan.json when it is from the current
-    boot, otherwise execs the CLI with a hard timeout. Emits {} on any
-    failure - the AI card then shows its honest 'scan unavailable' line.
+    The freshness rule - the fact file counts only if it was written after
+    this boot, otherwise run the unprivileged CLI - was written out twice,
+    once here against /proc/uptime and once in the Control Center. It is one
+    function now, desktop.load_hwscan(); this class is only the thread that
+    keeps it off the UI. Emits {} on any failure, and the AI card then shows
+    its honest 'scan unavailable' line.
     """
     got = pyqtSignal(dict)
 
     def run(self):
-        data = {}
-        try:
-            if HWSCAN_JSON.is_file():
-                with open("/proc/uptime", "r", encoding="utf-8") as fh:
-                    boot_time = time.time() - float(fh.read().split()[0])
-                if HWSCAN_JSON.stat().st_mtime >= boot_time:
-                    data = json.loads(HWSCAN_JSON.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
-            data = {}
-        if not data and os.path.exists(HWSCAN_CLI):
-            try:
-                r = subprocess.run([HWSCAN_CLI, "--json"], capture_output=True,
-                                   text=True, timeout=3)
-                if r.returncode == 0:
-                    data = json.loads(r.stdout)
-            except Exception:  # noqa: BLE001
-                data = {}
+        data = desktop.load_hwscan()
         self.got.emit(data if isinstance(data, dict) else {})
 
 
@@ -957,9 +981,29 @@ class InstallRunner(QThread):
         self.proc = None
 
     def run(self):
+        # Built by the shared library, not spelled out here. This call site
+        # used to assemble its own argv, and it named pkexec by the bare word
+        # rather than by path -- so the session's $PATH decided which program
+        # the Install button asks for an administrator password. That is a
+        # security defect and not a style one: a same-user process able to
+        # prepend a directory to PATH becomes that program, or swallows the
+        # install and reports success. The Control Center already named pkexec
+        # absolutely, and the divergence between two copies of one privileged
+        # argv is what W-30 is about.
+        #
+        # None means pkexec or the helper is missing, and the panel says so
+        # rather than falling back to anything more general.
+        argv = desktop.bundle_install_argv(self.catalog_id)
+        if argv is None:
+            self.eventd.emit(
+                "ERROR", f"helper-missing pkexec or {desktop.BUNDLE_INSTALL} "
+                "is not installed, so nothing was authorised and nothing was "
+                "changed")
+            self.finished_rc.emit(1)
+            return
         try:
             self.proc = subprocess.Popen(
-                ["pkexec", BUNDLE_HELPER, "install", self.catalog_id],
+                argv,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True, bufsize=1,
             )
@@ -1192,13 +1236,26 @@ class InstallPanel(QWidget):
     def _restore(self):
         if self.point is None:
             return
+        # pkexec by absolute path out of the shared trusted program table,
+        # never the bare name the session's $PATH resolves: this button asks
+        # for an administrator password and then rolls the system back, so
+        # which binary receives that password is the whole question. The
+        # Control Center's Recover page already named it absolutely
+        # (sfcc/phoenix_page.py); this call site did not.
+        pkexec = desktop.trusted_program("pkexec")
+        if pkexec is None:
+            self.fail_body.setText(
+                "pkexec is not installed, so this restore cannot be "
+                "authorised. Nothing was changed - open Control Center - "
+                "Recover for the full Phoenix panel.")
+            return
         self.retry_btn.setEnabled(False)
         self.restore_btn.setEnabled(False)
         self.fail_body.setText(
             f"Restoring Phoenix Point #{self.point}... this swaps the "
             "system back atomically and asks for a reboot when done.")
         self._restore_worker = CommandWorker(
-            [["pkexec", PHOENIX_RESTORE, str(self.point)]])
+            [[pkexec, desktop.PHOENIX_RESTORE, str(self.point)]])
         self._restore_worker.completed.connect(self._restored)
         self._restore_worker.start()
 
@@ -1626,7 +1683,16 @@ class IgnitionFlow(QWidget):
             "completed")
 
     def _state_call(self, args, on_done):
-        self._state_worker = CommandWorker([["pkexec", STATE_HELPER] + args])
+        # STATE_HELPER is this package's own payload and is already absolute.
+        # pkexec was not: a bare name here is resolved by the session's $PATH,
+        # and this call writes the Ignition state file as root. A missing
+        # pkexec reports the failure the callers already render honestly
+        # rather than launching anything.
+        pkexec = desktop.trusted_program("pkexec")
+        if pkexec is None:
+            on_done(1)
+            return
+        self._state_worker = CommandWorker([[pkexec, STATE_HELPER] + args])
         self._state_worker.completed.connect(on_done)
         self._state_worker.start()
 
@@ -1767,7 +1833,7 @@ class CatalogPage(QWidget):
         vbox.setContentsMargins(0, 4, 6, 4)
         vbox.setSpacing(10)
 
-        scan = hwscan_cached()
+        scan = desktop.hwscan_cached()
         nvidia = hwscan_has_nvidia(scan)
         btrfs = root_is_btrfs()
 
@@ -1874,7 +1940,11 @@ class CatalogPage(QWidget):
         verb takes the name as an argument and needs no terminal at all - the
         same shape the Control Center's Workbench already uses.
         """
-        helper = shutil.which("shadowfetch-agent-workspace")
+        # From the shared trusted program table: an absolute path checked
+        # against a fixed set of system directories. shutil.which asks the
+        # session's $PATH which program this button runs, which is the same
+        # defect as the bare pkexec above, one privilege level down.
+        helper = desktop.trusted_program("shadowfetch-agent-workspace")
         if not helper:
             QMessageBox.information(
                 self, "Not installed",
@@ -2056,11 +2126,18 @@ class ElementPage(QWidget):
             return
         # Apply the look to the running session (best effort), then relaunch the
         # wizard so every page rebuilds in the new element.
-        try:
-            subprocess.Popen(["shadowfetch-element", "apply"],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except Exception:
-            pass
+        # Absolute path from the shared trusted table, and a pinned child
+        # PATH: this used to be Popen(["shadowfetch-element", "apply"]), which
+        # asks the session's $PATH which program rewrites the user's Plasma
+        # configuration. Still best effort - a machine without the tool keeps
+        # the element it has, and says nothing, exactly as before.
+        element_tool = desktop.trusted_program("shadowfetch-element")
+        if element_tool:
+            try:
+                subprocess.Popen([element_tool, "apply"], env=desktop.trusted_env(),
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception:
+                pass
         os.environ["SHADOWFETCH_ELEMENT"] = chosen
         os.execv(sys.executable, [sys.executable, os.path.abspath(sys.argv[0])] + sys.argv[1:])
 
@@ -2981,7 +3058,12 @@ class ShadowfetchWelcome(QMainWindow):
         self.mode = mode
         self.force = force
         self.watcher = watcher or NMWatcher(self)
-        self.catalog_data = load_catalog()
+        # desktop.catalog_by_id(None) is Welcome's shape - id -> record,
+        # every declared kind - read out of the one implementation. The local
+        # copy this replaces rejected a catalog file holding a JSON array,
+        # which the Control Center's copy accepted, so the two front-ends could
+        # read the same directory and disagree about what was in it.
+        self.catalog_data = desktop.catalog_by_id(None)
         self.sizes = load_sizes()
 
         self.accent_name = ACCENTS[0][0]

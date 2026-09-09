@@ -110,7 +110,7 @@ make iso           # privileged image assembly, signature and ISO gate
 make qemu          # launch the resulting image for a smoke test
 ```
 
-`make iso` produces `shadowfetch-4.0.0-amd64.iso` in the repository root. `VERSION ?= 4.0.0` and `CODENAME ?= umbra` live in the Makefile. Signing and publishing require the maintainer's private key and authorized publisher credentials, which are not in this repository. Consult `make help`, [release notes](RELEASE-4.0.0.md) and `.github/CI-SECRETS.md` before release operations.
+`make iso` produces `shadowfetch-4.0.0-amd64.iso` in the repository root. `VERSION ?= 4.0.0` and `CODENAME ?= umbra` live in the Makefile. Signing and publishing require the maintainer's private key and authorized publisher credentials, which are not in this repository. Consult `make help`, the [release notes](RELEASE-4.0.0.md) and `FINAL_OPERATIONS_CHECKLIST.md` before release operations; `.github/CI-SECRETS.md` records that the CI pipeline holds no secrets and why.
 
 Source map: `packages/shadowfetch-missions/` contains the queue and execution engine; `packages/shadowfetch-control-center/` contains the native Qt UI; `packages/shadowfetch-welcome/` contains first boot; `packages/shadowfetch-defaults/` supplies integration helpers; `packages/shadowfetch-drkonqi-pickup/` contains the pinned KDE pickup source, correction and behavior checks. `live-build/` assembles the desktop, `tools/` holds gates and release tooling, and `qa/4.0.0/` indexes acceptance evidence.
 

@@ -60,6 +60,44 @@ def make_png(path: Path, width: int, height: int) -> None:
     )
 
 
+class ReceiptDigestIsStampedIntoTheCallersReceipt(unittest.TestCase):
+    """A case that PASSED could not be promoted.
+
+    write_receipt() computed the digest over a private copy and returned it, so
+    the caller went on holding a receipt with no digest in it -- and _record()
+    reads receipt["receipt_sha256"] to name the run in the manifest. Measured:
+    `install-both-firmwares` PASSED with 16 checks against two running machines
+    and then raised KeyError: 'receipt_sha256' on the way to being recorded.
+    A receipt read back from disk carried the field; one still in hand did not,
+    and only the promotion path ever noticed.
+    """
+
+    def test_the_caller_holds_the_digest_after_writing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "receipt.json"
+            receipt = {"run_id": "r-1", "verdict": "PASS", "checks": []}
+            returned = write_receipt(path, receipt)
+            self.assertEqual(receipt.get("receipt_sha256"), returned,
+                             "the caller's receipt has no digest in it")
+
+    def test_the_file_and_the_caller_agree(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "receipt.json"
+            receipt = {"run_id": "r-2", "verdict": "PASS", "checks": []}
+            write_receipt(path, receipt)
+            on_disk = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(on_disk["receipt_sha256"], receipt["receipt_sha256"])
+
+    def test_stamping_does_not_change_what_a_second_write_computes(self):
+        """Idempotent, because the digest is over everything EXCEPT itself."""
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "receipt.json"
+            receipt = {"run_id": "r-3", "verdict": "PASS", "checks": []}
+            first = write_receipt(path, receipt)
+            second = write_receipt(path, receipt)
+            self.assertEqual(first, second)
+
+
 class TrustedPathTests(unittest.TestCase):
     """The permanent invariant: no security-relevant binary via PATH.
 

@@ -128,6 +128,34 @@ provider code. It is not agent-reachable today: read grants come from the
 manifest's `sandbox_profile.read_grants`, and the manifest is digest-pinned by
 `approved.json`. It is one policy edit away from being reachable.
 
+### What the agent can send OUT
+
+The table above is about what the agent can REACH and CHANGE on this machine.
+Exfiltration is a separate question and the answer changed this phase, so it is
+written out rather than left implied.
+
+Both network postures now give the sandbox its OWN network namespace. Posture
+`none` leaves it empty: no interface, no route, and the host's loopback services
+and abstract AF_UNIX namespace are out of reach — measured, not assumed. Posture
+`allow` creates the namespace BEFORE bwrap (an `unshare --user --net` helper),
+attaches a `slirp4netns` NAT to it with `--disable-host-loopback`, and installs
+an nftables ruleset inside it before the payload runs.
+
+| channel | verdict | mechanism |
+| --- | --- | --- |
+| host loopback services | **PREVENTED** in both postures | own netns; `--disable-host-loopback` on the NAT |
+| abstract AF_UNIX sockets | **PREVENTED** in both postures | own netns; the abstract namespace is per-netns |
+| the LAN | **PREVENTED** | the NAT forwards outward only |
+| an un-allowlisted internet address | **PREVENTED** where hosts are declared | nftables `policy drop` in the sandbox's own netns; measured `blocked:TimeoutError` against 8.8.8.8 with 1.1.1.1 allowlisted |
+| an IPv6 destination | **PREVENTED**, incidentally | the ruleset matches `ip daddr`, so IPv6 falls to the default drop. Stated because it is a side effect, not a decision |
+| any internet address, when the network is on and NO host is declared | **NOT PREVENTED** | a NAT is attached and no ruleset is installed. The decision reports `network_destination` as `observable_only` and lists it in `advisory_fields`, so no surface calls it a control |
+| **data encoded in a DNS query name** | **NOT PREVENTED** | the sandbox resolves through the NAT's forwarder at 10.0.2.3, which the ruleset must permit or nothing routes. This is the honest limit of an address filter: it narrows where bytes may be SENT and is not a claim that nothing can be signalled out |
+| a granted credential's value | **NOT PREVENTED** | it is in the sandbox's environment (`bwrap --setenv`), so anything the agent starts can read it. There is no credential broker |
+
+The last two are the ones to carry into any user-facing sentence. An egress
+allowlist is a real control with a real mechanism, and it is not a claim of
+containment.
+
 ## ROOT
 
 | asset | verdict | mechanism |

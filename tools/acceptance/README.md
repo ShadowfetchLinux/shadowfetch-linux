@@ -89,10 +89,12 @@ captured and hashed, never a trusted attestation.
 | case | contributes to | what it proves |
 | --- | --- | --- |
 | `live-boot` | - | The ISO under test boots to a live session that reports the release version and reaches a running systemd, with a real 1920x1080 desktop framebuffer. |
-| `install` | `INSTALL-01` | Calamares installs to a blank disk and the result boots. **Partly implemented** -- see below. |
+| `install` | `INSTALL-01` (half) | Calamares installs to a blank disk under one firmware and the result boots, driven page by page through the installer's own accessible controls. |
+| `install-both-firmwares` | `INSTALL-01` | Boots the BIOS install and the UEFI install of the same artifact. The case INSTALL-01 is recorded from. |
 | `upgrade` | `UPGRADE-01` | An installed previous release upgrades to this one with user data, machine identity and package consistency intact. Needs `--upgrade-base-image`. |
 | `recovery` | `RECOVERY-01` | A Phoenix Point is restored and the restored generation is what boots, with root and `/boot` from the same generation. |
 | `recovery-interrupted` | companion of `RECOVERY-01` | Power is cut mid-restore. |
+| `recovery-project` | `RECOVERY-01` | Fireline's project diff/undo, against a workspace an agent has damaged. The case RECOVERY-01 is recorded from. |
 
 ### Contributing to a required case is not proving it
 
@@ -100,13 +102,28 @@ A case may carry a `manifest_gap`: the part of the required release case it does
 **not** cover. With a gap recorded, `--record` refuses no matter how many checks
 the run passed. This is enforced, not documented, and unit-tested as such.
 
-All three mapped cases currently carry a gap, so none of them can record today:
-
 * `RECOVERY-01` is *project diff/undo* **and** supported system rollback. The two
-  recovery cases prove the rollback half against a real injected failure; the
-  Fireline project diff/undo half is not covered here.
+  recovery cases prove the rollback half against a real injected failure and
+  still carry that gap; the project diff/undo half is `recovery-project`, which
+  is where RECOVERY-01 is recorded from. Like the install composite it refuses
+  to run unless the ledger already holds the other half -- a PASSING `recovery`
+  and `recovery-interrupted` against the same artifact, produced by this same
+  harness -- and it re-verifies their receipts and evidence bytes before
+  believing them.
 * `UPGRADE-01` also asks for working recovery on the upgraded system.
-* `INSTALL-01` asks for BIOS **and** UEFI; one run proves one firmware.
+* `INSTALL-01` asks for BIOS **and** UEFI; one `install` run proves one
+  firmware, and it still carries that gap. It is closed by a second case rather
+  than by a judgement call: `install-both-firmwares` refuses to run unless the
+  ledger holds a PASSING `install` of the same artifact under each firmware,
+  produced by this same harness, and then **boots both of those installed disks
+  again**, one under each firmware, and checks the claim on each. Nothing there
+  reads a verdict and repeats it.
+
+  Because it pins the harness digest of the runs it consumes, changing anything
+  under `tools/acceptance/*.py` means the two `install` legs have to be re-run
+  before `install-both-firmwares` will accept them. That is deliberate: a leg
+  produced by an older, weaker version of the case must not be able to support a
+  composite produced by a newer one.
 
 Closing any of those gaps is a case-registry change plus the missing steps -- not
 a judgement call at recording time.
@@ -154,54 +171,73 @@ Two honest limits on what a run of this case proves:
   necessary but not sufficient. A base image whose Point carries a different
   kernel would test the root-versus-`/boot` claim much harder.
 
-### Install: what is and is not implemented
+### Install: how it is driven, and the defect that used to block it
 
-The harness boots the artifact, waits for the live desktop, locates the session,
-starts the installer and tries to read its accessible controls through the
-guest's AT-SPI bus. It is driven through accessibility rather than blind
-keystrokes deliberately: keystrokes into a wizard can "succeed" against a dialog
-that is not the one anybody thinks it is, which proves nothing about which page
-was on screen.
+The harness boots the artifact, waits for the live desktop, starts the
+installer, and drives it page by page through the guest's AT-SPI bus. It is
+driven through accessibility rather than blind keystrokes deliberately:
+keystrokes into a wizard can "succeed" against a dialog that is not the one
+anybody thinks it is, which proves nothing about which page was on screen. Every
+step here asserts the page it is about to act on, from that page's own controls,
+and stops as BLOCKED with the observed page recorded if it does not recognise
+it.
 
-Two obstacles were found and one is solved:
+Two obstacles were found. Both are now solved.
 
 * **pkexec.** The desktop launcher `calamares-install-debian` runs `xhost` and
   then `pkexec`, and pkexec cannot be authorised without a human: through the
   guest agent it answers `Error executing command as another user: Not
-  authorized` and nothing starts. The harness now starts `/usr/bin/calamares`
-  directly as root on the live session's Wayland/D-Bus environment, and
-  Calamares 3.4.2 comes up cleanly -- eight view steps loaded, all requirements
-  satisfied, `/dev/vda` detected. The cost is recorded in the receipt: driven
-  this way the case covers the INSTALLER, not the polkit path a user takes to
-  reach it.
-* **Toolkit accessibility is off.** Qt attaches its AT-SPI bridge only when
-  `org.a11y.Status.IsEnabled` is true, and a stock KDE session leaves it false
-  until an assistive client asks. Until it is on, the installer runs perfectly
-  and is simply invisible to the bus -- which reads exactly like a failure to
-  start. The harness switches it on before launching and records the result.
+  authorized` and nothing starts. The harness starts `/usr/bin/calamares`
+  directly as root instead. The cost is recorded in the receipt: driven this
+  way the case covers the INSTALLER, not the polkit path a user takes to reach
+  it.
 
-With accessibility switched on the bus fills up properly -- seventeen
-applications including `plasmashell`, `kwin` and `Shadowfetch Welcome`, against
-six before -- but Calamares is still not among them, because the harness runs it
-as **root** while the AT-SPI registry being read belongs to the session user.
-That is where the case stands: the installer is running and healthy (its log and
-the process list are recorded as evidence), and it is invisible to the driver.
+* **A root process cannot use the live user's session bus at all.** This is what
+  five consecutive runs were reporting as `expected exactly one 'calamares'
+  application, found 0`. Measured inside the live session: connecting to
+  `unix:path=/run/user/1000/bus` as uid 0 is dropped at EXTERNAL authentication
+  (`org.freedesktop.DBus.Error.NoReply`), and the running installer holds
+  exactly two sockets -- one to the Wayland compositor, and none to any
+  accessibility bus. Qt attaches its AT-SPI bridge (compiled into libQt6Gui
+  here, not a loadable plugin) only after it can read `org.a11y.Status` from a
+  session bus, so with no session bus there is no bridge and no registration.
+  Setting `QT_ACCESSIBILITY`, or switching `org.a11y.Status.IsEnabled` on for
+  the session user, cannot help: both fix an obstacle the root process never
+  reaches. The earlier note in this file blamed the registry belonging to the
+  session user; the process never got that far.
 
-The next step is one of:
+  The installer is therefore given a session bus of its own uid -- a private
+  `dbus-daemon` started as root, on which `org.a11y.Bus` activates a root-owned
+  at-spi bus and registry -- and the driver reads that same bus. The installer
+  is the shipped binary, on the live session's real compositor, installing to a
+  real disk.
 
-* start Calamares as the session user with a polkit rule in the QA image that
-  allows the install action without a prompt, so it registers on the user's
-  accessibility bus like every other application; or
-* drive it through QEMU's `sendkey` monitor command with a screenshot assertion
-  per page -- weaker, because a screenshot check is a much coarser way to know
-  which page is on screen than reading its controls.
+**Typing.** Setting a field through AT-SPI's `EditableText` interface lands the
+characters and Calamares ignores them: its users page listens for
+`QLineEdit::textEdited`, the signal that means a person typed. Measured: all
+five account fields set that way, all five reading back correctly, and the Next
+button still disabled; one real keystroke enabled it. So the keys are real --
+QEMU's own input device, the path a physical keyboard takes -- while the
+assertions stay on the accessibility bus: focus is verified before typing and
+the content is read back after. A password field reads back as bullets, so for
+those the character count is what can honestly be compared.
 
-Mapping the controls to the welcome/locale/keyboard/partition/users/summary
-sequence remains unimplemented either way, so the case ends BLOCKED with the
-installer log, the applications the bus could see, the accessibility result and
-a framebuffer capture attached as evidence.
+**What the case checks.** That the installer registers on the bus at all; that
+each page is the page it is supposed to be; that the partition page offers the
+machine's disk and reports the firmware the machine booted under; that the
+installer *refuses* to advance before a partitioning choice is made and before
+the account is filled in, and advances once they are; that the summary describes
+erasing this disk, installing this release, and the partition table that
+firmware requires; that the installation reaches Calamares' own "All done"
+rather than its failure page. Then the live medium is shut down and the disk is
+booted on its own, and the installed system has to report the release version,
+boot through the firmware it was installed under, carry the account and host
+name that were typed into the accessible fields, keep a clean `dpkg --audit`,
+and reach a running systemd. The account check is the end-to-end one: it is the
+same string that went in through the accessibility bus, read back out of
+`/etc/passwd` on a machine booted from the disk.
 
-### Upgrade: what it needs
+### Upgrade: what it needs### Upgrade: what it needs
 
 A previous-release installed image. The 3.5.0 QA base that this tree's existing
 upgrade clones are layered on
@@ -209,6 +245,40 @@ upgrade clones are layered on
 no longer exists on this host, so every one of those clones is unopenable --
 `qemu-img check` fails on the missing backing file. Until a 3.5.0 image is
 rebuilt or restored, the case is BLOCKED, not assumed.
+
+Its `manifest_gap` is deliberately still there. UPGRADE-01 also asks for
+working recovery on the upgraded system, and the leg that would prove it -- take
+a Phoenix Point on the upgraded machine, restore it, reboot, confirm the
+restored generation is what boots -- is the same shape as `case_recovery`'s and
+would be easy to write. It has not been written, because on this host it could
+never be executed even once: adding an unrunnable leg would close the recorded
+gap while proving nothing, which is precisely the move this harness exists to
+prevent.
+
+### Project diff/undo
+
+`recovery-project` acts as the desktop user, not as root. It creates a
+workspace under `~/Workspaces`, takes a checkpoint with
+`/usr/bin/shadowfetch-checkpoint`, and then injects the damage an agent that ran
+wild would do: one file edited, one deleted, one added, one deleted along with
+its directory. The diff must name **exactly** those four changes and no others
+-- a file nobody touched appearing in the diff fails the check as surely as a
+missing one. The undo then has to bring the workspace back to the checkpoint
+byte for byte, judged from a digest of every file rather than from the tool's
+own report, after which the tool is asked again and must agree there is nothing
+left to restore. A canary file beside the workspace root proves the undo stayed
+inside the workspace it names.
+
+Two things it records rather than hides. The shipped
+`/usr/bin/shadowfetch-checkpoint` in this release is the four-subcommand
+version (`snapshot`, `list`, `diff`, `undo`); the tree has a newer one with
+`verify`, `recover` and `--json`, and the case identifies which one it ran
+against. And the QA base image ships `~/Workspaces` owned by **root**, so the
+desktop user cannot create the checkpoint store inside it and cannot take a
+checkpoint at all until the ownership is corrected. The case corrects it,
+records the ownership it found, and goes on to test the mechanism it is there to
+test -- but that ownership is worth somebody's attention, because a user who
+hits it sees the feature simply fail.
 
 ## Host requirements
 

@@ -106,10 +106,16 @@ NOT_A_CLAIM = {"relied_on"}
 # the destination filter, so those names MOVED here rather than being deleted --
 # a closed gap still has to appear in every table, and still has to carry a
 # mechanism, or the claim is decoration.
-GAP_FIELDS_SANDBOX = ("syscall_profile",)
-GAP_FIELDS_POLICY = ("syscalls",)
-CLOSED_FIELDS_SANDBOX = ("egress_allowlist", "masked_paths")
-CLOSED_FIELDS_POLICY = ("network_destination", "path_masking")
+# NOTHING IS LEFT IN THE GAP LISTS, and the check has to keep working with
+# them empty -- an attack that measures nothing because its subject list is
+# empty is not a passing attack, it is an absent one. So the closed lists carry
+# every name instead, and each is checked for the thing a closed row must have:
+# a mechanism. A field that regresses moves back to the gap list and the
+# affirmative-claim check finds it there.
+GAP_FIELDS_SANDBOX = ()
+GAP_FIELDS_POLICY = ()
+CLOSED_FIELDS_SANDBOX = ("egress_allowlist", "masked_paths", "syscall_profile")
+CLOSED_FIELDS_POLICY = ("network_destination", "path_masking", "syscalls")
 
 ENV_KEYS = ("SHADOWFETCH_AGENT_WORKSPACES", "SHADOWFETCH_MISSIONS_STATE",
             "SHADOWFETCH_FIREBREAK_STATE", "SHADOWFETCH_MCP_STATE", "PATH")
@@ -759,12 +765,31 @@ def attack_no_vacuously_enforced_field(bench, report):
     providers = bench.providers
     spec = providers.SandboxSpec(workspace_mode="workspace-write", network="none")
     status = providers.sandbox_enforcement(spec)
+    # A FIELD A SESSION CANNOT DECLINE IS NOT A FIELD IT DECLARED NOTHING FOR.
+    # The question this attack asks -- "was a session told a control applied
+    # when it asked for none?" -- is the right one for every field the spec can
+    # express, and meaningless for one it cannot. `syscall_profile` has no
+    # manifest key and no SandboxSpec attribute on purpose: the filter is
+    # Firebreak's, identical for every sandbox, and a provider choosing its own
+    # syscall surface is the thing the boundary exists in order not to permit.
+    # So it is checked for the opposite property instead -- that it is NOT
+    # something a session can opt out of -- and if it ever becomes declarable,
+    # `hasattr` sees that and it falls back under the vacuity rule.
+    always_on = [f for f in status
+                 if not hasattr(providers.SandboxSpec, f)
+                 and not any(field.name == f
+                             for field in dataclasses.fields(providers.SandboxSpec))]
     vacuous = []
     for field, entry in sorted(status.items()):
+        if field in always_on:
+            continue
         value = getattr(spec, field, None)
         if entry["status"] == "enforced" and value in (None, (), [], ""):
             vacuous.append((field, value, entry["mechanism"]))
-    passed = not vacuous
+    # An always-on control still has to be applied, or "not declinable" would be
+    # a way of never being checked at all.
+    unapplied = [f for f in always_on if status[f]["status"] != "enforced"]
+    passed = not vacuous and not unapplied
     report(name,
            "a session that declared nothing for a field is not told that field is "
            "enforced -- the not_applicable convention sandbox_enforcement() "
@@ -774,7 +799,11 @@ def attack_no_vacuously_enforced_field(bench, report):
            + json.dumps({k: v["status"] for k, v in sorted(status.items())},
                         indent=2, sort_keys=True)
            + "\nfields reported 'enforced' whose declared value is empty:\n"
-           + ("\n".join(f"  {f} = {v!r}  ->  {m}" for f, v, m in vacuous) or "  none"),
+           + ("\n".join(f"  {f} = {v!r}  ->  {m}" for f, v, m in vacuous) or "  none")
+           + "\nfields no session can declare, which must be applied anyway: "
+           + (", ".join(sorted(always_on)) or "none")
+           + ("" if not unapplied else
+              "\n  NOT APPLIED: " + ", ".join(sorted(unapplied))),
            passed,
            note=("no vacuous claim" if passed else
                  "these are reported as applied mechanisms for a session that "

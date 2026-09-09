@@ -1,12 +1,17 @@
-# Stage C — brokered egress: BLOCKED, with the mechanism measured
+# Stage C — brokered egress: the dead end, and the way past it
 
 Stage C asks for destination-controlled egress: a provider requesting
 `api.openai.com` must not thereby gain `github.com`, `127.0.0.1`, `192.168.x.x`
-or the open internet. This records exactly how far it got and why it stopped,
-so the next attempt starts from evidence rather than from the same dead end.
+or the open internet.
 
-**Stage C is NOT implemented. `egress_allowlist` remains NOT ENFORCED and is
-described that way everywhere it appears.**
+**RESOLVED. `egress_allowlist` is ENFORCED.** This document is kept as written
+because the dead end it records is the reason the working design looks the way
+it does, and a reader who deletes it will walk back into the same wall. The
+resolution is at the end.
+
+The measurements below were taken while the answer was still "no". They are
+still true: the failure they describe is a real property of trying to reach
+INTO a namespace bwrap owns.
 
 ## What was proven to work
 
@@ -84,3 +89,84 @@ Stage C lands:
 * a provider requesting `api.openai.com` can reach any public address
 * the honest user-facing claim is "agents cannot reach your local services",
   **not** "agents can only reach the hosts they declared"
+
+
+---
+
+# THE RESOLUTION — invert the ownership
+
+Everything above tries to reach into a namespace bwrap created. That is the
+wrong direction, and no ordering of it works: joining the namespace stops
+slirp4netns attaching afterwards, and attaching first makes it unjoinable.
+Both directions were measured, above.
+
+The way past it is not a better nsenter. It is to make the namespace OURS from
+the first instant:
+
+1. A helper runs `unshare --user --map-root-user --net --fork`, so the network
+   namespace exists before bwrap does and the helper holds `CAP_NET_ADMIN` over
+   it — no reaching in from outside is required at all.
+2. The helper writes its own pid to a file and then BLOCKS on a FIFO. A payload
+   that ran before this point would run on an unconfigured interface, so the
+   block is the ordering guarantee, not a convenience.
+3. The launcher polls for that pid, attaches `slirp4netns --configure
+   --disable-host-loopback` to it, waits for slirp's ready fd, and then writes
+   to the FIFO.
+4. The helper wakes, brings `lo` up, installs the nftables ruleset ITSELF, and
+   `os.execv`s bwrap — WITHOUT `--unshare-net`, so the sandbox inherits a
+   namespace that is already NAT'd and already filtered.
+
+The whole tree runs under one `systemd-run --scope`, so the cgroup limits still
+cover the helper, the sandbox and everything they start.
+
+## Measured after the change
+
+```
+WITH allowlist   RESULT {"allowed": "REACHED", "denied": "blocked:TimeoutError"}
+no allowlist     RESULT {"allowed": "REACHED", "denied": "REACHED"}
+net=none         RESULT {"allowed": "blocked:OSError", "denied": "blocked:OSError"}
+```
+
+Stage B containment re-verified intact: the host's loopback services and the
+host's abstract AF_UNIX namespace remain unreachable in both postures.
+
+## What the change forced, which was more than the filter
+
+* **DNS was broken in every networked sandbox** and nobody had noticed, because
+  nothing had ever needed a name inside one. `/etc/resolv.conf` was bound from
+  the host, where it names systemd-resolved's stub at 127.0.0.53 — which inside
+  the sandbox's own namespace is the sandbox's own empty loopback. Every cloud
+  provider addresses its API by name, so every turn would have failed at
+  `getaddrinfo` while an IP address was reachable the whole time. The networked
+  posture now binds a resolver naming the NAT's forwarder.
+* **The recorded argv was no longer the argv that ran.** The record was built
+  from the bwrap command line, and the helper that owns the namespace and
+  installs the filter was spliced in afterwards — so `enforcement()`, which
+  reads the argv rather than the request, reported a namespace nobody created,
+  on a session that was fully contained. The argv is assembled before the
+  record now, and spawned unchanged.
+* **A refusal stopped being auditable.** Building that argv can refuse — an
+  egress host that resolves to no address is refused rather than run unfiltered
+  — and because the started record was written after it, the refusal left no
+  trace at all. There is a `refused` record now.
+* **Destinations became a PRIVILEGE, so the approval had to carry them.**
+  `attack_approval.py`'s `egress-widened-after-approval` used to pass on the
+  CLAIM: the engine said destinations were `observable_only` and named them
+  advisory, so nobody was told the hosts were enforced. Once they were enforced,
+  that branch stopped being available — an enforced privilege outside the
+  approved scope is one that can be widened after the human agreed. `Scope` now
+  carries `egress_hosts`, and the attack reports PREVENTED.
+
+## The residuals, which travel with the claim
+
+* **BY ADDRESS.** Names resolve once, on the host, at launch. A CDN that moves
+  is unreachable until the next run. The sandbox never gets to choose what a
+  name means, which is the point.
+* **IPv4 only.** The ruleset matches `ip daddr`; IPv6 falls to the default drop.
+* **DNS leaves.** Queries go through the NAT's forwarder, which the ruleset must
+  permit or nothing routes. A payload can encode data in a query name. This
+  narrows where bytes may be SENT and is not a claim that nothing can be
+  signalled out.
+* **The network on with NO hosts declared is not filtered at all.** A NAT is
+  attached and no ruleset is installed. The decision reports `observable_only`
+  and lists it in `advisory_fields`, so no surface calls it a control.

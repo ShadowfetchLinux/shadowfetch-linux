@@ -126,15 +126,40 @@ class BundleInstallArgv(unittest.TestCase):
         self.assertIn("verb, rest = args[0], args[1:]", helper)
         self.assertIn('if verb == "install":', helper)
 
-    def test_welcome_sends_the_install_verb(self):
-        call = re.search(r'\[\s*"pkexec",\s*BUNDLE_HELPER[^\]]*\]', source(), re.S)
-        self.assertIsNotNone(call, "the bundle install call site moved")
-        self.assertRegex(call.group(0), r'"pkexec",\s*BUNDLE_HELPER,\s*"install",')
+    def test_welcome_asks_the_shared_library_for_the_argv(self):
+        """These two tests asserted Welcome spells the helper path itself and
+        builds the pkexec argv itself, and they were right to: it did, and the
+        argv had to be correct.
 
-    def test_welcome_points_at_the_packaged_helper(self):
-        self.assertRegex(
-            source(),
-            r'BUNDLE_HELPER = "/usr/libexec/shadowfetch-bundle-install"')
+        W-30's whole point is that it no longer does either. The correct argv
+        existed in two places -- the audit's opening finding -- and Welcome's
+        copy spelled `pkexec` as a BARE NAME that $PATH resolved, which is the
+        invariant this codebase applies everywhere else. Asserting the literal
+        back into this file would be asserting the duplication back in, so what
+        is checked now is that Welcome delegates and does not carry a second
+        implementation. The argv contract itself is pinned where it now lives,
+        in the shared library's own suite, and `tools/drift_gate.py
+        check_desktop_helpers` reports any front-end that starts building one
+        again.
+        """
+        text = source()
+        self.assertIn("desktop.bundle_install_argv(", text,
+                      "Welcome no longer asks the shared library for the argv")
+        self.assertNotIn('BUNDLE_HELPER = "/usr/libexec/shadowfetch-bundle-install"',
+                         text, "the second copy of the helper path is back")
+        self.assertNotIn('"pkexec", BUNDLE_HELPER', text,
+                         "the second copy of the privileged argv is back")
+
+    def test_the_library_welcome_delegates_to_names_pkexec_absolutely(self):
+        """The delegation is only worth anything if the thing delegated to is
+        the one that names its programs by absolute path -- which is the whole
+        reason the copy was a defect."""
+        library = (ROOT / "packages/shadowfetch-defaults/data/usr/lib/shadowfetch"
+                   / "desktop/sf_desktop.py")
+        self.assertTrue(library.is_file(), library)
+        text = library.read_text(encoding="utf-8")
+        self.assertIn('"pkexec": ("/usr/bin/pkexec"', text)
+        self.assertIn('"install"', text)
 
 
 if __name__ == "__main__":

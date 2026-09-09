@@ -53,10 +53,18 @@ POLICY_MEDIATION = {
     "filesystem_read": (FULLY_MEDIATED,
                         "only declared read grants are bound into the sandbox; "
                         "everything else is simply absent"),
+    # "or LAN" was in this string and was FALSE for one posture, measured:
+    # with the network on and NO allowlist declared, the sandbox reached the
+    # host's own LAN address, the docker bridge and the LAN router.
+    # --disable-host-loopback blocks 127.0.0.1 and nothing else; it is the
+    # nftables ruleset that puts the LAN out of reach, and that only exists
+    # where hosts are declared.
     "network_on_off": (FULLY_MEDIATED,
-                       "bwrap --unshare-net in every posture: the sandbox has "
-                       "its own network namespace and cannot reach the host's "
-                       "loopback, abstract sockets or LAN"),
+                       "every posture gets its own network namespace, so the "
+                       "host's loopback services and its abstract AF_UNIX "
+                       "sockets are unreachable. The LAN is reachable when the "
+                       "network is on and no destination is declared -- see "
+                       "network_destination, which is the row that narrows it"),
     # PARTIAL, and the word is load-bearing. A declared allowlist becomes a
     # default-DROP nftables ruleset in the sandbox's own network namespace, and
     # that is full mediation. A posture that reaches the network while declaring
@@ -92,8 +100,19 @@ POLICY_MEDIATION = {
     "executable_identity": (FULLY_MEDIATED,
                             "the program is classified from filesystem ownership "
                             "and refused unless the manifest declared it"),
-    "syscalls": (NOT_OBSERVABLE,
-                 "no seccomp profile is applied and none is expressible"),
+    # MEDIATED, not observed. This said "no seccomp profile is applied and none
+    # is expressible", which was true and is not: Firebreak assembles a
+    # classic-BPF program in its own source and hands bwrap --seccomp <fd>, and
+    # the kernel answers 46 syscalls with EPERM. Mediation is the right word --
+    # the calls are PREVENTED. What remains unobservable is which permitted
+    # syscalls a payload makes, and that is a different row from this one.
+    "syscalls": (FULLY_MEDIATED,
+                 "a classic-BPF seccomp filter applied to every sandbox, 46 "
+                 "syscalls denied EPERM, self-tested against the real kernel "
+                 "before the run starts and refused rather than degraded if "
+                 "the kernel will not take it. WHICH permitted syscalls a "
+                 "payload makes is still not observed: this row is about what "
+                 "cannot happen, not about what is recorded"),
     "tool_actions_inside_a_turn": (NOT_OBSERVABLE,
                                    "a provider's internal tool calls are visible "
                                    "only if it reports them on its own stream; "
@@ -136,6 +155,26 @@ class Scope:
     egress_hosts: tuple = ()
 
     @staticmethod
+    def _sequence(value, field):
+        """A list, or nothing. NEVER a bare string.
+
+        `tuple("corp*")` is `('c','o','r','p','*')`, and `'*'` in that tuple is
+        the wildcard that makes an approval cover everything. A scope stored
+        with `egress_hosts` as a string -- by a future writer, a hand-edited
+        row, a migration -- would therefore widen itself into a grant for every
+        destination. The normal path always writes a JSON array, so this is not
+        reachable today; the deserialiser of an approval scope is the wrong
+        place to be relaxed about it.
+        """
+        if value is None:
+            return ()
+        if isinstance(value, str) or not isinstance(value, (list, tuple)):
+            raise ValueError(
+                f"approval scope field {field!r} must be a list, not "
+                f"{type(value).__name__}")
+        return tuple(value)
+
+    @staticmethod
     def from_json(blob):
         data = json.loads(blob) if isinstance(blob, str) else dict(blob or {})
         return Scope(
@@ -143,13 +182,15 @@ class Scope:
             provider=data.get("provider") or "",
             workspace=data.get("workspace") or "",
             network=data.get("network") or "none",
-            credential_ids=tuple(data.get("credential_ids") or ()),
-            paths=tuple(data.get("paths") or ()),
+            credential_ids=Scope._sequence(data.get("credential_ids"),
+                                           "credential_ids"),
+            paths=Scope._sequence(data.get("paths"), "paths"),
             # An approval stored before this field existed reads as no hosts,
             # so it covers a mission that wants none and stops covering one
             # that wants any. That direction is deliberate: the alternative is
             # honouring an old grant for destinations nobody was shown.
-            egress_hosts=tuple(data.get("egress_hosts") or ()))
+            egress_hosts=Scope._sequence(data.get("egress_hosts"),
+                                         "egress_hosts"))
 
     def to_json(self):
         return json.dumps(dataclasses.asdict(self), sort_keys=True)

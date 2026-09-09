@@ -85,3 +85,4 @@ data/etc/xdg/autostart/shadowfetch-element-session.desktop  etc/xdg/autostart/
 data/usr/libexec/shadowfetch-retire-buzz usr/libexec/
 data/etc/xdg/autostart/shadowfetch-retire-buzz.desktop etc/xdg/autostart/
 data/usr/bin/shadowfetch-doctor  usr/bin/
+data/usr/lib/shadowfetch/desktop/sf_desktop.py  usr/lib/shadowfetch/desktop/

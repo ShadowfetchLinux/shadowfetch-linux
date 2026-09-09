@@ -119,9 +119,41 @@ class TestTreeIsClean(unittest.TestCase):
             by_check[finding.check] = by_check.get(finding.check, 0) + 1
         # Snapshot. A DIFFERENT number means a duplication was fixed (move it to
         # the enforced set and update this) or a new one appeared (fix it).
+        #
+        # desktop-helpers went 1 -> 4 when the greppy barrier was replaced by a
+        # structural one. The old 1 was `net`. The other three are things the
+        # rewrite could SEE for the first time and that this stage's territory
+        # cannot fix: Welcome resolves the shared module by name (sys.modules is
+        # consulted before sys.path, so its existence check decides nothing),
+        # and workbench_page.py declares /usr/bin/shadowfetch-workbench itself,
+        # twice, a program the library's trusted-program table does not carry.
+        # Both are reported with exact anchors and replacements.
+        #
+        # workspace-name went 13 -> 0 and release-pointer 1 -> 0, and both are
+        # recorded here rather than merely deleted, because a snapshot that
+        # only ever shrinks teaches nothing:
+        #
+        #   workspace-name: four implementations of the rule disagreed about
+        #   hidden directories, backslashes, control characters and length.
+        #   They agree now, DECISION FOR DECISION against a shared corpus --
+        #   the gate executes each one rather than comparing source text,
+        #   because three regexes that look alike still disagreed. And the gate
+        #   had been grading its own private copy of the sanitiser it checks,
+        #   so a fix to the real one changed nothing it reported; it lifts the
+        #   shipped function out of the file and runs that.
+        #
+        #   release-pointer: the pointer now has a writer as well as a reader.
+        #   The finding did not disappear because it was fixed -- it
+        #   disappeared because the check fired only on the exact string
+        #   "NOT IMPLEMENTED" and the status had moved to something else, so
+        #   neither branch could reach it. The status is derived from what the
+        #   reader and the writer contain now and compared with what is written
+        #   down, which is a check that can see its own staleness.
+        #
+        # desktop-helpers went 4 -> 3: Welcome's loader was the same
+        # sys.modules hole the Control Center's had, and is closed.
         self.assertEqual(
-            {"palette": 1, "workspace-name": 13, "element-assets": 1,
-             "desktop-helpers": 1, "release-pointer": 1},
+            {"palette": 1, "element-assets": 1, "desktop-helpers": 3},
             by_check,
             "the blocked-duplication inventory changed:\n"
             + "\n".join(str(f) for f in blocked))
@@ -285,13 +317,19 @@ class TestGeneratedThemeAssets(unittest.TestCase):
 
 
 class TestPaletteLiterals(unittest.TestCase):
-    APP = ("packages/shadowfetch-control-center/data/usr/share/shadowfetch/"
-           "control-center/sfcc/app.py")
+    # These used to plant their stray colour in app.py. app.py no longer holds
+    # one: the sidebar colour it spelled out is theme.SIDEBAR now, and its
+    # ratchet entry went with it -- which is the tightening this check exists
+    # to reward. theme.py is where the remaining unnamed colours live, so it is
+    # where a stray one has to be planted for the check to have anything to
+    # find.
+    THEME = ("packages/shadowfetch-control-center/data/usr/share/shadowfetch/"
+             "control-center/sfcc/theme.py")
 
     def test_a_new_unnamed_colour_is_caught(self):
         with sandbox(*PALETTE_LITERAL_RELS) as fake:
-            edit(fake / self.APP, 'side_wrap.setStyleSheet("background: #101114;")',
-                 'side_wrap.setStyleSheet("background: #123456;")')
+            edit(fake / self.THEME, 'SIDEBAR = "#101114"',
+                 'SIDEBAR = "#123456"')
             found = drifts(drift_gate.check_palette_literals(TRUTH))
         self.assertTrue(found)
         self.assertIn("#123456", found[0].detail)
@@ -299,7 +337,10 @@ class TestPaletteLiterals(unittest.TestCase):
     def test_a_slack_ratchet_entry_is_caught(self):
         """Removing a stray colour must also remove its ratchet entry."""
         with sandbox(*PALETTE_LITERAL_RELS) as fake:
-            edit(fake / self.APP, "#101114", "#151619")  # an app-chrome role
+            text = (fake / self.THEME).read_text(encoding="utf-8")
+            # Every occurrence: one left behind would keep the entry earned.
+            (fake / self.THEME).write_text(
+                text.replace("#101114", "#151619"), encoding="utf-8")
             found = drifts(drift_gate.check_palette_literals(TRUTH))
         self.assertTrue(any("ratchet has gone slack" in f.detail for f in found))
 
@@ -346,29 +387,83 @@ class TestLookAndFeelIdentity(unittest.TestCase):
 
 
 class TestDesktopHelpers(unittest.TestCase):
+    """The privileged argv is built in ONE place and delegated everywhere else.
+
+    Both tests that used to live here planted a string W-30 had already
+    removed from the tree -- an argv literal that now exists only in the
+    library, and a path Welcome no longer contains -- so neither of them had
+    failed on anything for some time. `edit()` asserts its anchor matches once,
+    which is what finally said so.
+    """
+
     SOFTWARE = ("packages/shadowfetch-control-center/data/usr/share/shadowfetch/"
                 "control-center/sfcc/software_page.py")
+    LIBRARY = drift_gate.DESKTOP_LIBRARY
+    WELCOME = "packages/shadowfetch-welcome/src/shadowfetch-welcome"
 
-    def test_a_bundle_install_call_missing_its_verb_is_caught(self):
-        """UI-ARGV-01: seven Install buttons exited 2 after the password prompt."""
+    def test_a_bundle_install_argv_missing_its_verb_is_caught(self):
+        """UI-ARGV-01: seven Install buttons exited 2 after the password prompt.
+        The literal lives in exactly one place now, so this is where it goes."""
         with sandbox(*HELPER_RELS) as fake:
-            edit(fake / self.SOFTWARE,
-                 '["pkexec", busutil.BUNDLE_INSTALL, "install", bundle_id]',
-                 '["pkexec", busutil.BUNDLE_INSTALL, bundle_id]')
+            edit(fake / self.LIBRARY,
+                 'return [pkexec, helper, "install", bundle_id]',
+                 'return [pkexec, helper, bundle_id]')
             found = drifts(drift_gate.check_desktop_helpers(TRUTH))
-        self.assertTrue(found)
-        self.assertIn("without the \"install\" verb", found[0].detail)
+        self.assertTrue(any('without the "install" verb' in f.detail
+                            for f in found), found)
 
-    def test_the_two_front_ends_disagreeing_on_a_helper_path_is_caught(self):
+    def test_a_verb_laundered_through_a_variable_is_still_caught(self):
+        """The property that HELD when this check was attacked, kept when the
+        regex behind it was replaced by an AST read: a verb the gate cannot
+        read as the literal "install" is reported, not assumed."""
         with sandbox(*HELPER_RELS) as fake:
-            rel = "packages/shadowfetch-welcome/src/shadowfetch-welcome"
-            (fake / rel).write_text(
-                (fake / rel).read_text(encoding="utf-8").replace(
-                    "/usr/libexec/shadowfetch-bundle-install",
-                    "/usr/libexec/sf-bundle-install"),
+            edit(fake / self.LIBRARY,
+                 'return [pkexec, helper, "install", bundle_id]',
+                 'verb = "install"\n    return [pkexec, helper, verb, bundle_id]')
+            found = drifts(drift_gate.check_desktop_helpers(TRUTH))
+        self.assertTrue(any('without the "install" verb' in f.detail
+                            for f in found), found)
+
+    def test_a_comment_cannot_satisfy_the_pkexec_resolution_check(self):
+        """Measured, not theorised. The check read the builder's RAW source, so
+        `# trusted_program("pkexec")` in a comment satisfied it while the code
+        called shutil.which("pkexec"): that plant reported 0 DRIFT findings."""
+        with sandbox(*HELPER_RELS) as fake:
+            edit(fake / self.LIBRARY,
+                 '    pkexec = trusted_program("pkexec")\n'
+                 '    helper = trusted_program("shadowfetch-bundle-install")',
+                 '    # trusted_program("pkexec") -- resolved below\n'
+                 '    pkexec = shutil.which("pkexec")\n'
+                 '    helper = trusted_program("shadowfetch-bundle-install")')
+            found = drifts(drift_gate.check_desktop_helpers(TRUTH))
+        self.assertTrue(any("trusted program table" in f.detail for f in found),
+                        found)
+
+    def test_a_front_end_spelling_a_helper_path_again_is_caught(self):
+        with sandbox(*HELPER_RELS) as fake:
+            edit(fake / self.WELCOME,
+                 'STATE_HELPER = "/usr/libexec/shadowfetch-ignition-state"',
+                 'STATE_HELPER = "/usr/libexec/shadowfetch-ignition-state"\n'
+                 'BUNDLE_HELPER = "/usr/libexec/shadowfetch-bundle-install"')
+            found = drifts(drift_gate.check_desktop_helpers(TRUTH))
+        self.assertTrue(any("bundle-install path" in f.detail for f in found),
+                        found)
+
+    def test_a_page_that_assembles_the_privileged_argv_again_is_caught(self):
+        """The Install pages delegate. A page that builds the argv itself is
+        the duplication W-30 removed, whether or not it happens to agree."""
+        with sandbox(*HELPER_RELS) as fake:
+            page = fake / self.SOFTWARE
+            page.write_text(
+                page.read_text(encoding="utf-8")
+                + '\n\ndef _install_argv(bundle_id):\n'
+                  '    return ["pkexec", "/usr/libexec/" "shadowfetch-bundle-install",\n'
+                  '            "install", bundle_id]\n',
                 encoding="utf-8")
             found = drifts(drift_gate.check_desktop_helpers(TRUTH))
-        self.assertTrue(any("bundle-install path" in f.detail for f in found))
+        details = "\n".join(f.detail for f in found)
+        self.assertIn("privileged argv", details)
+        self.assertIn("assembles the bundle-install path", details)
 
     def test_clean_copy_passes(self):
         with sandbox(*HELPER_RELS):

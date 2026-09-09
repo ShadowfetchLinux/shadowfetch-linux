@@ -20,7 +20,11 @@ Phase 1 found real defects of each kind:
 
   * An Invocation carries credential IDENTITIES, never credential VALUES. The
     value is injected at the Firebreak boundary by code that never came from a
-    provider.
+    provider. HOW it is injected is a separate question with its own answer:
+    see CREDENTIAL_DELIVERY_CLAIMS, which says what each delivery mode does and
+    does not buy, and credential_delivery(), which reports what a given manifest
+    actually gets. Today every shipped manifest gets "environment", which means
+    the value is readable inside the sandbox.
 
   * An Invocation's executable is CLASSIFIED by who can modify it, and the
     class must be one its manifest declared. An adapter may look its program
@@ -57,6 +61,10 @@ __all__ = [
     "ENFORCED", "PARTIAL", "NOT_ENFORCED", "NOT_REPRESENTABLE",
     "ApprovedPolicy", "PolicyError", "load_policy", "manifest_digest",
     "resolve_executable",
+    "CREDENTIAL_DELIVERY_ENVIRONMENT", "CREDENTIAL_DELIVERY_BROKER_VALUE",
+    "CREDENTIAL_DELIVERY_BROKER_PROXY", "CREDENTIAL_DELIVERY_MODES",
+    "DEFAULT_CREDENTIAL_DELIVERY", "CREDENTIAL_DELIVERY_CLAIMS",
+    "credential_delivery", "credential_delivery_claim",
 ]
 
 INTERFACE_VERSION = 1
@@ -313,9 +321,11 @@ class SandboxSpec:
     @property
     def firebreak_network(self) -> str:
         """Firebreak speaks none/allow; allowlist is the strongest posture the
-        current sandbox can express. The declared hosts are still recorded on
-        the receipt so a reviewer can see what was permitted, and they are what
-        a future egress filter will enforce."""
+        argv can express, and it is no longer the strongest thing that happens.
+        The declared hosts are passed through as --egress-host and become a
+        default-DROP nftables ruleset inside the sandbox's own network
+        namespace, installed before the payload runs. This docstring said they
+        were what "a future egress filter will enforce"; the filter shipped."""
         return "none" if self.network == "none" else "allow"
 
     def narrow(self, **changes) -> "SandboxSpec":
@@ -890,13 +900,20 @@ NOT_REPRESENTABLE = "not_representable"
 SANDBOX_ENFORCEMENT = {
     "workspace_mode": (ENFORCED,
                        "bwrap --ro-bind for read-only, --bind otherwise"),
+    # "or LAN" was in this string and was FALSE for one posture, measured by an
+    # adversarial review: with the network on and NO destination declared, the
+    # sandbox reached the host's own LAN address, the docker bridge and the LAN
+    # router. --disable-host-loopback blocks 127.0.0.1 and nothing else; it is
+    # the nftables ruleset that puts the LAN out of reach, and that exists only
+    # where hosts are declared.
     "network": (ENFORCED,
-                "bwrap --unshare-net in EVERY posture. 'none' leaves the "
-                "namespace empty; 'allowlist' adds a slirp4netns NAT with "
-                "--disable-host-loopback, so the sandbox reaches the internet "
-                "and not the host's loopback, abstract sockets or LAN. Which "
-                "DESTINATIONS it may reach is a separate question -- see "
-                "egress_allowlist"),
+                "every posture gets its own network namespace. 'none' leaves it "
+                "empty; 'allowlist' adds a slirp4netns NAT with "
+                "--disable-host-loopback, so the host's loopback services and "
+                "its abstract AF_UNIX sockets are unreachable either way. The "
+                "LAN and the internet are reachable when the network is on -- "
+                "which DESTINATIONS remain reachable is a separate question, "
+                "answered by egress_allowlist"),
     "read_grants": (ENFORCED, "bwrap --ro-bind per grant"),
     "credential_ids": (ENFORCED,
                        "bwrap --clearenv plus one --setenv per declared identity"),
@@ -932,8 +949,21 @@ SANDBOX_ENFORCEMENT = {
                      "/dev/null over a file. Enforced by the kernel, not by the "
                      "payload's cooperation. Masking is BY PATH, so a hardlink to "
                      "the same inode under an unmasked name is still readable"),
-    "syscall_profile": (NOT_REPRESENTABLE,
-                        "no schema property and no bwrap --seccomp anywhere"),
+    # NOT DECLARABLE and ENFORCED, which are not in tension. There is still no
+    # schema property and no SandboxSpec field, deliberately: the profile is not
+    # a provider's to choose. Firebreak applies the same one to every sandbox.
+    "syscall_profile": (ENFORCED,
+                        "a classic-BPF seccomp program assembled in Firebreak's "
+                        "own source -- no libseccomp, no helper binary, nothing "
+                        "resolved through a search path -- sealed in a memfd and "
+                        "passed as bwrap --seccomp <fd>. 46 syscalls answer "
+                        "EPERM. A self-test loads the real program in a "
+                        "throwaway child and makes a denied and a permitted call "
+                        "under it before any argv exists; if either answer is "
+                        "wrong the run is refused rather than started "
+                        "unfiltered. NOT declarable per provider: a manifest "
+                        "property would be provider code choosing its own "
+                        "syscall surface"),
 }
 
 
@@ -966,18 +996,33 @@ def sandbox_enforcement(spec=None) -> dict:
                 entry["status"] = "not_applicable"
                 entry["mechanism"] = "this session declared nothing for this field"
         if spec is not None and field == "network":
-            # 'none' is fully enforced: the namespace has no route. 'allowlist'
-            # is NOT -- Firebreak has two postures and the second is the host
-            # network, so the on/off decision holds and the DESTINATION does
-            # not. Reporting a flat 'enforced' here made this row contradict
-            # Firebreak's own record of the same session.
+            # THIS OVERRIDE CONTRADICTED ITS OWN DICT. It downgraded the network
+            # row to PARTIAL saying "the declared allowlist is still not
+            # filtered" while the egress_allowlist row in the SAME returned
+            # dict said "enforced ... nftables". Both statements were produced
+            # by one call, about one session.
+            #
+            # The distinction it was reaching for is real and survives: the
+            # on/off decision is enforced in every posture, and how far the
+            # sandbox can reach once the network is on depends on whether any
+            # destination was declared. So the downgrade now applies to the
+            # case that actually earns it -- network on, nothing declared --
+            # and says the true thing about it.
             if getattr(spec, "network", None) != "none":
-                entry["status"] = PARTIAL
-                entry["mechanism"] = (
-                    "the sandbox has its own network namespace and cannot reach "
-                    "the host's loopback, abstract sockets or LAN. It CAN reach "
-                    "any internet destination: the declared allowlist is still "
-                    "not filtered -- see egress_allowlist")
+                if getattr(spec, "egress_allowlist", None):
+                    entry["mechanism"] = (
+                        "the sandbox has its own network namespace, so the "
+                        "host's loopback services and its abstract AF_UNIX "
+                        "sockets are unreachable, and the declared destinations "
+                        "are filtered -- see egress_allowlist")
+                else:
+                    entry["status"] = PARTIAL
+                    entry["mechanism"] = (
+                        "the sandbox has its own network namespace, so the "
+                        "host's loopback services and its abstract AF_UNIX "
+                        "sockets are unreachable. It CAN reach the LAN and any "
+                        "internet destination: no destination was declared, so "
+                        "a NAT is attached and nothing filters what it reaches")
         # Every field a session did not use, not merely the two that were
         # noticed one at a time. all([]) is True, so a control with nothing to
         # apply reported itself working -- account_mount said "enforced" for a
@@ -997,6 +1042,124 @@ def unenforced_fields(spec=None) -> list:
     status = sandbox_enforcement(spec)
     return sorted(name for name, entry in status.items()
                   if entry["status"] in (NOT_ENFORCED, NOT_REPRESENTABLE))
+
+
+# --------------------------------------------------------------------------- #
+# How a credential VALUE reaches the payload
+# --------------------------------------------------------------------------- #
+# Deliberately NOT a row in SANDBOX_ENFORCEMENT. That table is compared
+# field-by-field against the audited table in tests/test_sandbox_spec_audit.py,
+# and every one of its keys is a SandboxSpec field; delivery is not a field of
+# the spec, it is a property of the boundary that consumes it. Adding a row
+# there would break the cross-check rather than record anything.
+#
+# What this vocabulary exists for is narrower and worth stating: a receipt, a
+# UI and a review must not be free to each decide what "the credential is
+# protected" means. These four strings are the only answers, and each one has a
+# claim attached saying what it does NOT buy.
+CREDENTIAL_DELIVERY_ENVIRONMENT = "environment"
+CREDENTIAL_DELIVERY_BROKER_VALUE = "broker-value"
+CREDENTIAL_DELIVERY_BROKER_PROXY = "broker-proxy"
+
+CREDENTIAL_DELIVERY_MODES = (CREDENTIAL_DELIVERY_ENVIRONMENT,
+                             CREDENTIAL_DELIVERY_BROKER_VALUE,
+                             CREDENTIAL_DELIVERY_BROKER_PROXY)
+
+DEFAULT_CREDENTIAL_DELIVERY = CREDENTIAL_DELIVERY_ENVIRONMENT
+"""What a manifest that says nothing gets, and what everything gets today.
+
+The weakest mode is the default on purpose. A manifest omitting the declaration
+must not inherit a stronger claim than the boundary actually performs, because
+the receipt would then describe protection that did not happen.
+"""
+
+CREDENTIAL_DELIVERY_CLAIMS = {
+    CREDENTIAL_DELIVERY_ENVIRONMENT: {
+        "value_enters_sandbox": True,
+        "readable_by": "every process in the sandbox, at any depth, for the "
+                       "whole run",
+        "recorded": False,
+        "bounded_uses": False,
+        "mechanism": "bwrap --clearenv plus one --setenv per granted identity",
+        "residual": "an agent that runs one shell inside the sandbox reads the "
+                    "value with `env`, any number of times, leaving no trace. "
+                    "This is what ships.",
+    },
+    CREDENTIAL_DELIVERY_BROKER_VALUE: {
+        "value_enters_sandbox": True,
+        "readable_by": "whichever process redeemed the ticket, and its children",
+        "recorded": True,
+        "bounded_uses": True,
+        "mechanism": "the value is held outside the sandbox and answered over "
+                     "one AF_UNIX socket bound into it; the payload carries a "
+                     "single-use, session-bound, expiring TICKET instead of the "
+                     "value. See sf_broker.py.",
+        # "race-losable" was in this string and was FALSIFIED: an attacker
+        # inside the sandbox holds the SAME ticket as the legitimate consumer
+        # and may simply ask first -- bwrap maps both to the mission uid, so
+        # the broker cannot tell them apart. What the design actually excludes
+        # is REMOVING the other runner, which is a narrower and true claim.
+        "residual": "the sandbox that may ask still receives the value. What "
+                    "changes is that the read is single, refusable and on an "
+                    "audit chain -- not that the value is out of reach, and not "
+                    "that an attacker must outrun anyone: an attacker inside the "
+                    "sandbox holds the same ticket and may simply ask first. "
+                    "Anyone writing 'unreachable' about this mode is "
+                    "contradicted by one shell in the sandbox.",
+        # A cost the environment does not have, said here rather than left to
+        # be discovered: brokering introduces a way for delivery to FAIL.
+        "costs": "an availability dependency the environment does not have. An "
+                 "environment value cannot fail to be delivered; a brokered one "
+                 "can, if the broker is not running or its endpoint was never "
+                 "bound. Loud, and a refusal never spends the grant, so it is "
+                 "denial and never theft. See "
+                 "sf_broker.BROKER_CLAIMS['broker_availability'].",
+    },
+    CREDENTIAL_DELIVERY_BROKER_PROXY: {
+        "value_enters_sandbox": False,
+        "readable_by": "nothing in the sandbox",
+        "recorded": True,
+        "bounded_uses": True,
+        "mechanism": "the broker speaks the provider's protocol itself and adds "
+                     "the credential on the host side, so no form of the secret "
+                     "crosses the boundary.",
+        "residual": "the sandbox can still SPEND the credential through the "
+                    "proxy for as long as the mission runs, so the proxy has to "
+                    "bound methods and destinations or it is an open relay to "
+                    "the vendor with the user's key on it. Not implemented.",
+    },
+}
+
+
+def credential_delivery(manifest) -> str:
+    """How this manifest's credential VALUE reaches the payload.
+
+    An unknown declaration reports the WEAKEST mode rather than raising or
+    trusting it. The direction matters and it is not symmetric: mistaking a
+    strong delivery for a weak one over-warns, and mistaking a weak one for a
+    strong one puts a sentence on a receipt saying the credential never entered
+    the sandbox when it did.
+    """
+    declared = (manifest or {}).get("credential_delivery")
+    if declared in CREDENTIAL_DELIVERY_MODES:
+        return declared
+    return DEFAULT_CREDENTIAL_DELIVERY
+
+
+def credential_delivery_claim(manifest) -> dict:
+    """The claim for this manifest's delivery, with the declaration as read.
+
+    `declared` is carried separately from `mode` so a caller can see a manifest
+    asking for something this runtime does not implement, instead of that
+    request being silently rounded down and looking like a deliberate choice.
+    """
+    mode = credential_delivery(manifest)
+    claim = dict(CREDENTIAL_DELIVERY_CLAIMS[mode])
+    claim["mode"] = mode
+    claim["declared"] = (manifest or {}).get("credential_delivery")
+    claim["honoured"] = claim["declared"] in (None, mode)
+    return claim
+
 
 def verify_invocation(invocation, manifest):
     """Check a built Invocation against the ceiling its manifest declares.

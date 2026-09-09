@@ -17,7 +17,7 @@
     "_note": "Also stated in the Makefile as PUBLIC_SITE / ARTIFACT_BASE."
   },
   "release_pointer": {
-    "status": "READER IMPLEMENTED, WRITER PENDING",
+    "status": "IMPLEMENTED",
     "_note": [
       "ADR-0009 specifies releases/CURRENT.json, written LAST by the release",
       "publisher and read by the artifact worker, replacing latestRelease()'s",
@@ -31,9 +31,21 @@
       "web/shadowfetch-linux-worker/tools/release_pointer.py, and r2_prune_release.py",
       "refuses to prune a version the published pointer does not name.",
       "",
-      "WRITER (pending): tools/publish_release_4_0_0.py does not write this key yet,",
       "and no releases/CURRENT.json exists in the bucket (checked 2026-09-09), so the",
-      "worker is still running on the fallback. Half a control is not a control."
+      "worker is still running on the fallback. Half a control is not a control.",
+      "",
+      "WRITER (done): tools/publish_release_4_0_0.py builds the document with",
+      "web/shadowfetch-linux-worker/tools/release_pointer.py -- the same module the",
+      "reader validates against, so a writer cannot invent its own schema -- and",
+      "uploads it LAST, after the ISO's own bytes have been uploaded and streamed",
+      "back and compared. A pointer written earlier advertises, for the length of",
+      "an upload, an image the bucket does not hold. Its `published` field defaults",
+      "to the ISO's mtime so re-running the publisher rewrites nothing.",
+      "",
+      "This status is now DERIVED by tools/drift_gate.py from what the reader and",
+      "the writer actually contain, and compared with the string above. It used to",
+      "be checked only against the literal 'NOT IMPLEMENTED', so the moment it",
+      "became anything else the gate could no longer see that it was stale."
     ],
     "key": "releases/CURRENT.json",
     "written_by": "tools/publish_release_4_0_0.py",
