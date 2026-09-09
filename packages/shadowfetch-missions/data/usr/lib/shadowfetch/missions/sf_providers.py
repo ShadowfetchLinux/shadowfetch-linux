@@ -909,10 +909,18 @@ SANDBOX_ENFORCEMENT = {
                     "RLIMIT_CPU at the tighter of the declaration and the mission "
                     "timeout. Per-PROCESS, so a provider that forks gets a fresh "
                     "budget for each child"),
-    "egress_allowlist": (NOT_ENFORCED,
-                         "the sandbox reaches the internet through a NAT that "
-                         "does not filter by destination, so the declared hosts "
-                         "are recorded for audit and constrain nothing. Stage C"),
+    "egress_allowlist": (ENFORCED,
+                         # Stage C. The obstacle was ownership, not mechanism:
+                         # bwrap owned the namespace and it could not be reached
+                         # into. A helper owns it now, NATs it, filters it, and
+                         # bwrap inherits it.
+                         "nftables in the sandbox's own network namespace, default "
+                         "DROP, permitting only the addresses the declared names "
+                         "resolved to. Measured: an allowlisted host is reached and "
+                         "one that is not is blocked. BY ADDRESS -- names are "
+                         "resolved once on the host at launch, so an address set "
+                         "that changes later is unreachable until the next run, and "
+                         "a host sharing an address with an allowed one is reachable"),
     "masked_paths": (ENFORCED,
                      # Stage E. --mask-path used to be record-only AND unpassed;
                      # both halves are closed. Measured against the tricks that

@@ -28,6 +28,7 @@ import signal
 import subprocess
 import sys
 import ast
+import importlib
 import tempfile
 import time
 import unittest
@@ -315,6 +316,23 @@ ECHO_PROFILE = echo_profile()
 PROFILES = {"codex": CODEX_PROFILE, "offline-media": MEDIA_PROFILE,
             "conformance-echo": ECHO_PROFILE}
 
+# The providers that ship. Written out rather than globbed from the manifest
+# directory: these assertions exist to notice a provider appearing or
+# disappearing, and a list read from the same directory the registry reads
+# would notice neither.
+SHIPPED_IDS = ["claude", "codex", "localmodel", "offline-media"]
+
+# Providers whose conformance case lives in its own module, because each needs
+# fixtures this file has no business carrying -- a stream transcript per
+# provider, a unix socket, a candidate list. Naming them here keeps "every
+# provider is conformance-tested" a CHECKED fact: the module must exist and
+# must build a conformance class for that provider id, and a provider that
+# appears with neither a profile here nor an entry here still fails loudly.
+PROFILES_ELSEWHERE = {
+    "claude": ("claude_conformance", "CLAUDE_PROFILE"),
+    "localmodel": ("test_provider_localmodel_shipped", "LOCALMODEL_PROFILE"),
+}
+
 
 # --------------------------------------------------------------------------- #
 # One generated TestCase per provider under test
@@ -343,19 +361,38 @@ class RegistryTests(unittest.TestCase):
 
     def test_every_shipped_provider_loads_without_error(self):
         self.assertEqual(SHIPPED_REGISTRY.errors, [])
-        self.assertEqual(SHIPPED_REGISTRY.ids(), ["codex", "offline-media"])
+        self.assertEqual(SHIPPED_REGISTRY.ids(), SHIPPED_IDS)
 
     def test_every_registered_provider_has_a_conformance_profile(self):
         """Adding a provider without a profile is a loud failure, not a silent gap."""
         registered = set(COMBINED_REGISTRY.ids())
-        self.assertEqual(registered - set(PROFILES), set(),
+        self.assertEqual(registered - set(PROFILES) - set(PROFILES_ELSEWHERE), set(),
                          "a registered provider has no conformance profile; add one to "
-                         "PROFILES/CASES in this file so it is actually tested")
+                         "PROFILES/CASES in this file, or to PROFILES_ELSEWHERE if it "
+                         "needs fixtures of its own, so it is actually tested")
+        # An entry in PROFILES_ELSEWHERE is a claim about another module, and
+        # the claim is IMPORTED rather than read as text: a profile that is
+        # named in a comment, deleted, or built for a different provider would
+        # all pass a grep, and each would leave this provider untested while the
+        # map said otherwise.
+        for provider_id, (module_name, attribute) in sorted(PROFILES_ELSEWHERE.items()):
+            with self.subTest(provider=provider_id):
+                module = importlib.import_module(module_name)
+                profile = getattr(module, attribute, None)
+                self.assertIsInstance(
+                    profile, ProviderProfile,
+                    f"{module_name}.{attribute} is not a conformance profile, so "
+                    f"{provider_id} is conformance-tested nowhere")
+                self.assertEqual(
+                    profile.provider_id, provider_id,
+                    f"{module_name}.{attribute} profiles {profile.provider_id!r}, "
+                    f"not {provider_id!r}")
 
     def test_for_capability_returns_exactly_the_providers_that_declare_it(self):
         expected = {
-            Capability.CODE_CHANGE: {"codex"},
-            Capability.SOURCED_REPORT: {"codex", "conformance-echo"},
+            Capability.CODE_CHANGE: {"claude", "codex", "localmodel"},
+            Capability.SOURCED_REPORT: {"claude", "codex", "localmodel",
+                                        "conformance-echo"},
             Capability.MEDIA_EXPORT: {"offline-media"},
         }
         for capability in CAPABILITIES:
@@ -679,7 +716,7 @@ class ReleaseGateTests(unittest.TestCase):
     def test_the_shipped_payload_passes_the_gate(self):
         result = validate_manifest.validate_provider_payload(self.inventory, self.mission_source)
         self.assertTrue(result["checked"])
-        self.assertEqual(result["providers"], ["codex", "offline-media"])
+        self.assertEqual(result["providers"], SHIPPED_IDS)
 
     def test_a_valid_third_provider_passes_the_gate_with_no_gate_edit(self):
         gate_before = (REPO_ROOT / "tools/providers/validate_manifest.py").read_bytes()
@@ -719,7 +756,7 @@ class ReleaseGateTests(unittest.TestCase):
         result = validate_manifest.validate_provider_payload(
             [*self.inventory, manifest_rel, adapter_rel], self.mission_source, read=read)
         self.assertEqual(result["providers"],
-                         ["codex", "conformance-echo", "offline-media"])
+                         sorted([*SHIPPED_IDS, "conformance-echo"]))
         self.assertEqual((REPO_ROOT / "tools/providers/validate_manifest.py").read_bytes(),
                          gate_before)
 
@@ -878,11 +915,17 @@ class CapabilityProviderSeparationTests(unittest.TestCase):
     def test_removing_one_provider_leaves_the_capability_and_the_other(self):
         """A capability outlives any particular provider. If losing a provider
         lost the capability, the two would still be the same concept."""
-        without = fixture_registry(manifest_root(*shipped_manifest_files()),
+        # Take away a provider that really serves the capability. Removing one
+        # that never did would prove nothing: the assertion has to survive the
+        # loss of a genuine implementation of code_change.
+        kept = [p for p in shipped_manifest_files() if p.stem != "codex"]
+        without = fixture_registry(manifest_root(*kept),
                                    module_root(*shipped_adapter_files()))
         self.assertIn(Capability.CODE_CHANGE, CAPABILITIES)
         serving = [p.id for p in without.for_capability(Capability.CODE_CHANGE)]
-        self.assertEqual(serving, ["codex"])
+        self.assertNotIn("codex", serving, "a removed provider still serves")
+        self.assertEqual(serving, ["claude", "localmodel"],
+                         "losing one provider lost the capability itself")
         self.assertNotIn("conformance-localmodel", without.ids())
 
 
@@ -927,7 +970,7 @@ class ThirdProviderProofTests(unittest.TestCase):
         """Remove the manifest and the adapter is just a file again."""
         _root = manifest_root(*shipped_manifest_files())
         without = fixture_registry(_root, COMBINED_MODULE_ROOT)
-        self.assertEqual(without.ids(), ["codex", "offline-media"])
+        self.assertEqual(without.ids(), SHIPPED_IDS)
         self.assertIn("sf_provider_conformance_echo.py",
                       {p.name for p in Path(COMBINED_MODULE_ROOT).iterdir()})
         with self.assertRaises(ProviderError):

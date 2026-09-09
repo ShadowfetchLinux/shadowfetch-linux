@@ -140,13 +140,15 @@ class Bench:
     def cloud_mission(self, workspace="proj"):
         """A mission that escalates: the Codex provider, so credentials and
         network are both in the scope a human would have to agree to."""
-        return self.store.create(kind="report", workspace_value=workspace,
+        return self.store.create(kind="report", provider_id="codex",
+                                 workspace_value=workspace,
                                  title="attack", prompt="p", inputs=["facts.md"])
 
     def offline_mission(self, workspace="proj"):
         """A mission that needs no approval at all -- the starting point for the
         'upgrade the provider afterwards' attack."""
-        return self.store.create(kind="media", workspace_value=workspace,
+        return self.store.create(kind="media", provider_id="offline-media",
+                                 workspace_value=workspace,
                                  title="attack", prompt="p", inputs=["clip.mkv"])
 
     def approve(self, mission, **kw):
@@ -321,7 +323,11 @@ def unapproved_start_disguised_as_offline(bench, report):
     """Ask for the cloud provider with the network switched off, hoping the
     escalation is attached to the network rather than to the provider."""
     try:
-        bench.store.create(kind="report", workspace_value="proj", title="attack",
+        # Codex by name. Left to inference this raises the "name one with
+        # --provider" refusal instead, and the attack would report PASS on a
+        # refusal that has nothing to do with the escalation it is probing.
+        bench.store.create(kind="report", provider_id="codex",
+                           workspace_value="proj", title="attack",
                            prompt="p", inputs=["facts.md"], network="none")
         observed = "the mission was created; no refusal"
         passed = False
@@ -885,10 +891,17 @@ def network_value_forged_in_config(bench, report):
 def egress_widened_after_approval(bench, report):
     """Add a destination after the approval was granted.
 
-    Scope carries capability, provider, workspace, network, credential_ids and
-    paths. It does not carry egress hosts, so this asks whether the approval can
-    tell that the destination list changed -- and, since Firebreak has no
-    destination filter, whether the system says so instead of pretending.
+    This used to pass on the CLAIM. Scope carried capability, provider,
+    workspace, network, credential_ids and paths but no hosts, and that was
+    defensible for exactly as long as nothing filtered destinations: the engine
+    marked network_destination observable_only, named it advisory, and nobody
+    was told the host list was enforced. Stage C installs a default-DROP
+    nftables ruleset in the sandbox's own network namespace, which turned the
+    host list into a real privilege -- and a privilege that is enforced but
+    outside the approved scope is one that can be widened after a human has
+    agreed. The scope carries egress_hosts now, so the first branch is the one
+    that has to hold; the claim branch is kept for a build where destinations
+    really are unenforced, because then it is the honest answer again.
     """
     mission = bench.cloud_mission()
     bench.approve(mission)
@@ -897,28 +910,40 @@ def egress_widened_after_approval(bench, report):
         widened, ceiling = bench.sf.mission_decision(bench.store, bench.store.get(mission["id"]))
         allowed, said = gate(bench, mission)
     after = bench.snapshot(mission["id"])
-    _clean, changed = bench.diff(before, after, expect_events=["approval-used"])
     matrix = bench.pol.PolicyEngine.capability_matrix()["network_destination"]
     stored = bench.store.approvals("mission:" + mission["id"])[0]
+    scope = json.loads(stored["scope"])
+    granted_hosts = list(scope.get("egress_hosts") or [])
+    # Refused, and refused FOR THE NEW DESTINATION. A refusal that named the
+    # credentials or the workspace would be the right answer to a different
+    # question, and would let an unbound host list pass as bound.
+    prevented = (not allowed and "attacker.example" in (said or "")
+                 and "attacker.example" not in granted_hosts)
     honest = (matrix["mediation"] == bench.pol.OBSERVABLE_ONLY
               and "network_destination" in widened.advisory_fields)
+    _clean, changed = bench.diff(
+        before, after,
+        expect_events=["approval-required"] if prevented else ["approval-used"])
     report("egress-widened-after-approval",
            "either the approval stops covering a mission whose destinations "
            "changed, or the system states that destinations are not something it "
            "enforces or records agreement to",
            f"ceiling egress is now {list(ceiling.egress_allowlist)}; the approval "
-           f"granted at {stored['granted_at']} still covers it ({said}); its stored "
-           f"scope is {stored['scope']} -- no host appears in it; capability matrix "
-           f"says network_destination = {matrix['mediation']!r} ({matrix['mechanism']}); "
-           f"decision.advisory_fields = {list(widened.advisory_fields)}; {changed}",
-           honest,
-           note="THE DESTINATION CHANGE WAS NOT PREVENTED AND WAS NOT DETECTED. "
-                "PASS is only for the claim: the engine marks network_destination "
-                "observable_only, lists it in advisory_fields, and the CLI prints "
-                "it under 'not_enforced' when the approval is granted, so nobody is "
-                "told the hosts are enforced. What a human agrees to is the posture "
-                "'this reaches the internet', never a host list -- Firebreak has "
-                "none/allow and no destination filter (Phase 4)")
+           f"granted at {stored['granted_at']} covers hosts {granted_hosts}, and the "
+           f"gate said: {said}; its stored scope is {stored['scope']}; capability "
+           f"matrix says network_destination = {matrix['mediation']!r} "
+           f"({matrix['mechanism']}); decision.advisory_fields = "
+           f"{list(widened.advisory_fields)}; {changed}",
+           prevented or honest,
+           note=("THE DESTINATION CHANGE WAS PREVENTED. The widened host is not in "
+                 "the granted scope, so the approval stopped covering the mission "
+                 "and it was sent back for a human rather than started. The grant a "
+                 "person gives now names the destinations, so widening them costs a "
+                 "second approval -- which is what an enforced filter has to cost."
+                 if prevented else
+                 "THE DESTINATION CHANGE WAS NOT PREVENTED. PASS is only for the "
+                 "claim: network_destination is observable_only and advisory, so "
+                 "nobody is told the hosts are enforced."))
 
 
 # --------------------------------------------------------------------------- #

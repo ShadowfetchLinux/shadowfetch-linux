@@ -20,6 +20,12 @@ Depends:
  dbus,
  polkitd,
  pkexec,
+# Load-bearing in two ways, not one. The rollback button has always run
+# /usr/libexec/phoenix-restore. Since Stage U, /usr/lib/shadowfetch/sfupdate
+# also IMPORTS phoenix.trusted: the executable-trust classifier is shared
+# rather than duplicated, because two implementations of "can somebody other
+# than root substitute this binary" is the defect, not the fix. Demoting this
+# to Recommends breaks fireproofd at import.
  shadowfetch-phoenix
 Recommends:
  snapper,

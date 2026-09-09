@@ -22,7 +22,6 @@ data/etc/systemd/journald.conf.d/00-shadowfetch.conf  etc/systemd/journald.conf.
 data/etc/systemd/resolved.conf.d/99-shadowfetch.conf  etc/systemd/resolved.conf.d/
 data/usr/lib/udev/rules.d/60-shadowfetch-ioschedulers.rules  usr/lib/udev/rules.d/
 data/etc/needrestart/conf.d/00-shadowfetch.conf  etc/needrestart/conf.d/
-data/etc/apt/apt.conf.d/52shadowfetch-unattended.conf  etc/apt/apt.conf.d/
 data/usr/lib/systemd/system/flatpak-system-update.service  usr/lib/systemd/system/
 data/usr/lib/systemd/system/flatpak-system-update.timer  usr/lib/systemd/system/
 data/etc/xdg/baloofilerc  etc/xdg/

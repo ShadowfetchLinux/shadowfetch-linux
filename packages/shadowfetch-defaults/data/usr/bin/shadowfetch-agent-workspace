@@ -43,8 +43,19 @@ ROOT=$(realpath -m -- "$requested_root") \
 mkdir -p -- "$ROOT"
 chmod 700 -- "$ROOT"
 
+# The name this produces has to be one the WORKSPACE BOUNDARY will open, not
+# merely one the filesystem will hold. It was not: '../etc' came out as
+# '..-etc' and a name with a newline came out unchanged, so this tool could
+# create a directory that every later command then refused to work in.
+# Control characters are dropped, and a leading dot is stripped like a leading
+# dash -- a name that begins with a dot is a hidden directory, which is not
+# what anybody typing it meant.
 sanitize() {
-    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//' | cut -c1-48
+    printf '%s' "$1" \
+        | tr -d '\000-\037\177' \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/[^a-z0-9._-]+/-/g; s/^[.-]+//; s/-+$//' \
+        | cut -c1-48
 }
 
 create_workspace() {

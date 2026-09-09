@@ -1,0 +1,6 @@
+{"event": "session.started", "model": "test-model:1b", "resumed": false, "session": "cap-1"}
+{"event": "model.status", "state": "generating"}
+{"delta": "The launch ", "event": "token"}
+{"delta": "is Friday.", "event": "token"}
+{"event": "session.ended", "turns": 1}
+{"event": "generation.done", "model": "test-model:1b", "stop": "stop", "usage": {"input_tokens": 11, "output_tokens": 2, "total_duration_ns": 123456789}}

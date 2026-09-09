@@ -4,11 +4,16 @@
 Run on the Linux publisher with AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and
 SHADOWFETCH_R2_ENDPOINT in the process environment. Credentials are never
 written into the source tree. A plan is the default; --apply performs uploads.
-The signed APT InRelease is the final object written.
+The current-release pointer is the final object written, after the ISO's own
+bytes have been streamed back and checked; the signed APT InRelease is last
+among the objects that precede it. Both orderings are the same rule: nothing
+that DIRECTS a reader is written before the thing it directs them to is present
+and proven.
 """
 from __future__ import annotations
 import argparse
 from dataclasses import dataclass
+import datetime
 import getpass
 import hashlib
 import json
@@ -25,6 +30,12 @@ BUCKET = "shadowfetch-linux"
 PUBLISHER = Path("/home/rtx5060ti/projects/shadowfetch-4.0.0")
 ROOT = Path(__file__).resolve().parents[1]
 FINGERPRINT = "8F13CE1535EE1F4A2916A1F73C5C900B7BE80CA1"
+# The pointer's schema, its validation and its key live with the worker that
+# READS it. Importing that module rather than restating the document here is
+# the whole point: a writer with its own idea of the schema is how a reader
+# comes to refuse what a writer produced.
+sys.path.insert(0, str(ROOT / "web/shadowfetch-linux-worker/tools"))
+import release_pointer  # noqa: E402
 ISO = f"shadowfetch-{VERSION}-amd64.iso"
 EVIDENCE = (
     f"dossier-{VERSION}.md", f"packages-{VERSION}.manifest",
@@ -85,6 +96,28 @@ def publication_plan(root):
         raise ValueError("Duplicate publication object key")
     return objects
 
+
+def pointer_object(root, iso, published=None):
+    """The current-release pointer, built from the ISO that is on disk.
+
+    `published` defaults to the ISO's own modification time rather than to
+    "now": re-running the publisher then produces a byte-identical document, so
+    a second run reports UNCHANGED instead of rewriting the one object every
+    reader consults. A publisher who wants to state a different moment passes
+    --published.
+    """
+    stamp = published or datetime.datetime.fromtimestamp(
+        (root / ISO).stat().st_mtime, datetime.timezone.utc
+    ).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    document = release_pointer.build(
+        VERSION, root / ISO, published=stamp,
+        fingerprint=FINGERPRINT, sha256=iso.sha256)
+    path = root / "work/release-4.0.0/CURRENT.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8")
+    return object_for(path, "releases/CURRENT.json", True)
+
 def remote_digest(client, key):
     response = client.get_object(Bucket=BUCKET, Key=key)
     checksum = hashlib.sha256()
@@ -110,7 +143,7 @@ def existing_matches(client, item):
         raise ValueError(f"Refusing to replace a different immutable object: {item.key}")
     return False
 
-def publish(client, objects):
+def publish(client, objects, pointer=None):
     from boto3.s3.transfer import TransferConfig
     config = TransferConfig(multipart_threshold=64 * 1024**2, multipart_chunksize=64 * 1024**2, max_concurrency=4)
     # Resolve collisions across the entire plan before the first upload.
@@ -136,6 +169,21 @@ def publish(client, objects):
     if remote_digest(client, iso.key) != iso.sha256:
         raise ValueError("R2 ISO bytes do not match the accepted artifact")
     print("R2_RELEASE_BYTES_VERIFIED", flush=True)
+    if pointer is not None:
+        # LAST, AND ONLY NOW. This is the object that tells every reader which
+        # release is live, so it is written after the bytes it names have been
+        # uploaded AND streamed back. Written earlier it would, for the length
+        # of an upload, advertise an image the bucket did not hold.
+        print(f"UPLOAD {pointer.key} {pointer.size} bytes", flush=True)
+        client.upload_file(str(pointer.path), BUCKET, pointer.key, ExtraArgs={
+            "ContentType": "application/json",
+            "CacheControl": "public, max-age=0, must-revalidate",
+            "Metadata": {"release": VERSION, "sha256": pointer.sha256},
+        })
+        head = client.head_object(Bucket=BUCKET, Key=pointer.key)
+        if head.get("Metadata", {}).get("sha256") != pointer.sha256:
+            raise ValueError("Pointer readback failed: " + pointer.key)
+        print("R2_CURRENT_POINTER_WRITTEN", flush=True)
 
 # These three decide whether the shipped ISO's signature and digest are
 # genuine. They were invoked by bare name, so PATH decided which program
@@ -166,6 +214,10 @@ def verify_signatures(root):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--published", default=None,
+                        help="Publication timestamp for releases/CURRENT.json. "
+                             "Defaults to the ISO's own mtime, so re-running "
+                             "this rewrites nothing.")
     args = parser.parse_args()
     subprocess.run(
         [sys.executable, str(ROOT / "tools/release/acceptance.py"),
@@ -176,8 +228,10 @@ def main():
     subprocess.run([SHA256SUM, "--check", ISO + ".sha256"], cwd=ROOT, check=True, env=trusted_env())
     verify_signatures(ROOT)
     plan = publication_plan(ROOT)
+    iso = next(item for item in plan if item.path.name == ISO)
+    pointer = pointer_object(ROOT, iso, args.published)
     if not args.apply:
-        print(json.dumps([{"key": item.key, "bytes": item.size, "sha256": item.sha256, "mutable": item.mutable} for item in plan], indent=2))
+        print(json.dumps([{"key": item.key, "bytes": item.size, "sha256": item.sha256, "mutable": item.mutable} for item in [*plan, pointer]], indent=2))
         return 0
     if sys.platform != "linux" or ROOT != PUBLISHER or getpass.getuser() != "rtx5060ti":
         raise ValueError("Release publication must run from the authorized Linux 4.0 source tree")
@@ -189,7 +243,7 @@ def main():
             raise ValueError("Missing process credential: " + name)
     import boto3
     client = boto3.client("s3", endpoint_url=endpoint, region_name="auto")
-    publish(client, plan)
+    publish(client, plan, pointer)
     return 0
 
 if __name__ == "__main__":

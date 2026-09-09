@@ -10,7 +10,6 @@ print-manager is not installed).  Wi-Fi devices missing firmware are worded
 with no fake fix button.
 """
 
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -111,7 +110,7 @@ class DriversPage(QWidget):
         self.root.addWidget(self.nvidia_card)
 
         # ---- printers (row hides when print-manager is absent) ------------
-        if _PRINTER_KCM.exists() and shutil.which("systemsettings"):
+        if _PRINTER_KCM.exists() and busutil.installed_command("systemsettings"):
             printer = Card()
             p_lay = QHBoxLayout(printer)
             p_lay.setContentsMargins(16, 12, 16, 12)
@@ -124,8 +123,9 @@ class DriversPage(QWidget):
             open_btn = QPushButton("Open printer settings")
             open_btn.setObjectName("quiet")
             open_btn.setFixedHeight(30)
+            settings = busutil.installed_command("systemsettings")
             open_btn.clicked.connect(
-                lambda: subprocess.Popen(["systemsettings", "kcm_printer_manager"]))
+                lambda: subprocess.Popen([settings, "kcm_printer_manager"]))
             p_lay.addWidget(open_btn)
             self.root.addWidget(printer)
 

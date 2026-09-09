@@ -47,7 +47,7 @@ class ReviewLockTests(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         self.store = m.Store()
-        self.mid = self.store.create(kind="report", workspace_value="example",
+        self.mid = self.store.create(kind="report", provider_id="codex", workspace_value="example",
             title="Review contention", prompt="Summarize the launch",
             inputs=["facts.md"], network="allow")["id"]
 

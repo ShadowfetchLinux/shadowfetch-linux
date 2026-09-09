@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "id": "claude",
+  "display_name": "Claude Code (cloud)",
+  "interface_version": 1,
+  "adapter_module": "sf_provider_claude",
+  "adapter_class": "ClaudeCodeProvider",
+  "capabilities": [
+    "code_change",
+    "sourced_report"
+  ],
+  "credential_ids": [
+    "ANTHROPIC_API_KEY"
+  ],
+  "network_policy": "allowlist",
+  "egress_allowlist": [
+    "api.anthropic.com"
+  ],
+  "sandbox_profile": {
+    "workspace_mode": "workspace-write",
+    "memory_mb": 3072,
+    "cpu_seconds": 900,
+    "processes": 96,
+    "read_grants": [],
+    "masked_paths": []
+  },
+  "executable": {
+    "kind": "candidates",
+    "trust": "user-runtime",
+    "candidates": [
+      "/usr/bin/claude",
+      "/usr/local/bin/claude",
+      "~/.local/bin/claude",
+      "~/.claude/local/claude",
+      "~/.nvm/versions/node/*/bin/claude",
+      "~/.local/share/npm/bin/claude",
+      "~/.npm-global/bin/claude"
+    ],
+    "runtime_root_markers": [
+      "claude-code",
+      "@anthropic-ai"
+    ]
+  },
+  "package": "shadowfetch-missions",
+  "version": "4.0.0",
+  "notes": "The CLI reads its prompt on stdin under --print and emits JSON Lines under --output-format stream-json, which it refuses without --verbose. It runs with --bare, so it reads no user configuration, hooks, plugins or keychain and takes Anthropic authentication strictly from the declared credential identity; a person's interactive sign-in on the host therefore does NOT authenticate a mission, and readiness reports that distinction rather than hiding it. The program is located from the candidate list above, never through PATH, and it is a user-space runtime install, which is why executable trust is user-runtime. egress_allowlist names the one destination a real run was observed to contact once the CLI's non-essential traffic was switched off through --settings; with that switch off a second, non-Anthropic destination was observed on every run. The sandbox payload is uid 0 in an unshared user namespace and the CLI refuses its permission-bypass mode under root, so the same --settings block states IS_SANDBOX; without it the agent exits before writing one stream record. The credential VALUE is injected at the Firebreak boundary and never travels in the Invocation -- but it does reach the sandbox as an environment value, because no credential broker exists yet, so an agent that runs a shell inside the sandbox can read it."
+}

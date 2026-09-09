@@ -44,7 +44,12 @@ class MissionTests(unittest.TestCase):
         self.env.stop()
         self.temp.cleanup()
     def create(self, **kwargs):
-        values = dict(kind="report", workspace_value="example", title="Launch report", prompt="Summarize the launch", inputs=["facts.md"], network="allow")
+        # provider_id is named rather than inferred: more than one provider
+        # serves this capability now, and the engine refuses to choose for a
+        # caller who did not. Which provider runs is not what these tests are
+        # about -- that refusal is proven in test_provider_conformance -- so
+        # saying it here keeps them independent of how many providers ship.
+        values = dict(kind="report", provider_id="codex", workspace_value="example", title="Launch report", prompt="Summarize the launch", inputs=["facts.md"], network="allow")
         values.update(kwargs)
         return self.store.create(**values)
 
@@ -156,9 +161,49 @@ class MissionTests(unittest.TestCase):
         self.assertLess(time.monotonic() - start, 2)
         self.assertFalse(marker.exists())
     def test_removed_provider_and_model_selection_are_refused(self):
-        for options in ({"runtime": "local"}, {"runtime": "shared"}, {"model": "old-model"}, {"runtime": "offline"}):
-            with self.subTest(options=options), self.assertRaises(m.MissionError):
-                self.create(**options)
+        """Each of these has to be refused FOR ITSELF.
+
+        Naming no provider is ambiguous on its own now -- three of them serve
+        this capability -- so a bare assertRaises would pass on every retired
+        runtime without the runtime being looked at once. The runtimes are
+        therefore offered as the selection under test, with no provider, and
+        the refusal is read rather than merely counted.
+        """
+        for runtime in ("local", "shared", "offline"):
+            with self.subTest(runtime=runtime):
+                with self.assertRaises(m.MissionError) as caught:
+                    self.create(provider_id=None, runtime=runtime)
+                self.assertNotIn("name one with --provider", str(caught.exception),
+                                 "refused for ambiguity, not for the retired runtime")
+        with self.subTest(model="old-model"), self.assertRaises(m.MissionError):
+            self.create(model="old-model")
+
+    def test_a_model_is_the_provider_s_answer_and_its_shape_is_the_engine_s(self):
+        """The engine refused every model for every provider before asking one.
+
+        That was the honest answer while nothing could take a model, and a
+        refusal of the system's own capability once something could. The split
+        it leaves is deliberate: WHICH names exist is a provider fact, and how
+        long a name may be and what characters it may contain is not -- the
+        name becomes an argv element, so the engine still bounds the string.
+        """
+        # A provider that has models takes one, by its own rules.
+        mission = self.create(provider_id="claude", model="sonnet")
+        self.assertEqual(mission["config"]["model"], "sonnet")
+
+        # A provider that has none refuses in its own words, not the engine's.
+        with self.assertRaises(m.MissionError) as caught:
+            self.create(model="gpt-9")
+        self.assertIn("Codex", str(caught.exception))
+
+        # And the engine refuses a name no command line should carry, before
+        # any provider is asked to have an opinion about it.
+        for hostile in ("a" * 101, "sonnet; rm -rf /", "--dangerous", "a b",
+                        "model\nname"):
+            with self.subTest(model=hostile):
+                with self.assertRaises(m.MissionError) as caught:
+                    self.create(provider_id="claude", model=hostile)
+                self.assertIn("command line", str(caught.exception))
 
     def test_codex_code_runs_actual_required_test(self):
         (self.ws / "app.py").write_text("def add(a, b): return a - b\n")
@@ -322,13 +367,108 @@ class MissionTests(unittest.TestCase):
         self.assertIn("retired provider", result["error"])
         self.assertIsNone(result["checkpoint"])
 
-    def test_capabilities_defer_local_ai_and_do_not_claim_authentication(self):
+    def test_capabilities_report_local_ai_from_the_registry_not_from_a_literal(self):
+        """This asserted "deferred" and was right to: nothing on-device shipped.
+
+        An on-device provider ships now, so "deferred" would be a false answer
+        to the only question this key asks -- can this installation run a model
+        without leaving the machine. Its bridge is not packaged, so "available"
+        would be false too, and the honest third answer is the one that says
+        both: registered, and not runnable here.
+        """
         caps = m.capabilities()
-        self.assertEqual(set(caps["runtimes"]), {"offline", "codex"})
+        self.assertEqual(set(caps["runtimes"]),
+                         {"offline", "codex", "claude", "localmodel"})
         self.assertEqual(caps["runtimes"]["codex"]["kinds"], ["code", "report"])
         self.assertEqual(caps["runtimes"]["offline"]["kinds"], ["media"])
         self.assertNotIn("authenticated", caps["runtimes"]["codex"])
-        self.assertEqual(caps["local_ai"], "deferred")
+        # An on-device provider is registered, so whatever else is true,
+        # "deferred" is not. Which of the other two depends on whether a model
+        # service is answering on THIS machine, which is not this test's
+        # business -- the three states are decided below, on inputs.
+        self.assertEqual(m.on_device_providers(caps["providers"]), ["localmodel"])
+        self.assertNotEqual(caps["local_ai"], "deferred")
+        self.assertEqual(caps["local_ai"], m.local_ai_state(caps["providers"]))
+
+    def test_the_three_local_ai_states_are_each_decided_by_the_registry(self):
+        """Each state, on inputs, so none of them is reachable only in theory."""
+        def described(**overrides):
+            base = {"offline-media": {"network_policy": "none",
+                                      "capabilities": ["media_export"],
+                                      "available": True},
+                    "codex": {"network_policy": "allowlist",
+                              "capabilities": ["code_change"],
+                              "available": True}}
+            base.update(overrides)
+            return base
+
+        # Offline media export has no network either, and is not a model.
+        self.assertEqual(m.local_ai_state(described()), "deferred")
+        self.assertEqual(
+            m.local_ai_state(described(local={"network_policy": "none",
+                                              "capabilities": ["sourced_report"],
+                                              "available": False})),
+            "installed-unavailable")
+        self.assertEqual(
+            m.local_ai_state(described(local={"network_policy": "none",
+                                              "capabilities": ["sourced_report"],
+                                              "available": True})),
+            "available")
+
+    def test_every_provider_s_credential_file_is_read_not_just_one(self):
+        """The worker unit named codex.env and nothing else.
+
+        A second provider could ship its manifest, its adapter and its tests,
+        tell the operator to save a key at
+        ~/.config/shadowfetch/missions/<id>.env, and that file reached nothing:
+        its readiness then reported 'authenticated' about a value no mission
+        would ever be given. The directory is read now, and only for the
+        identities the registry declares.
+        """
+        home = self.base / "home"
+        directory = home / m.CREDENTIAL_DIR
+        directory.mkdir(parents=True)
+        for name, line in (("codex.env", "CODEX_API_KEY=codex-value"),
+                           ("claude.env", "ANTHROPIC_API_KEY=claude-value"),
+                           ("stray.env", "PATH=/attacker/bin\nLD_PRELOAD=/evil.so"),
+                           ("already.env", "CODEX_API_KEY=should-not-win")):
+            path = directory / name
+            path.write_text(line + "\n")
+            path.chmod(0o600)
+        world = directory / "leaky.env"
+        world.write_text("ANTHROPIC_API_KEY=world-readable\n")
+        world.chmod(0o644)
+
+        environ = {"CODEX_API_KEY": "already-exported"}
+        taken = m.load_provider_credentials(home=home, environ=environ)
+
+        # A second provider's identity now arrives.
+        self.assertEqual(environ["ANTHROPIC_API_KEY"], "claude-value")
+        self.assertIn("ANTHROPIC_API_KEY", taken)
+        # An identity no provider declares is not put into the environment,
+        # so a file dropped in this directory cannot decide what runs.
+        self.assertNotIn("PATH", environ)
+        self.assertNotIn("LD_PRELOAD", environ)
+        # A value exported deliberately is not replaced by a file.
+        self.assertEqual(environ["CODEX_API_KEY"], "already-exported")
+
+        # And a credential file anyone can read is refused rather than used.
+        fresh = {}
+        m.load_provider_credentials(home=home, environ=fresh)
+        self.assertEqual(fresh.get("ANTHROPIC_API_KEY"), "claude-value",
+                         "the 0600 file should still be read")
+        self.assertNotEqual(fresh.get("ANTHROPIC_API_KEY"), "world-readable")
+
+    def test_the_worker_unit_names_no_provider(self):
+        """A provider name in a unit file is still a provider name in code."""
+        unit = (Path(m.__file__).resolve().parents[2]
+                / "systemd/user/shadowfetch-missions.service")
+        if not unit.is_file():
+            self.skipTest("running from a tree without the packaged unit")
+        directives = [line for line in unit.read_text().splitlines()
+                      if line.strip() and not line.strip().startswith("#")]
+        self.assertFalse([d for d in directives if "EnvironmentFile" in d],
+                         "the unit reads one provider's credential file by name")
 
     def test_secrets_are_redacted(self):
         with patch.dict(os.environ, {"CODEX_API_KEY": "private-test-credential"}):

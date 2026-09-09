@@ -1,0 +1,4 @@
+{"event": "session.started", "model": "test-model:1b", "resumed": false, "session": "turn-a6cb36890a47409e"}
+{"event": "model.status", "state": "generating"}
+{"delta": "Partial", "event": "token"}
+{"event": "cancelled", "reason": "SIGTERM"}

@@ -12,8 +12,6 @@ Installs are strictly user-initiated; offline the buttons disable with a
 plain-words note.
 """
 
-import subprocess
-
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -25,9 +23,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-import os
-
-from sfcc import busutil, theme
+from sfcc import busutil, plugins, theme
+from sfcc.pages import PageContext
 from sfcc.theme import Card, ProcessDialog, label
 
 
@@ -88,8 +85,7 @@ class BundleCard(Card):
             self.state.setText(f"All {total} packages already on your system.")
             return
         self.state.setText(f"{have} of {total} packages already on your system.")
-        helper_ok = os.access(busutil.BUNDLE_INSTALL, os.X_OK)
-        if not helper_ok:
+        if busutil.bundle_install_argv("probe") is None:
             self.button.setEnabled(False)
             self.state.setText(self.state.text() +
                                " Bundle installer not available — open "
@@ -106,11 +102,18 @@ class BundleCard(Card):
 
     def _install(self) -> None:
         bundle_id = str(self.record.get("id", ""))
-        if not bundle_id:
+        # ONE builder for this argv, shared with Workbench (sfcc.desktop).
+        # Both call sites used to spell it out, and both named pkexec as a bare
+        # word that $PATH resolved.
+        argv = busutil.bundle_install_argv(bundle_id)
+        if argv is None:
+            self.state.setText("This bundle cannot be installed from here: the "
+                               "root-owned bundle installer is not available. "
+                               "Nothing changed.")
             return
         dialog = ProcessDialog(
             self._page, f"Installing {self.record.get('name', bundle_id)}",
-            ["pkexec", busutil.BUNDLE_INSTALL, "install", bundle_id],
+            argv,
             "One apt transaction from the pinned archive, wrapped in a "
             "Phoenix Point automatically. Safe to leave running.")
         dialog.completed.connect(lambda _code: self._page.reload_bundles())
@@ -123,8 +126,22 @@ class SoftwarePage(QWidget):
 
     _TAB_ROUTES = {"updates": 0, "fireproof": 0, "bundles": 1}
 
-    def __init__(self):
+    @classmethod
+    def build(cls, context):
+        return cls(context)
+
+    def badge_count(self) -> int | None:
+        """The one badged section, answering for itself.
+
+        app.py used to hold `if key == "software"` and call fireproofd itself.
+        fireproofd suppresses the count for a set the user already rolled back,
+        so this number is the daemon's, not a local tally of anything.
+        """
+        return busutil.fireproof_updates()
+
+    def __init__(self, context=None):
         super().__init__()
+        self._context = context or PageContext(open_route=lambda _route: None)
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 18, 24, 18)
         root.setSpacing(12)
@@ -132,19 +149,13 @@ class SoftwarePage(QWidget):
         root.addWidget(self.tabs, 1)
 
         # ---- Tab 1: updates ----------------------------------------------
-        fireproof_widget = None
-        try:
-            from sfcc.fireproof_page import FireproofPage  # provided by shadowfetch-fireproof's page module when present
-            fireproof_widget = FireproofPage()
-        except BaseException:
-            # This import EXECUTES another package's 667-line application
-            # script inside this process, and that script raises SystemExit at
-            # module scope for --help/--version. SystemExit is not an
-            # Exception, so a narrower clause takes the whole Control Center
-            # down with the page it was trying to load.
-            fireproof_widget = None
-        if fireproof_widget is not None:
-            self.tabs.addTab(fireproof_widget, "Updates")
+        # The plugin contract (sfcc.plugins, W-32) owns this seam now. It
+        # imports another package's code into this process, so containment,
+        # the PAGE_API check and the "why it did not load" string all live
+        # there rather than in an inline try block here.
+        self._plugin = plugins.load_updates_page(self._context)
+        if self._plugin.ok:
+            self.tabs.addTab(self._plugin.widget, "Updates")
         else:
             self.tabs.addTab(self._builtin_updates(), "Updates")
 
@@ -195,17 +206,39 @@ class SoftwarePage(QWidget):
             "Updates warn before removing anything, wrap themselves in a "
             "Phoenix Point, and verify the system afterward.",
             "detail", wrap=True))
+        # Why the page a person expected is not here. A plugin that is
+        # INSTALLED and FAILED is a different fact from one that is absent, and
+        # the absent case is ordinary: shadowfetch-fireproof is a Recommends.
+        if self._plugin.error and plugins.legacy_plugin_installed():
+            c_lay.addWidget(label(
+                "The Fireproof updates page is installed but did not load: "
+                + self._plugin.error + ". The controls below still work.",
+                "statusWarn", wrap=True))
         row = QHBoxLayout()
-        import shutil as _shutil
-        if _shutil.which("fireproof"):
-            analyze = QPushButton("Review and update (Fireproof)")
-            analyze.clicked.connect(
-                lambda: busutil.terminal_command("fireproof update"))
-            row.addWidget(analyze)
-        safe = QPushButton("Check for updates (Safe Update)")
-        safe.setObjectName("quiet")
-        safe.clicked.connect(lambda: busutil.terminal_command("shadowfetch-update"))
-        row.addWidget(safe)
+        # A privileged tool is launched by declared name through the trusted
+        # program table, never by a $PATH lookup: `fireproof update` asks for
+        # an administrator password.
+        # ONE PROTOCOL, ONE BUTTON. There were two -- "Review and update
+        # (Fireproof)" and "Check for updates (Safe Update)" -- from when there
+        # really were two updaters with two simulations, two change-set hashes
+        # and two ideas of which snapshot to roll back to. shadowfetch-update
+        # is a shim that delegates to Fireproof now, so offering both taught a
+        # difference that no longer exists and invited a person to pick the
+        # weaker one. The shim keeps its own button only where Fireproof is
+        # absent, because there it is the only way to reach an update at all.
+        if busutil.trusted_program("fireproof"):
+            update = QPushButton("Review and update")
+            update.clicked.connect(
+                lambda: busutil.terminal_command("fireproof", ["update"]))
+        else:
+            update = QPushButton("Check for updates")
+            update.setObjectName("quiet")
+            update.setToolTip(
+                "Fireproof is not installed here, so this reports where "
+                "updates come from rather than performing one.")
+            update.clicked.connect(
+                lambda: busutil.terminal_command("shadowfetch-update"))
+        row.addWidget(update)
         row.addStretch(1)
         c_lay.addLayout(row)
         lay.addWidget(card)
@@ -222,7 +255,7 @@ class SoftwarePage(QWidget):
         open_welcome.setObjectName("quiet")
         open_welcome.setFixedHeight(30)
         open_welcome.clicked.connect(
-            lambda: busutil.start_detached(["shadowfetch-welcome"]))
+            lambda: busutil.start_detached("shadowfetch-welcome"))
         s_lay.addWidget(open_welcome, alignment=Qt.AlignmentFlag.AlignLeft)
         lay.addWidget(setup)
         lay.addStretch(1)

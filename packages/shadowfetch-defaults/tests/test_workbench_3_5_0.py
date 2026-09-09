@@ -161,10 +161,16 @@ class Workbench350Tests(unittest.TestCase):
         self.assertNotRegex(source, re.compile(r"API_KEY\s*=|TOKEN\s*=|PASSWORD\s*=", re.I))
 
     def test_control_center_and_welcome_expose_workbench_without_catalog_duplication(self):
-        app = (CONTROL / "data/usr/share/shadowfetch/control-center/sfcc/app.py").read_text()
+        # The sections moved out of app.py into ONE registry, sfcc/pages.py.
+        # Reading the shell for them asserted the position of a list that is
+        # no longer there; the fact under test -- that Workbench is a section
+        # of the Control Center -- is the registry's.
+        registry = (CONTROL / "data/usr/share/shadowfetch/control-center"
+                    / "sfcc/pages.py").read_text()
         page = (CONTROL / "data/usr/share/shadowfetch/control-center/sfcc/workbench_page.py").read_text()
         welcome = (WELCOME / "src/shadowfetch-welcome").read_text()
-        self.assertIn('(\"workbench\", \"Workbench\", \"Fire & Ice projects\")', app)
+        self.assertIn('Section("workbench", "Workbench", "Fire & Ice projects"',
+                      registry)
         self.assertIn("class WorkbenchPage", page)
         self.assertIn('rec.get("section") == "workbench"', welcome)
         self.assertIn("Open Element Workbench", welcome)

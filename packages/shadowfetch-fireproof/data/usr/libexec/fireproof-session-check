@@ -19,6 +19,14 @@
 #    with its notification suppressed (the sidebar badge stays, muted).
 set -u
 
+# Pinned for the same reason as fireproof-postboot: this script chooses
+# which program is exec'd to offer a restore, and it runs from XDG
+# autostart with the user's session PATH - which the user's own dotfiles
+# prepend to. `command -v shadowfetch-control` under that PATH is a
+# lookup that decides a privileged-looking action.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
 MARKER=/run/shadowfetch/fireproof-failed-boot
 BUS=org.shadowfetch.Fireproof1
 OBJ=/org/shadowfetch/Fireproof1
@@ -26,7 +34,7 @@ OBJ=/org/shadowfetch/Fireproof1
 if [ -r "$MARKER" ]; then
     point=$(head -n 1 "$MARKER" | tr -cd '0-9')
     if [ -n "$point" ]; then
-        if command -v shadowfetch-control >/dev/null 2>&1; then
+        if [ -x /usr/bin/shadowfetch-control ]; then
             exec /usr/bin/shadowfetch-control --page "recover:point=$point"
         fi
         # Degraded path when the Control Center is not installed.
@@ -37,8 +45,8 @@ fi
 
 # Proactive login notification. Analyze is side-effect free (no lock, no
 # download) and D-Bus activation starts fireproofd on demand.
-command -v notify-send >/dev/null 2>&1 || exit 0
-command -v busctl >/dev/null 2>&1 || exit 0
+[ -x /usr/bin/notify-send ] || exit 0
+[ -x /usr/bin/busctl ] || exit 0
 
 busctl --system --timeout=300 call "$BUS" "$OBJ" "$BUS" Analyze >/dev/null 2>&1 || exit 0
 count=$(busctl --system get-property "$BUS" "$OBJ" "$BUS" UpdateCount 2>/dev/null | awk '{print $2}')

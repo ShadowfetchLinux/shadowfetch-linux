@@ -23,7 +23,7 @@ from sfcc import theme
 from sfcc.mission_client import JsonCommand, workspace_path
 from sfcc.missions_page import NewMissionDialog, MissionsPage
 from sfcc.grok_bot_page import GrokBotPage
-from sfcc.agents_page import AgentsPage
+from sfcc.workspaces_page import WorkspacesPage
 from sfcc.firewatch_page import FirewatchPage
 
 APP = QApplication.instance() or QApplication([])
@@ -305,21 +305,43 @@ class PageStateTests(unittest.TestCase):
     def test_window_close_cannot_destroy_a_pending_review(self):
         from sfcc.app import ControlCenterWindow
         # Exercise the real native close event without starting system pages.
+        # Since W-31 the page supplies the verdict AND the sentence through
+        # blocking_reason(); the shell no longer reads one attribute name and
+        # writes the warning itself.
         window = ControlCenterWindow.__new__(ControlCenterWindow)
         QWidget.__init__(window)
-        page = QWidget(window)
-        page.review_pending = True
+
+        class Busy(QWidget):
+            blocked = True
+
+            def blocking_reason(self):
+                return "A restore is running." if self.blocked else None
+
+        page = Busy(window)
         window.pages = [page]
         window.show()
         APP.processEvents()
         with patch("sfcc.app.QMessageBox.warning") as warning:
             self.assertFalse(window.close())
             warning.assert_called_once()
+            self.assertIn("A restore is running.", warning.call_args[0])
         self.assertTrue(window.isVisible())
-        page.review_pending = False
+        page.blocked = False
         self.assertTrue(window.close())
         window.deleteLater()
         APP.processEvents()
+
+    def test_the_page_that_is_busy_is_the_one_that_says_so(self):
+        """MissionsPage owns the sentence about its own review, so a change to
+        what review means cannot leave the warning describing the old thing."""
+        with patch("sfcc.missions_page.MissionClient", FakeClient):
+            page = MissionsPage(lambda _: None)
+            page.timer.stop()
+            self.assertIsNone(page.blocking_reason())
+            page.review_pending = True
+            self.assertIn("review", page.blocking_reason())
+            page.deleteLater()
+            APP.processEvents()
 
     def test_results_show_filenames_and_open_the_full_recorded_path(self):
         with patch("sfcc.missions_page.MissionClient", FakeClient):
@@ -410,8 +432,8 @@ class WorkspaceTests(unittest.TestCase):
             (root / "project").mkdir()
             (root / ".sf-checkpoints").mkdir()
             (root / "linked").symlink_to(root / "project")
-            with patch.dict(os.environ, {"SHADOWFETCH_AGENT_WORKSPACES": directory}), patch("sfcc.agents_page.busutil.load_hwscan", return_value={}):
-                page = AgentsPage(None, lambda _: None)
+            with patch.dict(os.environ, {"SHADOWFETCH_AGENT_WORKSPACES": directory}), patch("sfcc.workspaces_page.busutil.load_hwscan", return_value={}):
+                page = WorkspacesPage(None, lambda _: None)
                 labels = [item.text() for item in page.findChildren(QLabel)]
                 self.assertIn("project", labels)
                 self.assertNotIn(".sf-checkpoints", labels)
@@ -434,13 +456,29 @@ class RealMissionContractTests(unittest.TestCase):
             project = workspaces / "demo"
             project.mkdir(parents=True)
             with patch.dict(os.environ, {"SHADOWFETCH_AGENT_WORKSPACES": str(workspaces), "SHADOWFETCH_MISSIONS_STATE": str(root / "state")}):
-                dialog = NewMissionDialog(None, FakeClient(), lambda _: None)
+                # The dialog is built with the REAL engine's capabilities,
+                # which is what MissionsPage hands it at runtime. Built with
+                # none it names no provider, and an engine with more than one
+                # provider for the capability correctly refuses to guess --
+                # that refusal is the engine's job and is asserted separately.
+                capabilities, error = self.run_command(
+                    sys.executable, [str(backend), "--json", "capabilities"])
+                self.assertIsNone(error)
+                dialog = NewMissionDialog(None, FakeClient(), lambda _: None,
+                                          capabilities=capabilities)
                 dialog.workspace.setText("demo")
                 dialog.tests.setText("python3 -m unittest")
-                created, error = self.run_command(sys.executable, [str(backend), "--json", *dialog.arguments()])
+                arguments = dialog.arguments()
+                created, error = self.run_command(sys.executable, [str(backend), "--json", *arguments])
                 self.assertIsNone(error)
                 self.assertEqual("queued", created["state"])
-                self.assertEqual("codex", created["config"]["runtime"])
+                # The provider the dialog named is the one the engine recorded.
+                # Asserting a literal "codex" here would pin the coupling
+                # Phase 2 removed and break whenever a provider is added.
+                # provider_id, not `config.runtime`: runtime is the legacy
+                # spelling and a provider is free to map to a different one.
+                self.assertEqual(arguments[arguments.index("--provider") + 1],
+                                 created["provider_id"])
                 mid = created["id"]
                 cancelled, error = self.run_command(sys.executable, [str(backend), "--json", "cancel", mid])
                 self.assertIsNone(error)

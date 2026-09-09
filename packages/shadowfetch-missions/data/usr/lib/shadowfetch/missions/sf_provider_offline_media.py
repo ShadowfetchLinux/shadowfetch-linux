@@ -64,6 +64,14 @@ class OfflineMediaProvider(AgentProvider):
                 "Media export runs offline; it will not be given a network connection.")
         if not config.get("inputs"):
             return Acceptance.no("Select at least one media file to export.")
+        if config.get("model"):
+            # Said rather than ignored. The engine used to refuse every model
+            # for everyone, so this provider never had to answer for itself;
+            # now that it does, silently dropping the field would let a person
+            # believe a model had been chosen for a job that has none.
+            return Acceptance.no(
+                "Media export runs no model at all, so there is no model to "
+                "choose. Leave the model unset.")
         return Acceptance.yes()
 
     # -- invocation --------------------------------------------------------

@@ -1,0 +1,4 @@
+{"event": "session.started", "model": "test-model:1b", "resumed": false, "session": "turn-a2b5d51b0975421b"}
+{"event": "model.status", "state": "generating"}
+{"delta": "Partial", "event": "token"}
+{"code": "idle-timeout", "event": "error", "message": "the local model service stopped sending data"}

@@ -45,14 +45,13 @@ import glob
 import hashlib
 import json
 import os
-import shutil
 import signal
-import subprocess
 import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
+from pathlib import Path
 
 if any(a in ("-h", "--help") for a in sys.argv[1:]):
     print(__doc__)
@@ -64,6 +63,19 @@ if "--version" in sys.argv[1:]:
         v = "unknown"
     print("fireproofd (Shadowfetch Linux) " + v)
     raise SystemExit(0)
+
+# Shared update logic. sfupdate lives beside phoenix under
+# /usr/lib/shadowfetch; the path is derived from this file's own location
+# (/usr/libexec/fireproofd -> /usr/lib/shadowfetch), which is true in the
+# source tree as well - never from PYTHONPATH, which the caller controls.
+_LIB = Path(__file__).resolve().parent.parent / "lib" / "shadowfetch"
+if str(_LIB) not in sys.path:
+    sys.path.insert(0, str(_LIB))
+
+from sfupdate import snapshots as sfsnap                          # noqa: E402
+from sfupdate import state as sfstate                             # noqa: E402
+from sfupdate.trusted import (                                    # noqa: E402
+    EXECUTOR, SECURITY_CRITICAL, ExecutableError, ExecutableTrust)
 
 import apt
 import apt.progress.base
@@ -78,12 +90,15 @@ OBJ_PATH = "/org/shadowfetch/Fireproof1"
 IFACE = "org.shadowfetch.Fireproof1"
 ACTION_UPDATE = "org.shadowfetch.fireproof.update"
 
-STATE_DIR = "/var/lib/shadowfetch"
+# The state store is sfupdate.state and nothing else: one place decides
+# what the last update did to this machine, because ROLLBACK reads
+# pre_point from it and hands that number to phoenix-restore.
+STATE_DIR = sfstate.STATE_DIR
+STATE_FILE = sfstate.STATE_FILE
+PENDING_FILE = sfstate.PENDING_FILE
 # Analyze is unauthenticated by design (the tray badge needs it), so the
 # work it triggers has to be bounded rather than gated. W-21.
 ANALYZE_CACHE_SECONDS = 30
-STATE_FILE = os.path.join(STATE_DIR, "fireproof-state.json")
-PENDING_FILE = os.path.join(STATE_DIR, "fireproof-pending")
 LOCK_FRONTEND = "/var/lib/dpkg/lock-frontend"
 
 # RED classifier: packages whose failure can cost the boot, the session or
@@ -146,105 +161,89 @@ def log(msg):
     print("fireproofd: %s" % msg, file=sys.stderr, flush=True)
 
 
-def now_iso():
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+# One implementation each, in sfupdate.state.
+now_iso = sfstate.now_iso
+atomic_write = sfstate.atomic_write
+load_state = sfstate.load_state
+save_state = sfstate.save_state
+
+# A program that could not be TRUSTED gets a distinguished status so that
+# no caller can mistake "I could not establish this fact" for "the check
+# passed". Nothing here shells out, so this cannot collide with a real
+# child's exit status.
+UNTRUSTED_RC = 126
 
 
 def run(cmd, timeout=30):
-    """Run a command, never raise; return (rc, stdout, stderr).
+    """Run a TRUSTED program; never raise. Returns (rc, stdout, stderr).
 
-    LC_ALL=C / LANG=C always: several callers parse the output (apt's
-    "0 upgraded, ..." line, needrestart, snapper CSV), and a translated
-    message must never flip a verify check from pass to warn.
+    cmd[0] is a NAME in sfupdate.trusted.TRUSTED_PATHS - not a path, and
+    never something to look up in PATH. This daemon is root on the system
+    bus and every program it runs decides a security fact: which snapshot
+    number is offered to phoenix-restore, whether the verify battery says
+    "ok" or "restore-recommended", which services get restarted as root.
+    A substitutable snapper picks the user's root subvolume; a
+    substitutable dpkg/apt-get forges a clean verdict on a machine the
+    update just broke.
+
+    The executor pins the CHILD's PATH too. Resolving the program is not
+    enough: needrestart and update-grub are scripts that resolve their own
+    helpers through whatever PATH they inherit.
     """
-    env = dict(os.environ, LC_ALL="C", LANG="C", LANGUAGE="C")
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                           env=env)
-        return p.returncode, p.stdout, p.stderr
-    except subprocess.TimeoutExpired:
-        return 124, "", "timeout"
-    except OSError as e:
-        return 127, "", str(e)
+        return EXECUTOR.run(cmd[0], *cmd[1:], timeout=timeout)
+    except ExecutableError as e:
+        return UNTRUSTED_RC, "", str(e)
 
 
-def atomic_write(path, text):
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
+def untrusted(rc):
+    """Did this call fail because no trusted program could be resolved?"""
+    return rc == UNTRUSTED_RC
 
 
-def load_state():
+def is_substitutable(name):
+    """The program exists but somebody other than root can replace it.
+
+    Distinct from absent on purpose. An absent optional tool (no dkms on a
+    machine with no out-of-tree modules) is a legitimate skip. A present
+    but substitutable one is a finding, and must be reported rather than
+    quietly skipped as if it had never been installed.
+    """
     try:
-        with open(STATE_FILE) as f:
-            st = json.load(f)
-        if isinstance(st, dict):
-            st.setdefault("schema", 1)
-            st.setdefault("failed_sets", [])
-            st.setdefault("last_txn", None)
-            return st
-    except (OSError, ValueError):
-        pass
-    return {"schema": 1, "failed_sets": [], "last_txn": None}
+        _path, verdict = EXECUTOR.trust(name)
+    except ExecutableError:
+        return False
+    return verdict is ExecutableTrust.UNTRUSTED
 
 
-def save_state(state):
-    os.makedirs(STATE_DIR, exist_ok=True)
-    atomic_write(STATE_FILE, json.dumps(state, indent=1, sort_keys=True) + "\n")
+def trust_note(name):
+    """Why a program was refused - for the check row that has to say so."""
+    return EXECUTOR.explain(name)
 
 
 # --------------------------------------------------------------------------
 # snapper helpers (read + relabel only; Fireproof never CREATES snapshots)
 # --------------------------------------------------------------------------
 
-def snapper_list():
-    """Return [(number, type, date, description)] or [] when unavailable."""
-    rc, out, _ = run(["snapper", "-c", "root", "--machine-readable", "csv",
-                      "list", "--columns", "number,type,date,description"], timeout=20)
-    rows = []
-    if rc == 0:
-        for line in out.splitlines()[1:]:
-            parts = line.split(",", 3)
-            if len(parts) >= 2 and parts[0].isdigit():
-                rows.append((int(parts[0]), parts[1].strip(),
-                             parts[2].strip() if len(parts) > 2 else "",
-                             parts[3].strip() if len(parts) > 3 else ""))
-    return rows
-
+# THE ONE implementation of "which Phoenix Point precedes this update"
+# is sfupdate.snapshots. It used to exist twice - here and in
+# shadowfetch-update's awk - with two labels and two records, so a
+# rollback after a shadowfetch-update run restored the PREVIOUS
+# transaction's Point. These three names stay as the daemon's local
+# vocabulary; the mechanism is shared.
 
 def snapper_max_number():
-    rows = snapper_list()
-    return max((n for n, _t, _d, _desc in rows), default=0)
+    return sfsnap.max_number()
 
 
 def snapper_first_pre_after(n):
     """The rollback target: FIRST type=pre snapshot with number > n."""
-    pres = sorted(num for num, typ, _d, _desc in snapper_list()
-                  if typ == "pre" and num > n)
-    return pres[0] if pres else None
+    return sfsnap.first_pre_after(n)
 
 
 def phoenix_available():
-    """Btrfs root + snapper config + apt snapshots not disabled."""
-    rc, out, _ = run(["findmnt", "-n", "-o", "FSTYPE", "/"], timeout=5)
-    if rc != 0 or out.strip() != "btrfs":
-        return False
-    if not os.path.exists("/etc/snapper/configs/root"):
-        return False
-    try:
-        with open("/etc/default/snapper") as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("DISABLE_APT_SNAPSHOT"):
-                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    if val.lower() in ("yes", "true", "1"):
-                        return False
-    except OSError:
-        pass
-    return True
+    """Btrfs root + snapper config + apt snapshots on + a TRUSTED snapper."""
+    return sfsnap.phoenix_available()
 
 
 # --------------------------------------------------------------------------
@@ -504,7 +503,16 @@ class SignalInstallProgress(apt.progress.base.InstallProgress):
 # --------------------------------------------------------------------------
 
 def failed_units():
-    rc, out, _ = run(["systemctl", "--failed", "--no-legend", "--plain"], timeout=10)
+    """Failed unit names, or None when systemctl could not be TRUSTED.
+
+    None, not []: an empty list is the answer "nothing is failing", and a
+    substitutable systemctl returning that would turn the newly-failed
+    check into a silent pass on a machine the update just broke.
+    """
+    rc, out, _ = run(["systemctl", "--failed", "--no-legend", "--plain"],
+                     timeout=10)
+    if untrusted(rc):
+        return None
     if rc not in (0, 1):
         return []
     return sorted(line.split()[0] for line in out.splitlines() if line.split())
@@ -531,8 +539,15 @@ def run_verify(txn):
                        "detail": detail})
 
     # (a) package database consistency
-    rc, out, _ = run(["dpkg", "--audit"], timeout=60)
-    if rc == 0 and not out.strip():
+    rc, out, err = run(["dpkg", "--audit"], timeout=60)
+    if untrusted(rc):
+        # Cannot be established, so it is not established. A refusal here
+        # leads with Restore rather than degrading to a warning: the whole
+        # point of this check is that a forged one hides a broken machine.
+        add("dpkg-audit", "Package database consistent", "fail",
+            "not established: %s" % err)
+        hard_fail = True
+    elif rc == 0 and not out.strip():
         add("dpkg-audit", "Package database consistent", "pass", "dpkg --audit is empty")
     else:
         add("dpkg-audit", "Package database consistent", "fail",
@@ -540,7 +555,11 @@ def run_verify(txn):
         hard_fail = True
 
     rc, out, err = run(["apt-get", "-s", "-f", "install"], timeout=120)
-    if rc == 0 and "0 upgraded, 0 newly installed, 0 to remove" in out:
+    if untrusted(rc):
+        add("apt-consistency", "No broken dependencies", "fail",
+            "not established: %s" % err)
+        hard_fail = True
+    elif rc == 0 and "0 upgraded, 0 newly installed, 0 to remove" in out:
         add("apt-consistency", "No broken dependencies", "pass",
             "apt-get -s -f install proposes no changes")
     elif rc == 0:
@@ -601,7 +620,14 @@ def run_verify(txn):
 
     # (d) dkms modules on the new kernel (THE black-screen preventer with
     # nvidia-kernel-dkms; a dkms failure with nvidia involved is hard)
-    if new_kernels and shutil.which("dkms"):
+    if new_kernels and is_substitutable("dkms"):
+        # Present but substitutable. dkms decides whether an NVIDIA module
+        # failure - the black screen - is reported at all, so a
+        # substitutable one is not skipped quietly the way an absent one is.
+        add("dkms", "Kernel modules built for the new kernel", "fail",
+            "not established: %s" % trust_note("dkms"))
+        hard_fail = True
+    elif new_kernels and EXECUTOR.available("dkms"):
         for kver in new_kernels:
             rc, out, _ = run(["dkms", "status", "-k", kver], timeout=60)
             lines = [ln for ln in out.splitlines() if ln.strip()]
@@ -625,9 +651,20 @@ def run_verify(txn):
 
     # (e) failed units, diffed against the pre-commit baseline: only NEW
     # failures count, so a unit the admin masked-broken long ago stays quiet
-    baseline = set(txn.get("baseline_failed", []))
-    new_failed = [u for u in failed_units() if u not in baseline]
-    if new_failed:
+    baseline = set(txn.get("baseline_failed") or [])
+    now_failed = failed_units()
+    if now_failed is None:
+        # A substitutable systemctl reporting an empty list would turn this
+        # into a silent pass on a machine the update just broke.
+        add("failed-units", "No newly failed services", "fail",
+            "not established: %s" % trust_note("systemctl"))
+        hard_fail = True
+        new_failed = []
+    else:
+        new_failed = [u for u in now_failed if u not in baseline]
+    if now_failed is None:
+        pass
+    elif new_failed:
         add("failed-units", "No newly failed services", "warn",
             "new failures: %s" % ", ".join(new_failed))
     else:
@@ -635,7 +672,13 @@ def run_verify(txn):
             "systemctl --failed shows nothing new")
 
     # needrestart: kernel state + restart of non-session services
-    if shutil.which("needrestart"):
+    if is_substitutable("needrestart"):
+        # needrestart's output selects services this daemon then restarts
+        # AS ROOT. A substitutable one is a root-service-restart primitive,
+        # so it is refused rather than run.
+        add("needrestart", "Services on current libraries", "warn",
+            "not run: %s" % trust_note("needrestart"))
+    elif EXECUTOR.available("needrestart"):
         rc, out, _ = run(["needrestart", "-b"], timeout=120)
         ksta = 1
         svcs = []
@@ -669,15 +712,21 @@ def run_verify(txn):
                 "pass", "; ".join(detail) or "nothing needs a restart")
 
     # (f) network still stands: default route + the mirror we just used
-    rc, out, _ = run(["ip", "route", "show", "default"], timeout=5)
-    if rc == 0 and out.strip():
+    rc, out, err = run(["ip", "route", "show", "default"], timeout=5)
+    if untrusted(rc):
+        add("route", "Default route present", "warn",
+            "not established: %s" % err)
+    elif rc == 0 and out.strip():
         add("route", "Default route present", "pass", out.strip().splitlines()[0])
     else:
         add("route", "Default route present", "warn", "no default route")
     mirror = next(iter(txn.get("mirror_hosts", [])), None)
     if mirror:
-        rc, out, _ = run(["getent", "hosts", mirror], timeout=3)
-        if rc == 0 and out.strip():
+        rc, out, err = run(["getent", "hosts", mirror], timeout=3)
+        if untrusted(rc):
+            add("dns", "Mirror still resolves", "warn",
+                "not established: %s" % err)
+        elif rc == 0 and out.strip():
             add("dns", "Mirror still resolves", "pass", mirror)
         else:
             add("dns", "Mirror still resolves", "warn",
@@ -688,24 +737,33 @@ def run_verify(txn):
     sessions = (glob.glob("/usr/share/wayland-sessions/*.desktop")
                 + glob.glob("/usr/share/xsessions/*.desktop"))
     missing_libs = []
-    for binary in GRAPHICS_BINARIES:
-        if os.path.exists(binary):
-            _, lout, _ = run(["ldd", binary], timeout=10)
-            for line in lout.splitlines():
-                if "not found" in line:
-                    missing_libs.append("%s: %s" % (os.path.basename(binary),
-                                                    line.strip()))
-    if rc == 0 and sessions and not missing_libs:
+    ldd_ok = EXECUTOR.available("ldd")
+    if ldd_ok:
+        for binary in GRAPHICS_BINARIES:
+            if os.path.exists(binary):
+                _, lout, _ = run(["ldd", binary], timeout=10)
+                for line in lout.splitlines():
+                    if "not found" in line:
+                        missing_libs.append(
+                            "%s: %s" % (os.path.basename(binary), line.strip()))
+    if rc == 0 and sessions and not missing_libs and ldd_ok:
         add("graphics", "Display manager and session files look intact",
             "pass", "sddm active, session files present, no missing "
                     "libraries - a graphical login is only proven by the "
                     "next boot")
     else:
         bits = []
-        if rc != 0:
+        if untrusted(rc):
+            # Say what actually happened. "sddm not active" would be a
+            # claim about the machine; this is a claim about the tool.
+            bits.append("sddm state not established: %s"
+                        % trust_note("systemctl"))
+        elif rc != 0:
             bits.append("sddm not active")
         if not sessions:
             bits.append("no session .desktop files")
+        if not ldd_ok:
+            bits.append("library scan not run: %s" % trust_note("ldd"))
         bits.extend(missing_libs[:5])
         add("graphics", "Display manager and session files look intact",
             "warn", "; ".join(bits) or "inconclusive")
@@ -903,11 +961,7 @@ class Fireproof(dbus.service.Object):
         })
 
     def _read_pending(self):
-        try:
-            with open(PENDING_FILE) as f:
-                return json.load(f)
-        except (OSError, ValueError):
-            return None
+        return sfstate.read_pending()
 
     # -- commit protocol ---------------------------------------------------
 
@@ -1035,7 +1089,13 @@ class Fireproof(dbus.service.Object):
                 if os.path.exists(fname):
                     debs.append(fname)
             news_text = ""
-            if debs and shutil.which("apt-listchanges"):
+            if debs and is_substitutable("apt-listchanges"):
+                # The NEWS text is what a human approves at the gate. A
+                # substitutable apt-listchanges could show benign NEWS for
+                # a disruptive update, so it is not run; the gate then has
+                # nothing to show, which is the same as it being absent.
+                log("NEWS skipped: %s" % trust_note("apt-listchanges"))
+            elif debs and EXECUTOR.available("apt-listchanges"):
                 rc, out, _ = run(["apt-listchanges", "--which=news",
                                   "-f", "text"] + debs, timeout=120)
                 if rc == 0:
@@ -1077,7 +1137,6 @@ class Fireproof(dbus.service.Object):
             pre_point = snapper_first_pre_after(pre_max)
             txn["pre_point"] = pre_point
             if pre_point is not None:
-                kernnote = ""
                 if txn["kernels"]:
                     kernnote = " (kernel %s -> %s, %d pkgs)" % (
                         os.uname().release,
@@ -1085,20 +1144,14 @@ class Fireproof(dbus.service.Object):
                         len(changes))
                 else:
                     kernnote = " (%d pkgs)" % len(changes)
-                run(["snapper", "-c", "root", "modify",
-                     "-d", "Fireproof: before update %s%s"
-                           % (datetime.now().strftime("%Y-%m-%d %H:%M"),
-                              kernnote),
-                     "-u", "fireproof=pre,txn=%s" % txn["txn"],
-                     str(pre_point)], timeout=20)
+                sfsnap.label_point(
+                    pre_point,
+                    "Fireproof: before update %s%s"
+                    % (datetime.now().strftime("%Y-%m-%d %H:%M"), kernnote),
+                    txn["txn"])
 
             # 8. pending flag BEFORE any reboot offer reaches the user
-            atomic_write(PENDING_FILE, json.dumps({
-                "txn": txn["txn"],
-                "pre_point": pre_point,
-                "written": now_iso(),
-                "kernels": txn["kernels"],
-            }) + "\n")
+            sfstate.write_pending(txn["txn"], pre_point, txn["kernels"])
 
             # 9. verify battery
             self._set_phase("verifying")
@@ -1148,10 +1201,7 @@ class Fireproof(dbus.service.Object):
                 GLib.idle_add(self._loop.quit)
 
     def _record_failed_set(self, cs_hash, reason):
-        sets = [s for s in self._state.get("failed_sets", [])
-                if s.get("hash") != cs_hash]
-        sets.append({"hash": cs_hash, "date": now_iso(), "reason": reason})
-        self._state["failed_sets"] = sets[-16:]   # bounded history
+        sfstate.record_failed_set(self._state, cs_hash, reason)
 
     # -- verify + rollback bookkeeping ------------------------------------
 
@@ -1199,22 +1249,9 @@ class Fireproof(dbus.service.Object):
         """The Point the one rollback button restores: recorded pre-Point of
         the last transaction. The restore itself is pkexec phoenix-restore -
         Fireproof never re-implements it."""
-        last = self._state.get("last_txn")
-        pending = self._read_pending()
-        point = None
-        source = None
-        if pending and pending.get("pre_point") is not None:
-            point, source = pending["pre_point"], "pending"
-        elif last and last.get("pre_point") is not None:
-            point, source = last["pre_point"], "state"
-        return json.dumps({
-            "point": point,
-            "source": source,
-            "txn": (last or {}).get("txn"),
-            "command": ("pkexec /usr/libexec/phoenix-restore %s" % point
-                        if point is not None else None),
-            "phoenix_available": phoenix_available(),
-        })
+        target = sfstate.rollback_target(self._state, self._read_pending())
+        target["phoenix_available"] = phoenix_available()
+        return json.dumps(target)
 
     @dbus.service.method(IFACE, in_signature="s", out_signature="b",
                          sender_keyword="sender")
@@ -1280,6 +1317,14 @@ def main():
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         GLib.unix_signal_add(GLib.PRIORITY_HIGH, sig, on_stop_signal)
+
+    # Operability: record, once, at start, what this daemon considers
+    # trusted. When a verify battery later says "not established", the
+    # journal already says which program was refused and why, and an
+    # operator can tell an ABSENT optional tool from a SUBSTITUTABLE one
+    # without guessing.
+    for _name in sorted(SECURITY_CRITICAL):
+        log("trust: %s" % EXECUTOR.explain(_name))
 
     # systemd readiness (Type=dbus keys on the bus name, but be explicit
     # in the journal for the QEMU harness)

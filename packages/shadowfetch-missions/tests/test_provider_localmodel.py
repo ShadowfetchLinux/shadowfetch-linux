@@ -746,9 +746,13 @@ class _ExecutorHarness:
         self.env.start()
         self.addCleanup(self.env.stop)
         self.store = sfm.Store()
+        # network="none": this provider refuses a networked mission outright,
+        # which is the whole of what it promises. Asking for "allow" here would
+        # be testing the refusal, not the turn.
         self.mission = self.store.create(
-            kind="report", workspace_value="probe", title="Local model probe",
-            prompt="Summarize the launch", inputs=["facts.md"], network="allow")
+            kind="report", provider_id="localmodel", workspace_value="probe",
+            title="Local model probe", prompt="Summarize the launch",
+            inputs=["facts.md"], network="none")
         mission_states.reach(self.store, self.mission["id"], "running")
         self.executor = sfm.Executor(self.store, self.store.get(self.mission["id"]))
         self.provider = provider()
@@ -1120,9 +1124,10 @@ class OrchestratorSurvivalTests(unittest.TestCase):
         self.store = sfm.Store()
 
     def create(self):
-        return self.store.create(kind="report", workspace_value="probe",
-                                 title="Survival", prompt="Summarize the launch",
-                                 inputs=["facts.md"], network="allow")
+        return self.store.create(kind="report", provider_id="localmodel",
+                                 workspace_value="probe", title="Survival",
+                                 prompt="Summarize the launch",
+                                 inputs=["facts.md"], network="none")
 
     def test_a_provider_error_during_a_turn_fails_the_mission_with_a_receipt(self):
         mission = self.create()

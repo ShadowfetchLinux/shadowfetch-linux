@@ -41,6 +41,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import ast
 import re
 import subprocess
 import sys
@@ -400,8 +401,8 @@ _RGB_TRIPLE = re.compile(r"\b([0-9]{1,3},[0-9]{1,3},[0-9]{1,3})\b")
 # NEW one fails the gate.  Removing an entry (by naming the colour in
 # palette.json) is always correct.
 UNNAMED_TODAY: dict[str, set[str]] = {
-    "packages/shadowfetch-control-center/data/usr/share/shadowfetch/control-center/sfcc/app.py":
-        {"#101114"},
+    # app.py's entry is gone, not moved: #101114 is theme.SIDEBAR now, and the
+    # ratchet only ever loosens by a colour being named.
     "packages/shadowfetch-control-center/data/usr/share/shadowfetch/control-center/sfcc/grok_bot_page.py":
         {"#101115", "#71634b", "#f5f4ef"},
     "packages/shadowfetch-control-center/data/usr/share/shadowfetch/control-center/sfcc/ember_page.py":
@@ -812,10 +813,15 @@ def check_workspace_name(_truth: dict) -> list[Finding]:
             "DRIFT", "workspace-name", AGENT_WORKSPACE,
             "the sanitize() helper this check exercises is gone"))
         return findings
-    script = (
-        "sanitize() { printf '%s' \"$1\" | tr '[:upper:]' '[:lower:]' | "
-        "sed -E 's/[^a-z0-9._-]+/-/g; s/^-+//; s/-+$//' | cut -c1-48; }\n"
-    )
+    # THE SHIPPED FUNCTION, LIFTED OUT AND RUN. This block used to carry its
+    # own copy of the pipeline and execute that -- a second implementation of
+    # the very thing this file exists to stop, inside the detector. It graded a
+    # sanitiser nobody ships: when the real one was fixed, the gate went on
+    # reporting the old answers, and had the real one regressed the gate would
+    # have gone on reporting the good ones.
+    start = text.index("sanitize()")
+    end = text.index("\n}", start) + 2
+    script = text[start:end] + "\n"
     for name, _, _ in WORKSPACE_CORPUS:
         if "\x00" in name:
             continue  # argv cannot carry a NUL; the shell never sees this one
@@ -826,11 +832,11 @@ def check_workspace_name(_truth: dict) -> list[Finding]:
         if produced == "":
             continue  # empty output is rejected by the caller's own guard
         if not _rule_accepts(produced):
-            # BLOCKED, not DRIFT: shadowfetch-agent-workspace is a shipped tool
-            # in another agent's package, so Stage X detects this rather than
-            # editing it.  The finding is real -- `sanitize ".ssh"` returns
-            # ".ssh", the caller's only guard is `!= .` and `!= ..`, so the tool
-            # creates ~/Workspaces/.ssh, which Firebreak then refuses to open.
+            # BLOCKED rather than DRIFT because the remedy is a change to a
+            # shipped tool rather than a disagreement between two copies. The
+            # finding is real: a sanitiser that returns ".ssh" lets the tool
+            # create ~/Workspaces/.ssh, which Firebreak then refuses to open,
+            # and the caller's only guard is `!= .` and `!= ..`.
             findings.append(Finding(
                 "BLOCKED", "workspace-name", site(AGENT_WORKSPACE, "sanitize()"),
                 f"sanitize({name!r}) produced {produced!r}, which the workspace-name "
@@ -859,19 +865,47 @@ HELPER_PATHS = {
     "phoenix-restore": "/usr/libexec/phoenix-restore",
 }
 HELPER_CONSUMERS = (
+    # The Control Center's copy of these paths moved to sfcc/desktop.py, which
+    # busutil re-exports. Reading busutil here would report five false drifts
+    # against a file that no longer spells any of them out.
     "packages/shadowfetch-control-center/data/usr/share/shadowfetch/"
-    "control-center/sfcc/busutil.py",
+    "control-center/sfcc/desktop.py",
     "packages/shadowfetch-welcome/src/shadowfetch-welcome",
 )
 BUNDLE_CALL_SITES = (
+    "packages/shadowfetch-control-center/data/usr/share/shadowfetch/"
+    "control-center/sfcc/desktop.py",
     "packages/shadowfetch-control-center/data/usr/share/shadowfetch/"
     "control-center/sfcc/software_page.py",
     "packages/shadowfetch-control-center/data/usr/share/shadowfetch/"
     "control-center/sfcc/workbench_page.py",
     "packages/shadowfetch-welcome/src/shadowfetch-welcome",
 )
+# The builder writes the constant unquoted (`[pkexec, BUNDLE_HELPER, ...]`
+# where pkexec is itself a named path), the call sites wrote it quoted. Both
+# spellings are the same argv and both have to be checked.
 _PKEXEC_BUNDLE = re.compile(
-    r'\[\s*"pkexec"\s*,\s*([A-Za-z_.]+)\s*,\s*("install")?', re.MULTILINE)
+    r'\[\s*(?:"pkexec"|pkexec)\s*,\s*([A-Za-z_.]+)\s*,\s*("install")?',
+    re.MULTILINE)
+
+
+def bundle_builder_source(text: str):
+    """The source of `bundle_install_argv`, if this file is the one that
+    defines it.
+
+    Scoped to that ONE function deliberately. The same module builds other
+    pkexec argvs whose verb is not "install" -- apt_snapshot_toggle_argv says
+    "enable" -- and a whole-file scan reads those as a bundle call with the
+    wrong verb, which is a finding about a contract they were never under.
+    """
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "bundle_install_argv":
+            return ast.get_source_segment(text, node) or ""
+    return None
 
 
 def check_desktop_helpers(_truth: dict) -> list[Finding]:
@@ -899,13 +933,24 @@ def check_desktop_helpers(_truth: dict) -> list[Finding]:
             findings.append(Finding("DRIFT", "desktop-helpers", rel,
                                     f"unreadable ({exc})"))
             continue
-        calls = _PKEXEC_BUNDLE.findall(text)
-        bundle_calls = [c for c in calls if "BUNDLE" in c[0].upper()]
+        builder = bundle_builder_source(text)
+        scope = text if builder is None else builder
+        calls = _PKEXEC_BUNDLE.findall(scope)
+        bundle_calls = [c for c in calls if "BUNDLE" in c[0].upper()
+                        or c[0] == "helper"]
         if not bundle_calls:
+            # A site that DELEGATES is not a site that drifted. The Control
+            # Center pages call desktop.bundle_install_argv() now, so the argv
+            # is spelled once, in the builder, which is checked on its own
+            # source above. Demanding the literal at every page would push the
+            # copies back out, which is the drift this check exists to stop.
+            if builder is None and "bundle_install_argv(" in text:
+                continue
             findings.append(Finding(
                 "DRIFT", "desktop-helpers", rel,
-                "no pkexec bundle-install call found; this file is one of the "
-                "three call sites the argv contract covers"))
+                "no pkexec bundle-install call found and nothing delegates to "
+                "bundle_install_argv(); this file is one of the call sites the "
+                "argv contract covers"))
             continue
         for constant, verb in bundle_calls:
             if verb != '"install"':

@@ -100,8 +100,16 @@ NOT_A_CLAIM = {"relied_on"}
 # namespace, and direct open, absolute path, relative traversal, symlink,
 # nested file and rename are each denied through the real Firebreak. Leaving it
 # here would make these probes hunt for an honest claim.
-GAP_FIELDS_SANDBOX = ("egress_allowlist", "syscall_profile")
-GAP_FIELDS_POLICY = ("network_destination", "syscalls")
+# WHAT IS STILL A GAP, and what stopped being one. These probes exist to catch
+# a static surface describing an unenforced control as a control; they are not a
+# claim that the list never shrinks. Stage E built path masking and Stage C built
+# the destination filter, so those names MOVED here rather than being deleted --
+# a closed gap still has to appear in every table, and still has to carry a
+# mechanism, or the claim is decoration.
+GAP_FIELDS_SANDBOX = ("syscall_profile",)
+GAP_FIELDS_POLICY = ("syscalls",)
+CLOSED_FIELDS_SANDBOX = ("egress_allowlist", "masked_paths")
+CLOSED_FIELDS_POLICY = ("network_destination", "path_masking")
 
 ENV_KEYS = ("SHADOWFETCH_AGENT_WORKSPACES", "SHADOWFETCH_MISSIONS_STATE",
             "SHADOWFETCH_FIREBREAK_STATE", "SHADOWFETCH_MCP_STATE", "PATH")
@@ -620,20 +628,30 @@ def attack_static_table(bench, report):
     bad += [f"{k}={v}" for k, v in mediation.items() if _affirmative(v)]
     missing = [f for f in GAP_FIELDS_SANDBOX if f not in table]
     missing += [f for f in GAP_FIELDS_POLICY if f not in matrix]
+    # A closed gap has to stay visible and has to say HOW. A field that quietly
+    # left the table, or that claims a control with no mechanism behind it,
+    # reads exactly like the overclaim this probe was written to catch.
+    missing += [f for f in CLOSED_FIELDS_SANDBOX if f not in table]
+    missing += [f for f in CLOSED_FIELDS_POLICY if f not in matrix]
+    silent = [f for f in CLOSED_FIELDS_SANDBOX
+              if not str(table.get(f, {}).get("mechanism", "")).strip()]
+    silent += [f for f in CLOSED_FIELDS_POLICY
+               if not str(matrix.get(f, {}).get("mechanism", "")).strip()]
+    bad += [f"{f}=claimed with no mechanism" for f in silent]
     passed = not bad and not missing
     report(name,
-           "with no mission in hand, both static tables describe "
-           "egress_allowlist / masked_paths / syscall_profile (and their policy "
-           "spellings) as unenforced, and neither table omits them",
+           "with no mission in hand, both static tables describe every "
+           "remaining gap as unenforced, name every closed one with the "
+           "mechanism that closed it, and omit neither",
            f"sandbox_enforcement() = {json.dumps(rows, sort_keys=True)}\n"
            f"unenforced_fields() = {json.dumps(unenforced)}\n"
            f"capability_matrix() = {json.dumps(mediation, sort_keys=True)}\n"
            f"affirmative claims found: {bad or 'none'}\n"
            f"fields missing from a table: {missing or 'none'}",
            passed,
-           note=("both tables name all three and describe none of them as a "
-                 "control. The actions themselves are still not prevented -- "
-                 "egress destinations and path masks are Phase 4"
+           note=("no remaining gap is described as a control, and each closed "
+                 "one names its mechanism. What is still not prevented is the "
+                 "syscall surface, which no layer here represents"
                  if passed else
                  f"a static table claims one of the gaps: {bad or missing}"))
 
@@ -691,9 +709,30 @@ def attack_odd_specs(bench, report):
                  f"advisory_fields={list(decision.advisory_fields)} "
                  "network_destination.relied_on="
                  f"{decision.mediation['network_destination']['relied_on']}")
+    # The network is on and NO destination was declared, so nothing filters:
+    # that has to be said out loud. The same check would be WRONG for a spec
+    # that declares hosts -- there the filter exists and calling it advisory
+    # would be a caveat about a control that is applied.
     if (decision.scope.network != "none"
+            and not decision.scope.egress_hosts
             and "network_destination" not in decision.advisory_fields):
-        bad.append("policy/network_destination dropped for network='allow'")
+        bad.append("policy/network_destination dropped for an unfiltered "
+                   "network='allow'")
+    filtered = policy.PolicyEngine().evaluate(
+        capability="code_change", provider_id="probe", workspace="/w",
+        sandbox=Spec(workspace_mode="workspace-write", network="allowlist",
+                     egress_allowlist=("api.example.com",)),
+        provider_trust="distro-managed")
+    entry = filtered.mediation["network_destination"]
+    lines.append("  policy scope network='allowlist' with a declared host: "
+                 f"mediation={entry['mediation']!r} "
+                 f"advisory={'network_destination' in filtered.advisory_fields}")
+    if entry["mediation"] != policy.FULLY_MEDIATED:
+        bad.append("policy/network_destination is not mediated for a declared "
+                   "allowlist, which is the case Stage C built")
+    if "api.example.com" not in entry["mechanism"]:
+        bad.append("policy/network_destination claims a filter without naming "
+                   "what it permits")
 
     passed = not bad
     report(name,
@@ -1076,7 +1115,10 @@ def attack_cli_policy_surfaces(bench, report):
     name = "21-cli-policy-surfaces-stay-honest"
     bench.workspace("epsilon")
     store = bench.store()
-    networked = store.create(capability="sourced_report", workspace_value="epsilon",
+    # Codex by name: three providers serve this capability now, and left to
+    # inference this raises "name one with --provider" before a mission exists.
+    networked = store.create(capability="sourced_report", provider_id="codex",
+                             workspace_value="epsilon",
                              title="cloud report", prompt="p", inputs=["clip.mp4"],
                              network="allow")
     matrix = bench.cli("--json", "policy", "matrix")
@@ -1093,15 +1135,29 @@ def attack_cli_policy_surfaces(bench, report):
         problems += [f"{label}: {path} = {value!r}" for path, value
                      in _claims(blobs[label],
                                 set(GAP_FIELDS_POLICY) | set(GAP_FIELDS_SANDBOX))]
-    advisory = (blobs.get("policy show") or {}).get("advisory_fields") or []
-    if "network_destination" not in advisory:
-        problems.append("policy show: a mission created with --network allow does "
-                        "not list network_destination in advisory_fields")
+    # This provider DECLARES destinations, so the filter exists for this
+    # mission and network_destination must NOT be advisory -- an advisory field
+    # is a control the decision relies on and does not get. What must hold
+    # instead is that the surface says which destinations, so a person reading
+    # it can see what was permitted rather than a bare "enforced".
+    show_blob = blobs.get("policy show") or {}
+    advisory = show_blob.get("advisory_fields") or []
+    entry = (show_blob.get("mediation") or {}).get("network_destination") or {}
+    if "network_destination" in advisory:
+        problems.append("policy show: a mission whose destinations ARE filtered "
+                        "still lists network_destination as relied on and "
+                        "unenforced")
+    if entry.get("mediation") != "fully_mediated":
+        problems.append("policy show: a mission with a declared allowlist reports "
+                        f"network_destination = {entry.get('mediation')!r}")
+    if "api.openai.com" not in str(entry.get("mechanism", "")):
+        problems.append("policy show: the destination filter is claimed without "
+                        "naming a single destination it permits")
     passed = not problems
     report(name,
-           "the shipped CLI's own policy surfaces never describe one of the three "
-           "gaps affirmatively, and a networked mission's 'policy show' names "
-           "network_destination as relied on and unenforced",
+           "the shipped CLI's own policy surfaces never describe a remaining "
+           "gap affirmatively, and a networked mission's 'policy show' reports "
+           "its destination filter by naming what it permits",
            f"$ shadowfetch-missions --json policy matrix   (rc={matrix.returncode})\n"
            + json.dumps({k: v for k, v in (blobs.get("policy matrix") or {}).items()
                          if k in GAP_FIELDS_POLICY}, indent=2, sort_keys=True)
@@ -1187,9 +1243,13 @@ def attack_allowlist_reaches_elsewhere(bench, report):
 
     thread = threading.Thread(target=accept, daemon=True)
     thread.start()
-    # (a) the host's loopback, which the allowlist never named and which Stage B
-    #     should now put out of reach; and (b) a public address, which it also
-    #     never named and which nothing yet filters.
+    # Three destinations, one of each kind: (a) the host's loopback, which the
+    # allowlist never named and Stage B put out of reach; (b) the address the
+    # allowlist DID name, which must still be reachable or the filter has taken
+    # away the access it was asked to narrow; and (c) another public address it
+    # never named, which Stage C must now stop. The named host is resolved
+    # rather than assumed -- an allowlist that resolves to nothing is refused
+    # outright, which is a different measurement.
     program = (
         "import json,socket\n"
         "out={}\n"
@@ -1199,11 +1259,15 @@ def attack_allowlist_reaches_elsewhere(bench, report):
         "except OSError as e: out['loopback']='blocked:'+type(e).__name__\n"
         "try:\n"
         "    s=socket.create_connection(('1.1.1.1',443),8); s.close()\n"
-        "    out['internet']='REACHED'\n"
-        "except OSError as e: out['internet']='blocked:'+type(e).__name__\n"
+        "    out['allowed']='REACHED'\n"
+        "except OSError as e: out['allowed']='blocked:'+type(e).__name__\n"
+        "try:\n"
+        "    s=socket.create_connection(('8.8.8.8',443),8); s.close()\n"
+        "    out['denied']='REACHED'\n"
+        "except OSError as e: out['denied']='blocked:'+type(e).__name__\n"
         "print('RESULT '+json.dumps(out))\n" % port)
     proc = bench.firebreak("run", "--workspace", "eta", "--net", "allow",
-                           "--no-checkpoint", "--egress-host", "api.example.com",
+                           "--no-checkpoint", "--egress-host", "one.one.one.one",
                            "--", "/usr/bin/python3", "-c", program)
     thread.join(5)
     server.close()
@@ -1217,19 +1281,27 @@ def attack_allowlist_reaches_elsewhere(bench, report):
     network = (record or {}).get("enforcement", {}).get("network", {})
 
     loopback_contained = (reached.get("loopback") != "REACHED" and not received)
-    # The allowlist named api.example.com and nothing else. If any other
-    # destination was reached, the record must not call the allowlist enforced.
-    allowlist_honest = (egress.get("status") != "enforced"
-                        if reached.get("internet") == "REACHED" else True)
+    # The allowlist named one.one.one.one and nothing else. A destination it
+    # never named must not be reachable, and the one it did name must be: a
+    # filter that blocks everything would satisfy the first half while breaking
+    # the access it was asked to narrow.
+    denied_blocked = reached.get("denied") not in (None, "REACHED")
+    allowed_reached = reached.get("allowed") == "REACHED"
+    # And the record must not describe as enforced a filter that let an
+    # un-allowlisted destination through.
+    allowlist_honest = denied_blocked or egress.get("status") != "enforced"
     network_honest = (network.get("status") == "enforced") == loopback_contained
-    passed = loopback_contained and allowlist_honest and network_honest
+    offline = not allowed_reached and denied_blocked
+    passed = (loopback_contained and allowlist_honest and network_honest
+              and (allowed_reached or offline))
 
-    note = ("Loopback is contained -- the sandbox has its own network namespace, "
-            "so a destination the allowlist never named is now out of reach "
-            "whether or not anything filters destinations. The internet was "
-            "still reached, and the record says egress_allowlist not_enforced, "
-            "which is the honest description of a NAT that does not filter. "
-            "That half becomes a containment assertion when Stage C lands.")
+    note = ("Loopback is contained by the namespace, the allowlisted address "
+            "was reached, and the address the allowlist never named was not: "
+            "the filter narrows rather than merely existing. "
+            + ("This host has no route out, so the reachable half proves "
+               "nothing here and only the containment half was measured."
+               if offline else
+               f"allowed={reached.get('allowed')} denied={reached.get('denied')}"))
     if not passed:
         problems = []
         if not loopback_contained:

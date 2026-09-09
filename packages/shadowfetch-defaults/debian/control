@@ -36,6 +36,13 @@ Depends:
  xclip,
  xdg-utils
 Recommends:
+# /usr/bin/shadowfetch-update (this package) is a compatibility shim that
+# execs /usr/bin/fireproof and does nothing else. Without shadowfetch-
+# fireproof it prints where updates live and exits 1 -- honest, but useless.
+# Recommends, not Depends: a headless install that never updates through the
+# desktop path is still a working system, and a Depends here would drag the
+# update daemon onto machines that manage packages with plain apt.
+ shadowfetch-fireproof,
  shadowfetch-themes,
  shadowfetch-branding,
 # /usr/bin/shadowfetch-passport (this package) runs shadowfetch-hwscan for the

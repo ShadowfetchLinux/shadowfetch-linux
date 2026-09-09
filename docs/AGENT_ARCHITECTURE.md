@@ -589,7 +589,12 @@ described to users as controls.
 * **No UI redesign.** `missions_page.py` keeps its shape. The provider chooser is
   hidden while only one provider can perform the selected capability, so a
   single-provider install looks exactly as it did.
-* **No local AI.** `capabilities()["local_ai"]` is still `"deferred"` and the release
+* **Local AI is registered, not runnable.** `capabilities()["local_ai"]` is derived
+  from the registry rather than written down: `"deferred"` when no on-device provider
+  is registered, `"available"` when one is ready, and `"installed-unavailable"` when
+  one is approved but cannot run here. The shipped `localmodel` provider is in the
+  third state -- its bridge, `/usr/libexec/shadowfetch/local-model-bridge`, is not
+  packaged yet, so readiness reports it unavailable with a reason. The release
   gate's `REMOVED_AI_PATH` blacklist still refuses any shipped path belonging to the
   retired local-AI stack.
 

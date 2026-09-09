@@ -1,0 +1,2 @@
+{"event": "session.started", "model": "test-model:1b", "resumed": false, "session": "turn-dfde08b354c949bc"}
+{"code": "service-error", "event": "error", "message": "the local model service answered HTTP 503: {\"error\": \"the model is not available\"}"}

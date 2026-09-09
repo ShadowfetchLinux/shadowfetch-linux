@@ -1,0 +1,5 @@
+firebreak: session fb-20260909-131500-ab12cd34 started
+{"event": "session.started", "model": "test-model:1b", "resumed": false, "session": "cap-3"}
+{"delta": "Partial answer.", "event": "token"}
+{"event": "generation.done", "model": "test-model:1b", "stop": "stop", "usage": null}
+firebreak: session fb-20260909-131500-ab12cd34 ended exit=0

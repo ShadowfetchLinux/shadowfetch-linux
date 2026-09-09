@@ -4,12 +4,15 @@ data/etc/xdg/autostart/shadowfetch-ember-session.desktop etc/xdg/autostart/
 data/usr/share/shadowfetch/control-center/sfcc/__init__.py usr/share/shadowfetch/control-center/sfcc/
 data/usr/share/shadowfetch/control-center/sfcc/app.py usr/share/shadowfetch/control-center/sfcc/
 data/usr/share/shadowfetch/control-center/sfcc/busutil.py usr/share/shadowfetch/control-center/sfcc/
+data/usr/share/shadowfetch/control-center/sfcc/desktop.py usr/share/shadowfetch/control-center/sfcc/
+data/usr/share/shadowfetch/control-center/sfcc/pages.py usr/share/shadowfetch/control-center/sfcc/
+data/usr/share/shadowfetch/control-center/sfcc/plugins.py usr/share/shadowfetch/control-center/sfcc/
 data/usr/share/shadowfetch/control-center/sfcc/theme.py usr/share/shadowfetch/control-center/sfcc/
 data/usr/share/shadowfetch/control-center/sfcc/ember_page.py usr/share/shadowfetch/control-center/sfcc/
 data/usr/share/shadowfetch/control-center/sfcc/firewatch_page.py usr/share/shadowfetch/control-center/sfcc/
 data/usr/share/shadowfetch/control-center/sfcc/guide_page.py usr/share/shadowfetch/control-center/sfcc/
 data/usr/share/shadowfetch/control-center/sfcc/phoenix_page.py usr/share/shadowfetch/control-center/sfcc/
-data/usr/share/shadowfetch/control-center/sfcc/agents_page.py usr/share/shadowfetch/control-center/sfcc/
+data/usr/share/shadowfetch/control-center/sfcc/workspaces_page.py usr/share/shadowfetch/control-center/sfcc/
 data/usr/share/shadowfetch/control-center/sfcc/drivers_page.py usr/share/shadowfetch/control-center/sfcc/
 data/usr/share/shadowfetch/control-center/sfcc/software_page.py usr/share/shadowfetch/control-center/sfcc/
 data/usr/share/shadowfetch/control-center/sfcc/workbench_page.py usr/share/shadowfetch/control-center/sfcc/

@@ -4,7 +4,6 @@ No shell, network, credentials or privileged operations live in the UI.
 """
 import json
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -35,15 +34,20 @@ def _load_redact():
 
 redact = _load_redact()
 
-# Resolved against system directories only, and NOT overridable from the
-# environment: SHADOWFETCH_MISSIONS_COMMAND / SHADOWFETCH_GROK_BOT_COMMAND
-# previously let anything that could set a variable in the session choose
-# which binary the Control Center executed on the user's behalf.
-_TRUSTED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-MISSION_COMMAND = (shutil.which("shadowfetch-missions", path=_TRUSTED_PATH)
-                   or "/usr/bin/shadowfetch-missions")
-GROK_COMMAND = (shutil.which("shadowfetch-grok-bot", path=_TRUSTED_PATH)
-                or "/usr/bin/shadowfetch-grok-bot")
+# The mission engine is the thing this desktop asks every security question of
+# -- what the policy decided, which approvals exist, whether the audit chain
+# verifies -- so which binary answers is itself a security fact. It comes from
+# the one trusted program table (sfcc.desktop.PROGRAMS): an explicit absolute
+# path, a fixed set of system directories as the only fallback, no shutil.which
+# and no $PATH. It is also NOT overridable from the environment:
+# SHADOWFETCH_MISSIONS_COMMAND / SHADOWFETCH_GROK_BOT_COMMAND previously let
+# anything that could set a variable in the session choose it.
+from sfcc import desktop  # noqa: E402  (after the redactor bootstrap above)
+
+MISSION_COMMAND = desktop.trusted_program("shadowfetch-missions") or \
+    desktop.PROGRAMS["shadowfetch-missions"][0]
+GROK_COMMAND = desktop.trusted_program("shadowfetch-grok-bot") or \
+    desktop.PROGRAMS["shadowfetch-grok-bot"][0]
 
 
 def workspaces_root() -> Path:
@@ -58,7 +62,16 @@ def workspace_path(value: str) -> Path:
     if path.is_symlink():
         raise ValueError("Choose the project folder itself, not a symbolic link.")
     path = path.resolve()
-    if path.parent != root or path == root or path.name.startswith("."):
+    # The NAME, checked as a name. Being one segment under the root was the
+    # only test here, which let through everything a path happens to survive:
+    # a backslash (a separator on other filesystems and a quoting hazard in
+    # every shell that reads the manifest), a newline (which forges a line in
+    # any line-oriented record), a DEL, and a name past the length limit. Each
+    # of those was accepted here and refused by the boundary that matters.
+    name = path.name
+    if (path.parent != root or path == root or name.startswith(".")
+            or len(name) > 160 or "\\" in name
+            or any(ord(char) < 32 or ord(char) == 127 for char in name)):
         raise ValueError(f"Choose a project directly inside {root}. Create one in Workbench first, then select it here.")
     if not path.is_dir():
         raise ValueError("This project does not exist yet. Create it in Workbench, then return to New mission.")

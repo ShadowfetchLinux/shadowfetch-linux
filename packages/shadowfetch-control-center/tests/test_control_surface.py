@@ -39,8 +39,9 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QApplication
 from sfcc import missions_page
 from sfcc.missions_page import (MissionsPage, approval_line, audit_text,
-                                caveat_text, decision_text, mission_text,
-                                records_text)
+                                caveat_text, decision_text, enforcement_text,
+                                graph_text, live_sessions_text, mission_text,
+                                readiness_text, records_text)
 
 APP = QApplication.instance() or QApplication([])
 
@@ -91,6 +92,8 @@ class StubClient:
     missions = []
     detail = {}
     decision = {}
+    matrix = {}
+    records = None
     approvals = []
     audit = {}
     errors = {}
@@ -114,7 +117,11 @@ class StubClient:
         elif verb == "diff":
             callback({"diff": ""}, None)
         elif verb == "policy":
-            callback(dict(self.decision), None)
+            callback(dict(self.matrix) if arguments[1:2] == ["matrix"]
+                     else dict(self.decision), None)
+        elif verb == "records":
+            callback(dict(self.records) if self.records is not None else None,
+                     None if self.records is not None else "no records verb")
         elif verb == "approvals":
             callback([dict(row) for row in self.approvals], None)
         elif verb == "audit":
@@ -153,6 +160,52 @@ MISSION = {"id": "m1", "state": "waiting-review", "title": "T", "checkpoint": "c
            "workspace": "/w", "receipt": "/r", "attempt": 1, "cancel_requested": 0,
            "approval_id": None, "provider_id": "an-agent", "capability": "code_change",
            "config": {"network": "allow", "provider_id": "an-agent"}, "artifacts": []}
+
+RECORDS = {
+    "tasks": [
+        {"id": "t1", "seq": 1, "kind": "plan", "state": "succeeded",
+         "depends_on": []},
+        {"id": "t2", "seq": 2, "kind": "inference", "state": "running",
+         "depends_on": ["t1"]},
+        {"id": "t3", "seq": 3, "kind": "verify", "state": "queued",
+         "depends_on": ["t2", "t-missing"]},
+    ],
+    "sessions": [
+        {"id": "sess-done", "provider_id": "an-agent", "started_at": "t0",
+         "ended_at": "t1", "network_effective": "none"},
+        {"id": "sess-live", "provider_id": "an-agent", "started_at": "t2",
+         "ended_at": None, "firebreak_session": "fb-9",
+         "network_effective": "allow"},
+    ],
+    "tool_executions": [
+        {"seq": 1, "at": "t2", "tool": "apply_patch", "decision": "auto",
+         "files_changed": 3},
+    ],
+    "test_runs": [{"command": ["true"], "exit_code": 0, "result": "pass"}],
+    "reviews": [],
+}
+
+MATRIX = {
+    "network_destination": {"mediation": "observable_only",
+                            "mechanism": "a NAT that does not filter by "
+                                         "destination"},
+    "workspace_write": {"mediation": "fully_mediated",
+                        "mechanism": "bwrap binds the workspace read-only"},
+}
+
+CAPABILITIES = {
+    "summary": "Ready: An Agent. Needs attention: Other (no credential)",
+    "providers": {
+        "an-agent": {"display_name": "An Agent", "installed": True,
+                     "available": True, "requires_network_approval": True,
+                     "capabilities": ["code_change"], "reason": ""},
+        "other": {"display_name": "Other", "installed": True,
+                  "available": False, "requires_network_approval": False,
+                  "capabilities": ["media_export"], "reason": "no credential"},
+    },
+    "tools": {"bwrap": True, "ffmpeg": False},
+    "provider_errors": ["manifest for 'ghost' names no adapter"],
+}
 
 APPROVALS = [
     {"id": "appr-one", "granted_at": "2026-09-08T00:00:00+00:00",
@@ -369,6 +422,55 @@ class RenderingIsFaithful(unittest.TestCase):
         self.assertIn("result: pass", text)
         self.assertIn("decision: accept", text)
 
+    def test_the_step_graph_shows_the_order_the_engine_recorded(self):
+        text = graph_text(RECORDS)
+        self.assertIn("step 1", text)
+        self.assertIn("after: step 1", text)
+        self.assertIn("(no prerequisite recorded)", text)
+
+    def test_an_unresolvable_dependency_is_shown_not_dropped(self):
+        """A step that depends on something the reply does not contain is the
+        exact thing worth seeing, so it is printed as unknown."""
+        self.assertIn("unknown step t-missing", graph_text(RECORDS))
+
+    def test_a_reply_with_no_tasks_is_not_a_graph_with_no_steps(self):
+        self.assertIn("not reported", graph_text({}))
+        self.assertIn("no steps recorded", graph_text({"tasks": []}))
+        self.assertEqual("Not requested yet.", graph_text(None))
+
+    def test_live_is_the_engines_missing_end_time_not_a_local_guess(self):
+        text = live_sessions_text(RECORDS)
+        self.assertIn("Live sessions: 1", text)
+        self.assertIn("sess-live", text)
+        self.assertNotIn("sess-done", text)
+        self.assertIn("none", live_sessions_text({"sessions": [
+            {"id": "s", "ended_at": "t1"}]}))
+        self.assertIn("not reported", live_sessions_text({}))
+
+    def test_enforcement_prints_the_engines_own_level_and_mechanism(self):
+        text = enforcement_text(MATRIX)
+        for name, entry in MATRIX.items():
+            self.assertIn(name, text)
+            self.assertIn(entry["mediation"], text)
+            self.assertIn(entry["mechanism"][:20], text)
+
+    def test_an_absent_enforcement_report_is_not_read_as_nothing_to_report(self):
+        self.assertIn("Treat nothing here as enforced", enforcement_text({}))
+        self.assertIn("did not report", enforcement_text(None, "no such verb"))
+
+    def test_readiness_quotes_the_engine_including_what_is_not_ready(self):
+        text = readiness_text(CAPABILITIES)
+        self.assertIn("Ready: An Agent", text)
+        self.assertIn("available: no", text)
+        self.assertIn("no credential", text)
+        self.assertIn("bwrap: yes", text)
+        self.assertIn("ffmpeg: no", text)
+        self.assertIn("PROBLEM: manifest for 'ghost' names no adapter", text)
+
+    def test_no_capabilities_is_not_rendered_as_everything_ready(self):
+        self.assertIn("has not reported", readiness_text({}))
+        self.assertIn("did not report", readiness_text(None, "engine absent"))
+
     def test_audit_reports_a_broken_chain_as_broken(self):
         text = audit_text({"ok": False, "events": 9, "chained": 9, "unchained": 0,
                            "head_seq": 9, "head": "abc", "problems": ["seq 4 digest"],
@@ -422,6 +524,8 @@ class ControlPanelAsksTheEngine(unittest.TestCase):
         StubClient.audit = {"ok": True, "events": 3, "chained": 3, "unchained": 0,
                             "head_seq": 3, "head": "abcdef", "problems": [],
                             "anchor": {"verdict": "agrees", "identifier": "x"}}
+        StubClient.matrix = MATRIX
+        StubClient.records = None
         StubClient.errors = {}
         self.patcher = patch("sfcc.missions_page.MissionClient", StubClient)
         self.patcher.start()
@@ -518,8 +622,51 @@ class ControlPanelAsksTheEngine(unittest.TestCase):
         self.page._policy_ready("m1", dict(DECISION, outcome="auto"), None)
         self.assertNotIn("Decision: auto", self.page.decision_view.text())
 
-    def test_records_the_engine_does_not_publish_are_shown_as_unreported(self):
-        self.assertIn("Steps: not reported.", self.page.records_view.text())
+    def test_the_panel_asks_the_engine_for_the_mission_records(self):
+        """The engine grew a `records` verb publishing steps, sessions, tool
+        calls, tests, repository change and review. Until Stage P the panel
+        never called it and printed a sentence saying the CLI had no such
+        command -- a UI claim about the engine that had gone stale."""
+        self.assertIn(["records", "m1"], self.page.client.calls)
+
+    def test_an_engine_that_cannot_report_records_is_quoted_not_papered_over(self):
+        StubClient.records = None
+        self.page._shown("m1", dict(MISSION), None)
+        for view in (self.page.records_view, self.page.graph_view,
+                     self.page.live_view):
+            self.assertIn("did not report", view.text())
+
+    def test_records_render_steps_their_order_and_the_live_sessions(self):
+        StubClient.records = RECORDS
+        try:
+            self.page._shown("m1", dict(MISSION), None)
+            self.assertIn("tool: apply_patch", self.page.records_view.text())
+            graph = self.page.graph_view.text()
+            self.assertIn("step 2", graph)
+            self.assertIn("after: step 1", graph)
+            live = self.page.live_view.text()
+            self.assertIn("Live sessions: 1", live)
+            self.assertIn("sess-live", live)
+        finally:
+            StubClient.records = None
+
+    def test_stop_follows_the_same_engine_edge_as_cancel(self):
+        """Two buttons that stop a mission must not be able to disagree about
+        whether it can be stopped."""
+        for state in ("queued", "running", "completed", "waiting-review"):
+            with self.subTest(state=state):
+                self.page.selected = dict(MISSION, state=state)
+                self.page._buttons()
+                self.assertEqual(self.page.actions["cancel"].isEnabled(),
+                                 self.page.stop_button.isEnabled())
+
+    def test_what_the_installation_enforces_is_asked_for_once(self):
+        self.assertIn(["policy", "matrix"], self.page.client.calls)
+        before = len([c for c in self.page.client.calls if c[:2] == ["policy", "matrix"]])
+        self.page.refresh()
+        self.page._shown("m1", dict(MISSION), None)
+        self.assertEqual(before, len([c for c in self.page.client.calls
+                                      if c[:2] == ["policy", "matrix"]]))
 
 
 class RealEngineControlContract(unittest.TestCase):
@@ -534,13 +681,32 @@ class RealEngineControlContract(unittest.TestCase):
                        SHADOWFETCH_AGENT_WORKSPACES=str(root / "Workspaces"),
                        SHADOWFETCH_MISSIONS_STATE=str(root / "state"),
                        XDG_STATE_HOME=str(root / "xdg"))
+        # Name the provider explicitly. The engine refuses an ambiguous
+        # `create` once more than one provider declares the capability, which
+        # is the correct behaviour and exactly what installing a third provider
+        # does -- so a test that relied on there being only one would fail for
+        # a reason that has nothing to do with the control surface.
+        cls.provider = cls.pick_provider("code")
         cls.mission = cls.run_cli(["create", "--kind", "code", "--workspace", "demo",
                                    "--title", "T", "--prompt", "p",
+                                   "--provider", cls.provider,
                                    "--network", "allow", "--test-json", '["true"]'])
 
     @classmethod
     def tearDownClass(cls):
         cls.tmp.cleanup()
+
+    @classmethod
+    def pick_provider(cls, kind):
+        """A provider the engine says performs this kind, chosen the way the
+        New Mission dialog chooses one: from `capabilities`, by capability."""
+        capabilities = cls.run_cli(["capabilities"])
+        wanted = next((c for c, k in capabilities["capability_kinds"].items()
+                       if k == kind), None)
+        for provider_id, info in sorted(capabilities["providers"].items()):
+            if wanted in (info.get("capabilities") or []):
+                return provider_id
+        raise AssertionError("no installed provider performs " + kind)
 
     @classmethod
     def run_cli(cls, arguments, expect_success=True):
@@ -578,6 +744,7 @@ class RealEngineControlContract(unittest.TestCase):
     def test_an_approval_round_trip_carries_every_field_the_panel_renders(self):
         mission = self.run_cli(["create", "--kind", "code", "--workspace", "demo",
                                 "--title", "T2", "--prompt", "p", "--network", "allow",
+                                "--provider", self.provider,
                                 "--test-json", '["true"]'])
         granted = self.run_cli(["approve", mission["id"]])
         self.assertTrue(granted["approved"])
@@ -610,7 +777,56 @@ class RealEngineControlContract(unittest.TestCase):
     def test_a_real_mission_record_renders_without_inventing_records(self):
         mission = self.run_cli(["show", self.mission["id"]])
         self.assertIn(mission["config"]["network"], mission_text(mission))
-        self.assertIn("Steps: not reported.", records_text(mission))
+
+    def test_records_carries_every_set_the_panel_renders(self):
+        """The verb the desktop used to say did not exist.
+
+        Until Stage P `records_text` printed "the mission CLI has no command
+        that returns tasks". The engine grew `records` and the desktop never
+        asked; this pins the two together so the claim cannot go stale again in
+        either direction."""
+        records = self.run_cli(["records", self.mission["id"]])
+        for key, _heading, _fields in missions_page.RECORD_SECTIONS:
+            self.assertIn(key, records,
+                          "the panel renders a record set `records` does not "
+                          "publish")
+        rendered = records_text(records)
+        self.assertNotIn("not reported", rendered,
+                         "a set the engine published is being shown as missing")
+        for key in ("tasks", "sessions"):
+            self.assertIsInstance(records[key], list)
+        # A queued mission has no steps yet; empty and absent stay different.
+        self.assertIn("none recorded", rendered)
+        self.assertIn("no steps recorded", graph_text(records))
+        self.assertIn("none", live_sessions_text(records))
+
+    def test_the_enforcement_matrix_carries_what_the_panel_prints(self):
+        matrix = self.run_cli(["policy", "matrix"])
+        self.assertTrue(matrix)
+        rendered = enforcement_text(matrix)
+        for name, entry in matrix.items():
+            self.assertIn("mediation", entry)
+            self.assertIn("mechanism", entry)
+            self.assertIn(name, rendered)
+            self.assertIn(entry["mediation"], rendered)
+            self.assertIn(entry["mechanism"][:40], rendered)
+
+    def test_capabilities_carries_the_readiness_facts_the_dialog_shows(self):
+        """W-39 recorded `summary` as a key capabilities() does not publish.
+        Verified against the shipped engine it does -- along with per-provider
+        installed/available/reason and its own probe of the programs a mission
+        needs -- so all of it is rendered rather than none of it."""
+        capabilities = self.run_cli(["capabilities"])
+        for key in ("summary", "providers", "tools", "provider_errors"):
+            self.assertIn(key, capabilities)
+        rendered = readiness_text(capabilities)
+        self.assertIn(capabilities["summary"][:40], rendered)
+        for provider_id, info in capabilities["providers"].items():
+            self.assertIn(provider_id, rendered)
+            self.assertIn("installed", info)
+            self.assertIn("available", info)
+        for tool in capabilities["tools"]:
+            self.assertIn(tool, rendered)
 
 
 if __name__ == "__main__":

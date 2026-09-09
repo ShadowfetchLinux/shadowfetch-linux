@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "id": "localmodel",
+  "display_name": "Local model (on-device)",
+  "interface_version": 1,
+  "adapter_module": "sf_provider_localmodel",
+  "adapter_class": "LocalModelProvider",
+  "capabilities": [
+    "code_change",
+    "sourced_report"
+  ],
+  "credential_ids": [],
+  "network_policy": "none",
+  "egress_allowlist": [],
+  "sandbox_profile": {
+    "workspace_mode": "workspace-write",
+    "memory_mb": 1024,
+    "cpu_seconds": 1800,
+    "processes": 16,
+    "read_grants": [
+      "/var/lib/shadowfetch/localmodel"
+    ],
+    "masked_paths": []
+  },
+  "executable": {
+    "kind": "absolute",
+    "trust": "system",
+    "path": "/usr/libexec/shadowfetch/local-model-bridge"
+  },
+  "package": "shadowfetch-missions",
+  "version": "4.0.0",
+  "notes": "Inference that never leaves this machine. network_policy is 'none' and stays 'none': the sandbox runs under bwrap --unshare-net, so it cannot reach the host's loopback, the LAN or the internet, and granting 'allowlist' to buy a loopback connection it still would not get was rejected. The model is reached over ONE unix domain socket, model.sock inside the single directory named in read_grants, which Firebreak bind-mounts read-only; AF_UNIX is addressed by filesystem path rather than by network namespace, so that socket is connectable from a namespace with no interfaces at all, and a read-only bind is sufficient because a socket inode is not a regular file. That grant directory must contain the socket and nothing else. The program run inside is the packaged bridge declared above, which speaks the service's HTTP API over the socket and writes one normalised NDJSON protocol on stdout. There are no credentials to broker and no egress to filter."
+}

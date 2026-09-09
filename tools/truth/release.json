@@ -10,26 +10,30 @@
     "exists to remove. tools/drift_gate.py now reads that TOML as the",
     "authority for all six."
   ],
-
   "authority": "tools/release/versions/<version>.toml  ([release] table)",
-
   "urls": {
     "public_site": "https://www.shadowfetchlinux.org",
     "artifact_base": "https://www.shadowfetch.com/linux",
     "_note": "Also stated in the Makefile as PUBLIC_SITE / ARTIFACT_BASE."
   },
-
   "release_pointer": {
-    "status": "NOT IMPLEMENTED",
+    "status": "READER IMPLEMENTED, WRITER PENDING",
     "_note": [
       "ADR-0009 specifies releases/CURRENT.json, written LAST by the release",
       "publisher and read by the artifact worker, replacing latestRelease()'s",
-      "sort of an unpaginated 100-object R2 listing by upload time",
-      "(web/shadowfetch-linux-worker/src/index.js:618). Until that lands,",
-      "re-uploading an old ISO silently promotes it to 'current'.",
-      "Recorded here so the contract has one written home; the release-pointer",
-      "check reports it as BLOCKED rather than claiming a control that does",
-      "not exist."
+      "sort of an unpaginated 100-object R2 listing by upload time.",
+      "",
+      "READER (done, Stage Y): the artifact worker reads this key, validates every",
+      "field, and refuses a pointer that names another signing key, names a retired",
+      "image, or is contradicted by the bucket. Only while NO pointer exists does it",
+      "fall back to a listing -- now paginated and ordered by semantic version",
+      "instead of upload time. The document's shape is",
+      "web/shadowfetch-linux-worker/tools/release_pointer.py, and r2_prune_release.py",
+      "refuses to prune a version the published pointer does not name.",
+      "",
+      "WRITER (pending): tools/publish_release_4_0_0.py does not write this key yet,",
+      "and no releases/CURRENT.json exists in the bucket (checked 2026-09-09), so the",
+      "worker is still running on the fallback. Half a control is not a control."
     ],
     "key": "releases/CURRENT.json",
     "written_by": "tools/publish_release_4_0_0.py",

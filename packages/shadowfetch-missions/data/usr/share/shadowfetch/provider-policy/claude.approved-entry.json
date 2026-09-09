@@ -1,0 +1,24 @@
+{
+  "providers": {
+    "claude": {
+      "approved_note": "Reviewed as part of the Shadowfetch release. Runs the Claude Code CLI in --bare print mode: no host configuration, no hooks, no plugins, and Anthropic authentication strictly from the declared identity. Its program is a user-space runtime install, which is why executable trust is user-runtime and not system.",
+      "capabilities": [
+        "code_change",
+        "sourced_report"
+      ],
+      "credential_ids": [
+        "ANTHROPIC_API_KEY"
+      ],
+      "egress_allowlist": [
+        "api.anthropic.com"
+      ],
+      "executable_trust": "user-runtime",
+      "interface_version": 1,
+      "manifest_sha256": "c6acd280b31d7ff654cda61c6e736b4a857e54ae89bfb0309dcbe8e62f46ad96",
+      "network_policy": "allowlist",
+      "package": "shadowfetch-missions",
+      "trust": "distro-managed"
+    }
+  },
+  "schema_version": 1
+}

@@ -632,8 +632,11 @@ class FireEdition215Tests(unittest.TestCase):
             DEFAULTS / "data/usr/bin/shadowfetch-facts",
             PASSPORT,
             CONTROL / "usr/share/shadowfetch/control-center/sfcc/app.py",
+            CONTROL / "usr/share/shadowfetch/control-center/sfcc/pages.py",
             CONTROL / "usr/share/shadowfetch/control-center/sfcc/guide_page.py",
-            CONTROL / "usr/share/shadowfetch/control-center/sfcc/agents_page.py",
+            # agents_page.py became workspaces_page.py; `agents` is still an
+            # accepted route word, which is the part a person could notice.
+            CONTROL / "usr/share/shadowfetch/control-center/sfcc/workspaces_page.py",
             CONTROL / "usr/share/shadowfetch/control-center/sfcc/firewatch_page.py",
         )
         with tempfile.TemporaryDirectory() as temporary:
@@ -815,9 +818,17 @@ class FireEdition215Tests(unittest.TestCase):
             ROOT / "packages/shadowfetch-control-center/debian/"
             "shadowfetch-control-center.install"
         ).read_text()
-        self.assertRegex(app, r"SECTIONS\s*=\s*\[\s*\(\"missions\"")
-        self.assertIn('"passport": "guide"', app)
-        self.assertIn("GuidePage(self.open_route)", app)
+        # Order, routing and construction all moved into the one registry.
+        # app.py reads it (`SECTIONS = pages.REGISTRY`) and holds no list, no
+        # alias map and no page constructor of its own -- which is the point of
+        # W-31, so asserting them here would be asserting the old shape back.
+        registry = (
+            CONTROL / "usr/share/shadowfetch/control-center/sfcc/pages.py"
+        ).read_text()
+        self.assertIn("SECTIONS = pages.REGISTRY", app)
+        self.assertRegex(registry, r"REGISTRY[^(]*\(\s*\n\s*Section\(\"missions\"")
+        self.assertIn('"passport"', registry)
+        self.assertIn("GuidePage", registry)
         self.assertIn("shadowfetch-passport", guide)
         self.assertIn("Nothing is uploaded", guide)
         self.assertGreaterEqual(welcome.count("Check this computer"), 2)
@@ -1068,29 +1079,64 @@ class FireEdition215Tests(unittest.TestCase):
             r"recommended.*\^\(nvidia-open\|cuda-drivers\)",
         )
 
-    def test_update_simulates_twice_and_refuses_unverified_removals(self):
+    def test_update_is_a_thin_shim_over_fireproof(self):
+        """shadowfetch-update is a compatibility SURFACE, not an updater.
+
+        It used to be a second complete updater: its own `apt-get update`,
+        its own `apt-get -s full-upgrade`, its own two-entry removal
+        allowlist, its own sha256 plan fingerprint, and its own copy of
+        snapper_max_number / snapper_first_pre_after / phoenix_available.
+        It also relabelled the same snapper Point Fireproof labels - with a
+        different description and no fireproof=pre userdata - and then
+        recorded that Point NOWHERE, so a later `fireproof rollback` would
+        have restored the PREVIOUS transaction's state.
+
+        The mechanism now lives once, in fireproofd. What this file must
+        still do is translate the old command line and get out of the way.
+        """
         update = (DEFAULTS / "data/usr/bin/shadowfetch-update").read_text()
-        self.assertIn("apt-get -s", update)
-        self.assertIn("/^Remv /", update)
-        self.assertIn("validate_removals", update)
-        self.assertIn("plan_fingerprint", update)
-        self.assertIn("will not apply unverified package removals", update)
-        self.assertIn("libprocesscore10", update)
-        self.assertIn("libprocesscore11", update)
-        self.assertIn("qml6-module-org-kde-milou", update)
-        self.assertIn("transaction=(--no-remove full-upgrade)", update)
-        self.assertIn("flock -n", update)
-        self.assertIn("80snapper", update)
-        self.assertIn("write_snapper_rows", update)
-        self.assertIn("snapper_first_pre_after", update)
-        self.assertRegex(
-            update,
-            re.compile(r"load_migration_plan\(\).*?\n    return 0\n}", re.S),
-        )
-        self.assertNotRegex(update, r"\$\([^)]*snapper_rows")
-        self.assertNotRegex(update, r"snapper[^\n]*create")
-        self.assertIn("trap cleanup EXIT", update)
-        self.assertNotRegex(update, r"trap\s+['\"]")
+        body = "\n".join(
+            line for line in update.split("SFHELP", 2)[0].splitlines()
+            if not line.lstrip().startswith("#"))
+        self.assertIn("FIREPROOF=/usr/bin/fireproof", body)
+        self.assertIn('exec "$FIREPROOF" "$verb"', update)
+        for gone in ("apt-get", "snapper", "sudo ", "flock", "sha256sum",
+                     "validate_removals", "plan_fingerprint",
+                     "libprocesscore10", "qml6-module-org-kde-milou",
+                     "load_migration_plan"):
+            self.assertNotIn(gone, body, gone)
+        self.assertLess(len(update.splitlines()), 150)
+
+    def test_update_maps_the_legacy_options_onto_the_one_vocabulary(self):
+        update = (DEFAULTS / "data/usr/bin/shadowfetch-update").read_text()
+        for option, verb in (("--check", "check"), ("--verify", "verify"),
+                             ("--rollback", "rollback")):
+            self.assertRegex(update, re.escape(option) + r"\)\s*verb=" + verb)
+        self.assertRegex(update, r'""\)\s*verb=update')
+        for step in ("simulate", "approve", "commit", "verify", "rollback"):
+            self.assertIn(step, update)
+
+    def test_the_2_1_3_migration_still_has_an_owner(self):
+        """The retirement moved; it was not dropped.
+
+        shadowfetch-update used to fold the one-time 2.1.3 AI package
+        retirement into its transaction. That is now ONLY
+        shadowfetch-migrate-2.1.3-ai.service, gated on the same marker and
+        the same sha256-verified manifest. The behavioural difference is
+        real: the retirement completes at the next boot rather than inside
+        an interactive update.
+        """
+        unit = (DEFAULTS / "data/usr/lib/systemd/system"
+                / "shadowfetch-migrate-2.1.3-ai.service").read_text()
+        self.assertIn(
+            "ConditionPathExists=/var/lib/shadowfetch/migrations/"
+            "2.1.3-ai.pending", unit)
+        self.assertIn("ExecStart=/usr/libexec/shadowfetch-migrate-2.1.3-ai",
+                      unit)
+        self.assertIn("WantedBy=multi-user.target", unit)
+        helper = MIGRATION_HELPER.read_text()
+        self.assertIn("MANIFEST_SHA256=", helper)
+        self.assertIn("sha256sum --check --status", helper)
 
     def test_branding_refreshes_os_release_after_package_updates(self):
         branding = ROOT / "packages/shadowfetch-branding/debian"
@@ -1109,104 +1155,80 @@ class FireEdition215Tests(unittest.TestCase):
         path.chmod(0o755)
 
 
-    @unittest.skipUnless(Path("/usr/bin/flock").exists(), "Linux failure-injection test")
-    def test_update_rejects_solver_removal_before_apply(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            fake = root / "bin"
-            fake.mkdir()
-            marker = root / "upgrade-applied"
-            self._write_executable(
-                fake / "df",
-                """
-                printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\n'
-                printf 'fake 1 1 99999999 1%% /\\n'
-                """,
-            )
-            self._write_executable(fake / "curl", "exit 0\n")
-            self._write_executable(fake / "upower", "exit 0\n")
-            self._write_executable(fake / "fuser", "exit 1\n")
-            self._write_executable(fake / "dpkg", "exit 0\n")
-            self._write_executable(fake / "apt", "exit 0\n")
-            self._write_executable(fake / "sudo", 'exec "$@"\n')
-            self._write_executable(
-                fake / "apt-get",
-                f"""
-                case " $* " in
-                    *" -s "*) printf 'Remv protected-package [1.0]\\n' ;;
-                    *" full-upgrade "*) touch {marker!s} ;;
-                esac
-                """,
-            )
-            env = os.environ.copy()
-            env.update({
-                "HOME": str(root / "home"),
-                "XDG_STATE_HOME": str(root / "state"),
-                "PATH": f"{fake}:/usr/bin:/bin",
-            })
-            (root / "home").mkdir()
-            result = subprocess.run(
-                [str(DEFAULTS / "data/usr/bin/shadowfetch-update"), "--check"],
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            self.assertNotEqual(0, result.returncode)
-            self.assertIn("Unverified proposed removals", result.stdout)
-            self.assertIn("protected-package", result.stdout)
-            self.assertFalse(marker.exists(), "upgrade ran despite the removal plan")
+    def test_update_runs_no_package_tooling_of_its_own(self):
+        """Booby-trapped PATH: the shim must touch none of it.
 
-    @unittest.skipUnless(Path("/usr/bin/flock").exists(), "Linux transition test")
-    def test_update_accepts_only_a_verified_debian_replacement(self):
+        The old updater ran df, curl, upower, fuser, dpkg, apt-get, sudo
+        and snapper before it did anything. The replacement runs exactly
+        one program, by absolute path. Anything it found on PATH would be
+        a program the CALLER chose for a root package transaction.
+        """
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             fake = root / "bin"
             fake.mkdir()
-            marker = root / "upgrade-applied"
-            self._write_executable(
-                fake / "df",
-                """
-                printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
-                printf 'fake 1 1 99999999 1%% /\n'
-                """,
-            )
-            self._write_executable(fake / "curl", "exit 0\n")
-            self._write_executable(fake / "upower", "exit 0\n")
-            self._write_executable(fake / "fuser", "exit 1\n")
-            self._write_executable(fake / "dpkg", "exit 0\n")
-            self._write_executable(fake / "apt", "exit 0\n")
-            self._write_executable(fake / "sudo", 'exec "$@"\n')
-            self._write_executable(
-                fake / "apt-get",
-                f"""
-                case " $* " in
-                    *" -s "*)
-                        printf 'Remv milou [4:6.6.5-2]\\n'
-                        printf 'Inst qml6-module-org-kde-milou (4:6.7.2-2)\\n'
-                        ;;
-                    *" full-upgrade "*) touch {marker!s} ;;
-                esac
-                """,
-            )
+            marker = root / "ran"
+            for name in ("df", "curl", "upower", "fuser", "dpkg", "apt",
+                         "apt-get", "sudo", "snapper", "flatpak", "flock",
+                         "sha256sum", "findmnt", "fireproof"):
+                self._write_executable(
+                    fake / name, "echo %s >> %s\n" % (name, marker))
             env = os.environ.copy()
-            env.update({
-                "HOME": str(root / "home"),
-                "XDG_STATE_HOME": str(root / "state"),
-                "PATH": f"{fake}:/usr/bin:/bin",
-            })
-            (root / "home").mkdir()
-            result = subprocess.run(
-                [str(DEFAULTS / "data/usr/bin/shadowfetch-update"), "--check"],
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-            self.assertIn("Verified replacement or retirement removals", result.stdout)
-            self.assertIn("milou", result.stdout)
-            self.assertFalse(marker.exists(), "check mode applied the upgrade")
+            env["PATH"] = "%s:/usr/bin:/bin" % fake
+            for args in (["--help"], ["--version"], ["--nonsense"]):
+                subprocess.run(
+                    [str(DEFAULTS / "data/usr/bin/shadowfetch-update"), *args],
+                    env=env, capture_output=True, text=True, timeout=20)
+            self.assertFalse(
+                marker.exists(),
+                marker.read_text() if marker.exists() else "")
+
+            if Path("/usr/bin/fireproof").exists():
+                return   # the exec would run the real updater; see below
+            for args in ([], ["--check"], ["--verify"], ["--rollback"]):
+                result = subprocess.run(
+                    [str(DEFAULTS / "data/usr/bin/shadowfetch-update"), *args],
+                    env=env, capture_output=True, text=True, timeout=20)
+                self.assertEqual(1, result.returncode)
+                self.assertIn("/usr/bin/fireproof is not installed",
+                              result.stderr)
+            self.assertFalse(marker.exists(),
+                             "the shim ran a program it found on PATH")
+
+    def test_removal_review_is_now_fireproofs_job_not_an_allowlist(self):
+        """State the control transfer instead of pretending nothing changed.
+
+        The old updater REFUSED any removal outside a hardcoded two-entry
+        allowlist (libprocesscore10, milou) plus the migration set. That
+        control is GONE - not moved. What Fireproof does instead is
+        weaker in one way and stronger in another, and this test asserts
+        the mechanism that actually exists:
+
+          * every removal is listed to the user before anything is locked
+            or downloaded (analyze is side-effect free),
+          * any RED package - essential, required/important priority, or a
+            boot/session/network name - flips the dialog default to
+            "Don't proceed",
+          * the human approves one change_set_hash, and a set that drifts
+            between approval and commit is abandoned.
+
+        So removals are no longer refused by a list nobody maintained;
+        they are surfaced and require an explicit approval of that exact
+        set. If a future change claims the old refusal is still enforced,
+        this test is where that claim gets checked.
+        """
+        daemon = (ROOT / "packages/shadowfetch-fireproof/data/usr/libexec"
+                  / "fireproofd").read_text()
+        self.assertIn('"removals": removals', daemon)
+        self.assertIn('"default_dont_proceed"', daemon)
+        self.assertIn("def _is_red(", daemon)
+        self.assertIn("live_hash != expected_hash", daemon)
+        # And the allowlist really is gone from the product, not relocated.
+        for name in ("libprocesscore10", "qml6-module-org-kde-milou"):
+            self.assertNotIn(name, daemon)
+            self.assertNotIn(
+                name,
+                (DEFAULTS / "data/usr/bin/shadowfetch-update").read_text())
 
 
 if __name__ == "__main__":

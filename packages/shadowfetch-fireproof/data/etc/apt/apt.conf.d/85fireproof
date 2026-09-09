@@ -1,5 +1,17 @@
 // Shadowfetch Fireproof: APT periodic policy.
 //
+// THE ONLY APT::Periodic DECLARATION IN THE PRODUCT (Stage U).
+// shadowfetch-defaults used to ship 52shadowfetch-unattended.conf, which set
+// Unattended-Upgrade "1" and Remove-Unused-Dependencies "true". Both files
+// shipped; which one won was decided by nothing but filename order, and it
+// was this one - so the documented behaviour ("auto-apply security updates")
+// was never the actual behaviour. Had the other file won, packages would
+// have been installed AND REMOVED with no analyze, no approval, no verify
+// battery and no recorded Phoenix Point, leaving the rollback record
+// describing a different transaction than the one on disk. It was deleted,
+// and packages/shadowfetch-fireproof/tests/test_single_update_authority.py
+// fails if a second declaration appears anywhere under packages/.
+//
 // Package LISTS refresh daily so the Fireproof badge and analyze screen
 // stay honest without any daemon of ours touching the network. Nothing
 // is ever downloaded or installed unattended: downloads happen only in

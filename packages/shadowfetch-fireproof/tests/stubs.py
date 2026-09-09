@@ -13,6 +13,16 @@ import types
 
 FIREPROOFD = os.path.abspath(os.path.join(
     os.path.dirname(__file__), "..", "data", "usr", "libexec", "fireproofd"))
+# sfupdate.trusted deliberately refuses to re-implement phoenix.trusted's
+# classifier, so the daemon needs shadowfetch-phoenix's module directory on
+# sys.path. Installed, both live in /usr/lib/shadowfetch and fireproofd's
+# own path finds them; in the SOURCE tree they are in two package
+# directories, so the test harness bridges that - and only that.
+PHOENIX_LIB = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "..", "..", "shadowfetch-phoenix", "usr",
+    "lib", "shadowfetch"))
+SFUPDATE_LIB = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "..", "data", "usr", "lib", "shadowfetch"))
 POSTBOOT = os.path.abspath(os.path.join(
     os.path.dirname(__file__), "..", "data", "usr", "libexec",
     "fireproof-postboot"))
@@ -20,6 +30,9 @@ FIXTURES = os.path.join(os.path.dirname(__file__), "fixtures")
 
 
 def install_stubs():
+    for lib in (SFUPDATE_LIB, PHOENIX_LIB):
+        if lib not in sys.path:
+            sys.path.insert(0, lib)
     if getattr(sys.modules.get("apt"), "_fireproof_stub", False):
         return
 

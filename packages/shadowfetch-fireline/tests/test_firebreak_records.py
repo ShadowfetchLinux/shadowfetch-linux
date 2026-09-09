@@ -8,9 +8,12 @@ could not be inspected at all and a crash in between left neither the start nor
 the end.
 
 And every field has to separate what a caller ASKED FOR from what the kernel is
-actually told. Firebreak has two network postures and no masking flag, so an
-egress allowlist and a masked path reach nothing whatsoever; a record that did
-not say so would be describing protection that does not exist.
+actually told. When these tests were written an egress allowlist and a masked
+path reached nothing whatsoever, and they asserted exactly that: a record that
+claimed otherwise would have been describing protection that did not exist.
+Stages C and E built both controls, so the same tests now hold the argv to the
+mechanism that is really applied -- read out of what is about to be spawned,
+never echoed back from the request.
 """
 import argparse
 import importlib.machinery
@@ -21,6 +24,7 @@ import os
 import pwd
 import shutil
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -46,11 +50,14 @@ def fake_which(name, mode=os.F_OK | os.X_OK, path=None):
 class FakeSandbox:
     """A sandbox that never runs. What is under test is the record, not bwrap.
 
-    Since Stage B a networked session hands bwrap an --info-fd and waits for the
-    child pid before attaching the NAT, so a stub that writes nothing there
-    leaves the launcher waiting on a pipe that never speaks -- and the launcher
-    is right to refuse in that case. The stub therefore answers on the info fd
-    the way bwrap does, and the NAT helper is stubbed separately.
+    A networked session does not create its namespace inside bwrap any more.
+    Stage C moved it out: an `unshare --user --net` helper makes the namespace,
+    reports its own pid through a file, waits on a FIFO while the NAT is
+    attached from outside, installs the egress allowlist itself and only then
+    execs bwrap. The launcher polls for that pid file and REFUSES the run if it
+    never appears -- correctly, since a sandbox that started before the NAT and
+    the filter existed would have run unfiltered. So the stub writes the pid
+    file the way the real helper does; the NAT is stubbed separately.
     """
 
     def __init__(self, rc=0, before=None):
@@ -58,20 +65,37 @@ class FakeSandbox:
         self.before = before
         self.spawned = None
         self.argv = []
+        # What bwrap would have READ. The resolver file is temporary and the
+        # launcher deletes it on the way out, so a test that opened it
+        # afterwards would be reading a file the sandbox no longer has either.
+        self.resolv = None
 
     def __call__(self, cmd, **kwargs):
         if self.before is not None:
             self.before()
         self.spawned = list(cmd)
         self.argv = list(cmd)
-        info = None
-        for index, value in enumerate(cmd):
-            if value == "--info-fd":
-                info = int(cmd[index + 1])
-        if info is not None:
-            # Write, do NOT close: the descriptor belongs to the launcher, which
-            # closes its own copy after Popen the way it would for real bwrap.
-            os.write(info, json.dumps({"child-pid": os.getpid()}).encode())
+        for index, value in enumerate(cmd[:-2]):
+            if value == "--ro-bind" and cmd[index + 2] == "/etc/resolv.conf":
+                self.resolv = Path(cmd[index + 1]).read_text(encoding="utf-8")
+        if fb.EGRESS_HELPER in cmd:
+            # Arguments 1 and 2 of the helper are the path it reports the
+            # namespace pid through and the FIFO it waits on. Nothing here
+            # unshares anything: the launcher only needs a pid to hand
+            # slirp4netns, and slirp is stubbed too. But the FIFO has to be
+            # drained by SOMEONE -- the launcher opens it for writing to release
+            # the payload, and that open blocks until a reader arrives. A stub
+            # that skipped it would hang the launcher, which is the real
+            # helper's ordering guarantee working exactly as intended.
+            index = cmd.index(fb.EGRESS_HELPER)
+            with open(cmd[index + 1], "w") as handle:
+                handle.write(str(os.getpid()))
+            def drain(path=cmd[index + 2]):
+                with open(path) as handle:
+                    handle.read(1)
+
+            reader = threading.Thread(target=drain, daemon=True)
+            reader.start()
         return self
 
     def wait(self, timeout=None):
@@ -85,6 +109,33 @@ class FakeSandbox:
 
     def kill(self):
         pass
+
+
+def unshares_network(argv):
+    """Whether this argv creates a network namespace. Two mechanisms count.
+
+    bwrap's own --unshare-net makes one for posture 'none'. Posture 'allow'
+    needs the namespace to exist BEFORE bwrap, so that the NAT and the egress
+    filter can be installed into the same namespace the sandbox will run in; an
+    `unshare --net` helper makes it there and bwrap inherits it. bwrap must NOT
+    also be given --unshare-net in that case or it would make a second, empty
+    one and leave the filtered namespace behind. Asserting only on bwrap's flag
+    would therefore read a correctly contained session as an uncontained one.
+    """
+    if "--unshare-net" in argv:
+        return True
+    for index, value in enumerate(argv):
+        if os.path.basename(value) == "unshare" and "--net" in argv[index:]:
+            return True
+    return False
+
+
+def bwrap_argv(argv):
+    """The bwrap invocation alone, without whatever wraps it."""
+    for index, value in enumerate(argv):
+        if os.path.basename(value) == "bwrap":
+            return argv[index:]
+    return []
 
 
 class RecordTests(unittest.TestCase):
@@ -325,6 +376,11 @@ class RecordTests(unittest.TestCase):
 
             before  host_loopback REACHED   abstract REACHED   internet REACHED
             after   host_loopback blocked   abstract blocked   internet REACHED
+
+        Stage C then moved the namespace out of bwrap so that an egress filter
+        could be installed into it before the payload runs. The containment
+        above was re-measured after that move and is unchanged; what moved is
+        WHO makes the namespace, so this reads it from the helper.
         """
         code, spawned = self.execute("--net", "allow")
         self.assertEqual(code, 0)
@@ -332,8 +388,11 @@ class RecordTests(unittest.TestCase):
         self.assertEqual(start["network_requested"], "allow")
         self.assertEqual(start["network_effective"], "allow")
         self.assertEqual(start["enforcement"]["network"]["status"], "enforced")
-        self.assertIn("--unshare-net", spawned.argv,
-                      "posture 'allow' did not create a network namespace")
+        self.assertTrue(unshares_network(spawned.argv),
+                        "posture 'allow' did not create a network namespace")
+        self.assertNotIn("--unshare-net", bwrap_argv(spawned.argv),
+                         "bwrap made a SECOND namespace, which the NAT and the "
+                         "egress filter were never installed into")
         self.assertIn("disable-host-loopback",
                       start["enforcement"]["network"]["mechanism"])
 
@@ -341,7 +400,61 @@ class RecordTests(unittest.TestCase):
         for posture in ("none", "allow"):
             with self.subTest(net=posture):
                 _, spawned = self.execute("--net", posture)
-                self.assertIn("--unshare-net", spawned.argv)
+                self.assertTrue(unshares_network(spawned.argv),
+                                "posture " + posture + " ran on the host network")
+
+    def test_a_networked_sandbox_gets_a_resolver_it_can_actually_reach(self):
+        """The host's /etc/resolv.conf is useless inside a network namespace.
+
+        It names 127.0.0.53, the host's stub listener, which inside the
+        sandbox's own namespace is the sandbox's own empty loopback. Binding it
+        gave a networked sandbox a resolver that answers nothing, and since
+        every cloud provider addresses its API by name, every turn failed at
+        getaddrinfo while an IP address was reachable the whole time. The NAT
+        runs its own forwarder; the argv has to point at that one.
+        """
+        _, spawned = self.execute("--net", "allow")
+        argv = spawned.argv
+        bound = [index for index, value in enumerate(argv)
+                 if value == "--ro-bind" and argv[index + 2] == "/etc/resolv.conf"]
+        self.assertEqual(len(bound), 1,
+                         "a networked sandbox got no resolver, or two of them")
+        self.assertIsNotNone(spawned.resolv)
+        self.assertEqual(spawned.resolv.count("nameserver"), 1)
+        self.assertIn("nameserver " + fb.SLIRP_RESOLVER, spawned.resolv)
+        self.assertNotIn("127.0.0.53", spawned.resolv,
+                         "the sandbox was pointed at the host's stub resolver")
+
+    def test_an_unnetworked_sandbox_is_not_handed_a_nat_resolver(self):
+        """Posture 'none' has no NAT, so 10.0.2.3 answers nothing there either.
+        It keeps the host's file, which is equally unreachable and equally
+        honest -- what must not happen is a resolver that implies a route."""
+        _, spawned = self.execute("--net", "none")
+        self.assertNotIn(fb.SLIRP_RESOLVER, spawned.resolv or "")
+
+    def test_a_refusal_before_the_sandbox_starts_is_still_recorded(self):
+        """The audit directory has to show that somebody asked.
+
+        An egress host that resolves to no address is refused rather than run
+        unfiltered, and that refusal happens while the launch argv is being
+        built -- before the started record exists. For a while it therefore
+        left nothing behind at all: no session file, no reason, no trace that a
+        run had been attempted with an allowlist nobody could satisfy.
+        """
+        code, _ = self.execute("--net", "allow",
+                               "--egress-host", "nothing.here.invalid")
+        self.assertNotEqual(code, 0, "an unsatisfiable allowlist started anyway")
+        records = self.records()
+        kinds = [r["record"] for r in records]
+        self.assertEqual(kinds, ["refused"],
+                         "a refused run left a started or ended record instead")
+        refusal = records[0]
+        self.assertEqual(refusal["session"], "s-record")
+        self.assertEqual(refusal["refused_before"], "sandbox-launch")
+        self.assertEqual(refusal["egress_allowlist_requested"],
+                         ["nothing.here.invalid"])
+        self.assertEqual(refusal["network_requested"], "allow")
+        self.assertIn("nothing.here.invalid", refusal["reason"])
 
     def test_the_default_posture_records_that_the_caller_asked_for_nothing(self):
         self.execute()
@@ -349,17 +462,84 @@ class RecordTests(unittest.TestCase):
         self.assertIsNone(start["network_requested"])
         self.assertEqual(start["network_effective"], "none")
 
-    # -- recorded, and applied by nothing ----------------------------------- #
-    def test_an_egress_allowlist_changes_nothing_and_says_it_changes_nothing(self):
+    # -- asked for, and now applied ----------------------------------------- #
+    def test_an_egress_allowlist_on_an_unrouted_namespace_is_enforced_by_absence(self):
+        """Posture 'none' attaches no NAT, so there is no route to filter.
+
+        The argv is identical with and without the allowlist and that is
+        correct -- nothing was installed. What must not happen is the record
+        claiming an nftables ruleset that was never written: the control holds
+        here because the namespace has no way out at all, and the mechanism has
+        to say which of the two facts is the one that ran.
+        """
         _, plain = self.execute()
         _, listed = self.execute("--egress-host", "api.example.com",
                                  "--egress-host", "cdn.example.com")
         self.assertEqual(plain.spawned, listed.spawned,
-                         "an egress allowlist appeared to alter the sandbox")
+                         "an allowlist altered a sandbox that has no route")
         start = self.records()[2]
         self.assertEqual(start["egress_allowlist_requested"],
                          ["api.example.com", "cdn.example.com"])
-        self.assertEqual(start["enforcement"]["egress_allowlist"]["status"], "not_enforced")
+        entry = start["enforcement"]["egress_allowlist"]
+        self.assertEqual(entry["status"], "enforced")
+        self.assertIn("no route exists", entry["mechanism"])
+        self.assertNotIn("nftables", entry["mechanism"],
+                         "the record claims a ruleset that was never installed")
+
+    def test_an_egress_allowlist_reaches_a_real_filter_and_says_so(self):
+        """This asserted the opposite until Stage C, and it was right to.
+
+        --egress-host was accepted and applied by nothing: a provider could
+        declare two permitted hosts, the receipt printed them, and the agent
+        reached the whole internet. The hosts are resolved on the host at
+        launch and become an nftables ruleset with a default DROP, installed
+        into the sandbox's own namespace by the process that created it,
+        before the payload runs. Measured through the real Firebreak:
+
+            with allowlist   allowed REACHED   denied blocked:TimeoutError
+            no allowlist     allowed REACHED   denied REACHED
+            net=none         allowed blocked   denied blocked
+        """
+        # Resolution is stubbed: what is under test is the ruleset built from
+        # an answer, not the answer. A test that asked real DNS for a real name
+        # would be measuring the network it is supposed to be filtering.
+        resolve = patch.object(fb, "egress_addresses",
+                               lambda hosts: {h: ["203.0.113.7"] for h in hosts})
+        _, plain = self.execute("--net", "allow")
+        with resolve:
+            _, listed = self.execute("--net", "allow",
+                                     "--egress-host", "api.example.com")
+        self.assertNotEqual(plain.spawned, listed.spawned,
+                            "an egress allowlist did not alter the sandbox")
+        joined = " ".join(listed.spawned)
+        self.assertIn("ip daddr 203.0.113.7 counter accept", joined,
+                      "the resolved address reaches no ruleset")
+        self.assertIn("policy drop", joined,
+                      "the ruleset does not default to DROP, so an allowlist "
+                      "that matched nothing would permit everything")
+        self.assertNotIn("203.0.113.7", " ".join(plain.spawned),
+                         "a session that declared no host got a filter anyway")
+        start = self.records()[2]
+        self.assertEqual(start["egress_allowlist_requested"], ["api.example.com"])
+        entry = start["enforcement"]["egress_allowlist"]
+        self.assertEqual(entry["status"], "enforced")
+        self.assertIn("nftables", entry["mechanism"])
+
+    def test_the_recorded_argv_is_the_argv_that_was_spawned(self):
+        """A record of a DIFFERENT command line than the one that ran describes
+        a containment nobody applied. Posture 'allow' is where these could
+        drift: the namespace helper and the egress filter are spliced in around
+        bwrap, and for a while the record held only the bwrap half -- so its own
+        enforcement row read the missing --unshare-net as a namespace that was
+        never created, on a session that was fully contained."""
+        for posture in ("none", "allow"):
+            with self.subTest(net=posture):
+                _, spawned = self.execute("--net", posture)
+                # The LAST start record: both postures append to one session
+                # file here, and index 0 would compare the second run's argv
+                # against the first run's record.
+                started = [r for r in self.records() if r["record"] == "started"]
+                self.assertEqual(started[-1]["sandbox_argv"], spawned.argv)
 
     def test_a_masked_path_changes_the_sandbox_and_says_so(self):
         """This asserted the opposite until Stage E, and it was right to.
@@ -396,7 +576,9 @@ class RecordTests(unittest.TestCase):
 
     def test_no_field_names_a_restriction_firebreak_does_not_apply(self):
         """Only the REQUESTED list may be recorded. A bare `egress_allowlist`
-        or `masked_paths` key reads as a control that was applied."""
+        or `masked_paths` key would read as the applied set, and the applied
+        set is not the asked-for set: a name that resolves to nothing today
+        contributes no address to the ruleset."""
         self.execute("--egress-host", "api.example.com", "--mask-path", "/etc/hosts")
         start = self.records()[0]
         for field in ("egress_allowlist", "masked_paths", "network", "limits"):
@@ -445,7 +627,10 @@ class RecordTests(unittest.TestCase):
         start = self.records()[0]
         self.assertEqual(start["agent_command"], ["true"])
         self.assertEqual(start["sandbox_argv"][0], "systemd-run")
-        self.assertIn("bwrap", start["sandbox_argv"])
+        # An ABSOLUTE bwrap, not a name for PATH to answer: the argv is the
+        # record of what confined this session, and a bare name would record a
+        # question rather than an answer.
+        self.assertIn("/usr/bin/bwrap", start["sandbox_argv"])
         self.assertEqual(start["sandbox_argv"][-1], "true")
 
     def test_the_resolved_executable_uses_the_sandbox_path(self):

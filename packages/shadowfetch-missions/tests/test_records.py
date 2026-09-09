@@ -114,7 +114,7 @@ class RecordedObjects(MigrationHarness):
         (self.ws / "facts.md").write_text("The launch is Friday.\n")
 
     def run_report(self):
-        mission = self.store.create(kind="report", workspace_value="proj", title="t",
+        mission = self.store.create(kind="report", provider_id="codex", workspace_value="proj", title="t",
                                     prompt="p", inputs=["facts.md"], network="allow")
         mission_approvals.approve(self.store, mission)
         with mock.patch.object(sf.Executor, "agent_turn", return_value="Friday. [S1:L1]"):
@@ -179,7 +179,7 @@ class RecordedObjects(MigrationHarness):
         self.assertEqual(self.store.events(mid)[-1]["event"], "waiting-review")
 
     def test_a_failed_review_summary_does_not_lose_the_mission(self):
-        mission = self.store.create(kind="report", workspace_value="proj", title="t",
+        mission = self.store.create(kind="report", provider_id="codex", workspace_value="proj", title="t",
                                     prompt="p", inputs=["facts.md"], network="allow")
         mission_approvals.approve(self.store, mission)
         with mock.patch.object(sf.Executor, "agent_turn", return_value="Friday. [S1:L1]"), \

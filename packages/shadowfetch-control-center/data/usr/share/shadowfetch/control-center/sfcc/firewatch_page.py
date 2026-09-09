@@ -71,6 +71,10 @@ class FirewatchPage(QWidget):
 
     _TAB_ROUTES = {"overview": 0, "heatmap": 1, "heat-map": 1, "heat": 1}
 
+    @classmethod
+    def build(cls, context):
+        return cls(context.firewatch)
+
     def __init__(self, firewatch: busutil.FirewatchClient):
         super().__init__()
         self._firewatch = firewatch

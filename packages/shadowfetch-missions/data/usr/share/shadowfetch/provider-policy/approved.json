@@ -1,5 +1,24 @@
 {
   "providers": {
+    "claude": {
+      "approved_note": "Reviewed 2026-09-09 for the 4.0.0 release. One credential identity and one egress destination, api.anthropic.com, which is what a real run contacts once the CLI's non-essential traffic is switched off; with that switch left on a second, non-Anthropic destination appears on every run. Executable trust is user-runtime because the CLI is a user-space install located from a candidate list, never through PATH. Accepted knowing the credential value reaches the sandbox environment: no credential broker exists yet, so an agent that runs a shell inside the sandbox can read it.",
+      "capabilities": [
+        "code_change",
+        "sourced_report"
+      ],
+      "credential_ids": [
+        "ANTHROPIC_API_KEY"
+      ],
+      "egress_allowlist": [
+        "api.anthropic.com"
+      ],
+      "executable_trust": "user-runtime",
+      "interface_version": 1,
+      "manifest_sha256": "c6acd280b31d7ff654cda61c6e736b4a857e54ae89bfb0309dcbe8e62f46ad96",
+      "network_policy": "allowlist",
+      "package": "shadowfetch-missions",
+      "trust": "distro-managed"
+    },
     "codex": {
       "approved_note": "Reviewed as part of the Shadowfetch release.",
       "capabilities": [
@@ -18,6 +37,21 @@
       "interface_version": 1,
       "manifest_sha256": "9508a119bea46a32be987edc1ad8374bd6d829fe37ffc94205d9b827a7a032d0",
       "network_policy": "allowlist",
+      "package": "shadowfetch-missions",
+      "trust": "distro-managed"
+    },
+    "localmodel": {
+      "approved_note": "Reviewed 2026-09-09 for the 4.0.0 release. No credentials and no egress: network_policy 'none' is enforced by the sandbox's own network namespace, and the model is reached over one unix socket inside the single read-granted directory, which is the only reason that grant exists. The program is the packaged bridge at an absolute path, so executable trust is system.",
+      "capabilities": [
+        "code_change",
+        "sourced_report"
+      ],
+      "credential_ids": [],
+      "egress_allowlist": [],
+      "executable_trust": "system",
+      "interface_version": 1,
+      "manifest_sha256": "9e255c7926b16efea02f04eb301a2fe6cfc4a5b5813ee2d96dffb5807d17f8a8",
+      "network_policy": "none",
       "package": "shadowfetch-missions",
       "trust": "distro-managed"
     },

@@ -139,7 +139,7 @@ class CancelDuringExecution(MigrationHarness):
         (ws / "facts.md").write_text("The launch is Friday.\n")
 
     def test_a_cancel_mid_turn_stops_the_mission_and_preserves_evidence(self):
-        mission = self.store.create(kind="report", workspace_value="proj", title="t",
+        mission = self.store.create(kind="report", provider_id="codex", workspace_value="proj", title="t",
                                     prompt="p", inputs=["facts.md"], network="allow")
         mission_approvals.approve(self.store, mission)
         mid = mission["id"]
@@ -162,7 +162,7 @@ class CancelDuringExecution(MigrationHarness):
     def test_a_cancelled_run_closes_its_session_and_settles_its_task(self):
         """A session or task left RUNNING forever is exactly the shape the
         baseline had for missions."""
-        mission = self.store.create(kind="report", workspace_value="proj", title="t",
+        mission = self.store.create(kind="report", provider_id="codex", workspace_value="proj", title="t",
                                     prompt="p", inputs=["facts.md"], network="allow")
         mission_approvals.approve(self.store, mission)
         mid = mission["id"]
@@ -184,7 +184,7 @@ class CancelDuringExecution(MigrationHarness):
     def test_the_cancel_race_with_completion_does_not_lose_the_result(self):
         """A cancel arriving after the work finished must not discard evidence
         that already exists. The mission completes; the request is recorded."""
-        mission = self.store.create(kind="report", workspace_value="proj", title="t",
+        mission = self.store.create(kind="report", provider_id="codex", workspace_value="proj", title="t",
                                     prompt="p", inputs=["facts.md"], network="allow")
         mission_approvals.approve(self.store, mission)
         mid = mission["id"]

@@ -1,342 +1,102 @@
 #!/bin/bash
-# Safe, logged system update with preflight checks and Phoenix recovery support.
+# shadowfetch-update - compatibility surface over Fireproof.
+#
+# THIS PROGRAM UPDATES NOTHING. It translates the old command line onto
+# fireproof(1) and execs it. There is no apt, no apt-get, no dpkg, no
+# snapper, no sudo and no plan hash below this line, on purpose.
+#
+# Until Stage U this file was a 342-line SECOND updater: its own preflight,
+# its own `apt-get update`, its own `apt-get -s full-upgrade` simulation,
+# its own two-entry removal allowlist, its own sha256 plan fingerprint, its
+# own `apt-get full-upgrade` under sudo, and its own copy of
+# snapper_max_number / snapper_first_pre_after / phoenix_available.
+#
+# It also relabelled the SAME snapper Point that Fireproof labels - with a
+# different description, no fireproof=pre userdata - and then recorded that
+# Point NOWHERE. So `shadowfetch-update` mutated the machine while
+# /var/lib/shadowfetch/fireproof-state.json still described the PREVIOUS
+# Fireproof transaction, and the next `fireproof rollback` would have
+# restored the wrong system state. Two systems independently deciding
+# snapshot behaviour is precisely how a rollback and an update come to
+# disagree about what state the machine is in; that is why this file is now
+# eleven lines of dispatch instead of three hundred of duplicate mechanism.
+#
+# The migration that used to be folded in here (the one-time 2.1.3 AI
+# package retirement) is NOT lost and was never this program's to own: it
+# has its own unit, shadowfetch-migrate-2.1.3-ai.service, gated on the same
+# marker and the same sha256-verified manifest, which runs at
+# multi-user.target. It now happens there and only there. The behavioural
+# difference is real and worth stating plainly: the retirement completes at
+# the next boot rather than inside the interactive update transaction.
+#
+# Part of Shadowfetch Linux. https://www.shadowfetchlinux.org/
 set -euo pipefail
 
-case "${1:-}" in
-  -h|--help)
+# Absolute, never resolved through PATH: this program decides which binary
+# performs a root package transaction, and $PATH belongs to the caller.
+FIREPROOF=/usr/bin/fireproof
+VERSION_FILE=/usr/share/shadowfetch/version
+
+version() {
+    cat "$VERSION_FILE" 2>/dev/null || echo unknown
+}
+
+usage() {
     cat <<'SFHELP'
-shadowfetch-update - Safe, logged system update with Phoenix recovery.
+shadowfetch-update - compatibility alias for fireproof(1).
 
 USAGE
-  shadowfetch-update           apply updates after a strict simulation
-  shadowfetch-update --check   report what would change, change nothing
+  shadowfetch-update              same as: fireproof update
+  shadowfetch-update --check      same as: fireproof check
+  shadowfetch-update --verify     same as: fireproof verify
+  shadowfetch-update --rollback   same as: fireproof rollback
 
-The updater checks power, disk, package locks and package consistency, refreshes
-signed metadata, simulates the full upgrade, and refuses unverified removals.
-Known Debian package replacements and the one-time 2.1.3 AI retirement are
-accepted only when their complete replacement plan matches the release policy.
-On a Phoenix-enabled Btrfs install, Debian's 80snapper hooks wrap the package
-transaction in one automatic pre/post recovery pair.
+Shadowfetch Linux has ONE update system, and `fireproof` is its command.
+This name is kept so older documentation, desktop entries and habits keep
+working; prefer `fireproof` in anything new.
+
+THE FIVE STEPS, WHICH ARE NOT INTERCHANGEABLE
+  simulate  resolve the pending upgrade read-only. No lock is taken,
+            nothing is downloaded, nothing is installed. Produces the
+            change-set hash that identifies this update.
+  approve   a human accepts that exact change-set hash. Nothing changes.
+  commit    take the dpkg lock, re-simulate under it, refuse if the set
+            drifted, download, show release NEWS, install. snapper's own
+            apt hooks create the Phoenix Point; Fireproof creates none.
+  verify    judge the machine afterwards: ok, reboot-recommended, or
+            restore-recommended.
+  rollback  restore the Phoenix Point that commit recorded, via
+            pkexec /usr/libexec/phoenix-restore. Unavailable, and said to
+            be unavailable, when no Point was recorded.
+
+`--check` performs SIMULATE only. It does not approve, commit or verify.
+
+Part of Shadowfetch Linux. https://www.shadowfetchlinux.org/
 SFHELP
-    exit 0 ;;
-  --version)
-    echo "shadowfetch-update (Shadowfetch Linux) $(cat /usr/share/shadowfetch/version 2>/dev/null || echo unknown)"
-    exit 0 ;;
-  ""|--check) ;;
-  *) echo "Unknown option: $1" >&2; exit 2 ;;
+}
+
+case "${1-}" in
+    -h|--help)      usage; exit 0 ;;
+    --version)      echo "shadowfetch-update (Shadowfetch Linux) $(version)"; exit 0 ;;
+    "")             verb=update ;;
+    --check)        verb=check ;;
+    --verify)       verb=verify ;;
+    --rollback)     verb=rollback ;;
+    *)
+        printf 'shadowfetch-update: unknown option: %s\n' "$1" >&2
+        printf 'Try: shadowfetch-update --help\n' >&2
+        exit 2 ;;
 esac
 
-MODE="apply"
-[[ "${1:-}" == "--check" ]] && MODE="check"
-STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}/shadowfetch"
-MIGRATION_MANIFEST="/usr/share/shadowfetch/migrations/2.1.3-ai-packages"
-MIGRATION_MANIFEST_SHA256="6eeddfe229f65e64288c34b88e23ad19a859de31688d73d29817244f064d6dd5"
-MIGRATION_MARKER="/var/lib/shadowfetch/migrations/2.1.3-ai.pending"
-MIGRATION_HELPER="/usr/libexec/shadowfetch-migrate-2.1.3-ai"
-mkdir -p "$STATE_HOME"
-LOG="$STATE_HOME/update-$(date +%Y%m%d-%H%M%S).log"
-exec > >(tee -a "$LOG") 2>&1
-exec 8>"$STATE_HOME/update.lock"
-flock -n 8 || { echo "Another Shadowfetch update is already running." >&2; exit 3; }
-
-tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/shadowfetch-update.XXXXXX")
-cleanup() {
-    local status=$?
-    trap - EXIT
-    rm -rf -- "$tmpdir"
-    exit "$status"
-}
-trap cleanup EXIT
-
-say() { printf '\n\033[1;33m%s\033[0m\n' "$*"; }
-ok() { printf '  \033[1;32mOK\033[0m  %s\n' "$*"; }
-warn() { printf '  \033[1;31m!!\033[0m  %s\n' "$*"; }
-die() { warn "$*"; printf '  No update was applied by this run.\n  Log: %s\n' "$LOG"; exit 1; }
-
-migration_packages=()
-migration_args=()
-
-load_migration_plan() {
-    [[ -f "$MIGRATION_MARKER" ]] || return 0
-    [[ -f "$MIGRATION_MANIFEST" ]] \
-        || die "The 2.1.3 migration marker exists, but its package manifest is missing."
-    printf '%s  %s\n' "$MIGRATION_MANIFEST_SHA256" "$MIGRATION_MANIFEST" \
-        | sha256sum --check --status - \
-        || die "The 2.1.3 migration package manifest failed verification."
-
-    mapfile -t migration_packages < "$MIGRATION_MANIFEST"
-    (( ${#migration_packages[@]} > 0 )) \
-        || die "The 2.1.3 migration package manifest is empty."
-
-    local package status
-    for package in "${migration_packages[@]}"; do
-        [[ "$package" =~ ^[a-z0-9][a-z0-9+.-]+$ ]] \
-            || die "The 2.1.3 migration manifest contains an invalid package name."
-        status=$(dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null || true)
-        if [[ "$status" == ii* ]]; then
-            migration_args+=("${package}-")
-        fi
-    done
-    return 0
-}
-
-is_migration_removal() {
-    local wanted=$1 package
-    for package in "${migration_packages[@]}"; do
-        [[ "$package" == "$wanted" ]] && return 0
-    done
-    return 1
-}
-
-plan_installs() {
-    local plan=$1 package=$2
-    awk -v package="$package" '$1 == "Inst" && $2 == package { found=1 } END { exit(found ? 0 : 1) }' "$plan"
-}
-
-validate_removals() {
-    local plan=$1 package
-    local -a approved=() rejected=()
-
-    while IFS= read -r package; do
-        [[ -n "$package" ]] || continue
-        if is_migration_removal "$package"; then
-            approved+=("$package")
-        elif [[ "$package" == "libprocesscore10" ]] \
-            && plan_installs "$plan" "libprocesscore11"; then
-            approved+=("$package")
-        elif [[ "$package" == "milou" ]] \
-            && plan_installs "$plan" "qml6-module-org-kde-milou"; then
-            approved+=("$package")
-        else
-            rejected+=("$package")
-        fi
-    done < <(awk '/^Remv / {print $2}' "$plan" | sort -u)
-
-    if (( ${#approved[@]} > 0 )); then
-        printf '  Verified replacement or retirement removals:\n'
-        printf '    %s\n' "${approved[@]}"
-    fi
-    if (( ${#rejected[@]} > 0 )); then
-        printf '  Unverified proposed removals:\n'
-        printf '    %s\n' "${rejected[@]}"
-        return 1
-    fi
-}
-
-simulate_upgrade() {
-    local destination=$1
-    apt-get -s -o Debug::NoLocking=1 full-upgrade "${migration_args[@]}" \
-        > "$destination"
-}
-
-plan_fingerprint() {
-    awk '/^(Inst|Remv) / {print}' "$1" | sha256sum | awk '{print $1}'
-}
-
-package_lock_busy() {
-    local lock
-    for lock in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock; do
-        sudo fuser "$lock" >/dev/null 2>&1 && return 0
-    done
-    return 1
-}
-
-apt_snapshots_disabled() {
-    [[ -f /etc/default/snapper ]] || return 1
-    awk -F= '
-        /^[[:space:]]*DISABLE_APT_SNAPSHOT[[:space:]]*=/ {
-            value=$2
-            gsub(/[[:space:]"]/, "", value)
-            gsub(/\047/, "", value)
-            value=tolower(value)
-            if (value == "yes" || value == "true" || value == "1") disabled=1
-        }
-        END { exit(disabled ? 0 : 1) }
-    ' /etc/default/snapper
-}
-
-write_snapper_rows() {
-    local destination=$1
-    # The updater owns its private temporary file; sudo is only for Snapper.
-    # shellcheck disable=SC2024
-    sudo env LC_ALL=C snapper -c root --machine-readable csv list \
-        --columns number,type,description > "$destination" 2>/dev/null
-}
-
-snapper_max_number() {
-    local rows=$1
-    awk -F, '
-        NR > 1 && $1 ~ /^[0-9]+$/ && $1 > max { max=$1 }
-        END { print max+0 }
-    ' "$rows"
-}
-
-snapper_first_pre_after() {
-    local before=$1
-    local rows=$2
-    awk -F, -v before="$before" '
-        NR > 1 {
-            gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2)
-            if ($1 ~ /^[0-9]+$/ && $1 > before && $2 == "pre") {
-                print $1
-                exit
-            }
-        }
-    ' "$rows"
-}
-
-phoenix_available() {
-    findmnt -n -o FSTYPE / | grep -qx btrfs \
-        && command -v snapper >/dev/null 2>&1 \
-        && [[ -f /etc/snapper/configs/root ]] \
-        && ! apt_snapshots_disabled \
-        && apt-config dump 2>/dev/null | grep -Eq \
-            'DPkg::Pre-Invoke.*(/usr/bin/)?snapper'
-}
-
-say "Shadowfetch Safe Update"
-printf '  Mode: %s\n  Log: %s\n' "$MODE" "$LOG"
-
-free_kib=$(df -Pk / | awk 'NR == 2 {print $4}')
-[[ "$free_kib" =~ ^[0-9]+$ ]] || die "Could not measure free system-disk space."
-(( free_kib >= 5 * 1024 * 1024 )) || die "At least 5 GiB of free system-disk space is required."
-ok "Disk preflight passed ($((free_kib / 1024 / 1024)) GiB free)."
-
-if command -v upower >/dev/null 2>&1; then
-    battery=$(upower -e 2>/dev/null | grep -E '/battery(_|$)|/BAT[0-9]+$' | head -n1 || true)
-    if [[ -n "$battery" ]]; then
-        percentage=$(upower -i "$battery" 2>/dev/null | awk '/percentage:/ {gsub("%", "", $2); print int($2)}')
-        state=$(upower -i "$battery" 2>/dev/null | awk '/state:/ {print $2}')
-        if [[ "$percentage" =~ ^[0-9]+$ ]] && (( percentage < 30 )) && [[ "$state" == "discharging" ]]; then
-            die "Battery is ${percentage}%. Connect power before a system update."
-        fi
-    fi
-fi
-ok "Power preflight passed."
-
-curl -fsSIL --retry 3 --retry-all-errors --connect-timeout 10 --max-time 30 \
-    https://www.shadowfetch.com/linux/apt/dists/umbra/InRelease >/dev/null \
-    || die "The signed Shadowfetch update channel is unreachable."
-ok "Signed update channel is reachable."
-
-package_lock_busy && die "Another package operation is running. Close Discover or wait for it to finish."
-audit=$(sudo dpkg --audit)
-[[ -z "$audit" ]] || {
-    printf '%s\n' "$audit"
-    die "The package database needs repair. Run: sudo dpkg --configure -a"
-}
-ok "Package database is consistent."
-
-say "Refreshing signed package information"
-sudo apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=5 \
-    -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
-
-load_migration_plan
-
-say "Simulating the complete upgrade"
-simulation="$tmpdir/full-upgrade.simulation"
-simulate_upgrade "$simulation" \
-    || die "The package solver could not produce a valid upgrade plan."
-removals=$(awk '/^Remv / {print $2}' "$simulation" | sort -u)
-validate_removals "$simulation" \
-    || die "Safe Update will not apply unverified package removals. Review this plan in Fireproof."
-installs=$(awk '/^Inst / {count++} END {print count+0}' "$simulation")
-removal_count=$(awk '/^Remv / {count++} END {print count+0}' "$simulation")
-ok "Upgrade simulation passed ($installs package changes, $removal_count verified removals)."
-
-if [[ "$MODE" == "check" ]]; then
-    apt list --upgradable 2>/dev/null | sed '1d' || true
-    printf '\nNo packages were changed; signed metadata was refreshed.\n'
-    printf 'Run shadowfetch-update without --check to install updates.\n'
-    exit 0
+if (( $# > 1 )); then
+    printf 'shadowfetch-update: too many arguments\n' >&2
+    exit 2
 fi
 
-snapshot_before=0
-phoenix_armed=false
-if phoenix_available; then
-    snapper_before_rows="$tmpdir/snapper-before.csv"
-    write_snapper_rows "$snapper_before_rows" \
-        || die "Phoenix recovery is configured but its Point list could not be read."
-    snapshot_before=$(snapper_max_number "$snapper_before_rows")
-    [[ "$snapshot_before" =~ ^[0-9]+$ ]] \
-        || die "Phoenix returned an invalid recovery Point number."
-    phoenix_armed=true
-    ok "Phoenix recovery is armed; the package transaction will create one recovery pair."
-else
-    warn "Phoenix automatic package snapshots are unavailable on this install."
-fi
-
-say "Confirming the package plan"
-final_simulation="$tmpdir/full-upgrade.final.simulation"
-package_lock_busy && die "Another package operation started after simulation. Try again when it finishes."
-simulate_upgrade "$final_simulation" \
-    || die "The package solver could not reproduce the approved upgrade plan."
-validate_removals "$final_simulation" \
-    || die "The final package plan contains an unverified removal."
-[[ "$(plan_fingerprint "$simulation")" == "$(plan_fingerprint "$final_simulation")" ]] \
-    || die "The package plan changed after approval. Run Safe Update again."
-ok "The final package plan exactly matches the approved simulation."
-
-say "Installing system updates"
-transaction=(full-upgrade)
-if [[ -z "$removals" ]]; then
-    transaction=(--no-remove full-upgrade)
-fi
-transaction+=("${migration_args[@]}")
-if ! sudo DEBIAN_FRONTEND=noninteractive apt-get \
-    -o DPkg::Lock::Timeout=120 \
-    -o Acquire::Retries=5 \
-    -o Acquire::http::Timeout=30 \
-    -o Acquire::https::Timeout=30 \
-    -o Dpkg::Options::="--force-confold" \
-    -o APT::Get::Assume-Yes=true \
-    "${transaction[@]}"; then
-    warn "The package transaction failed."
-    if [[ "$phoenix_armed" == true ]]; then
-        snapper_failure_rows="$tmpdir/snapper-failure.csv"
-        if write_snapper_rows "$snapper_failure_rows"; then
-            snapshot_id=$(snapper_first_pre_after "$snapshot_before" "$snapper_failure_rows" || true)
-            [[ "$snapshot_id" =~ ^[0-9]+$ ]] \
-                && warn "Phoenix Point $snapshot_id remains available for recovery."
-        fi
-    fi
-    printf '  Run shadowfetch-recovery or inspect: %s\n' "$LOG"
+if [[ ! -x "$FIREPROOF" ]]; then
+    printf 'shadowfetch-update: %s is not installed.\n' "$FIREPROOF" >&2
+    printf 'Fireproof owns updates on Shadowfetch Linux; install shadowfetch-fireproof.\n' >&2
     exit 1
 fi
 
-if [[ -f "$MIGRATION_MARKER" && -x "$MIGRATION_HELPER" ]]; then
-    sudo "$MIGRATION_HELPER" --finalize \
-        || warn "The retired 2.1.3 package cleanup will be checked again at the next boot."
-fi
-
-if command -v flatpak >/dev/null 2>&1; then
-    say "Updating user applications"
-    flatpak update --user -y || warn "One or more user applications could not be updated."
-fi
-
-if [[ "$phoenix_armed" == true ]]; then
-    snapper_after_rows="$tmpdir/snapper-after.csv"
-    snapshot_id=""
-    if write_snapper_rows "$snapper_after_rows"; then
-        snapshot_id=$(snapper_first_pre_after "$snapshot_before" "$snapper_after_rows" || true)
-    fi
-    if [[ "$snapshot_id" =~ ^[0-9]+$ ]]; then
-        sudo snapper -c root modify \
-            --description "Shadowfetch: before safe update $(date -Is)" \
-            "$snapshot_id" >/dev/null \
-            || warn "Phoenix Point $snapshot_id was created but could not be relabeled."
-        ok "Phoenix Point $snapshot_id records the pre-update system."
-    else
-        warn "The update completed, but its automatic Phoenix Point was not found."
-    fi
-fi
-
-say "Post-update health check"
-shadowfetch-health --quick || warn "The health check found items that need review."
-
-if [[ -f /var/run/reboot-required ]]; then
-    warn "A restart is required to finish the update."
-else
-    ok "Update complete. No restart is currently required."
-fi
-printf '\nFull log: %s\n' "$LOG"
+exec "$FIREPROOF" "$verb"

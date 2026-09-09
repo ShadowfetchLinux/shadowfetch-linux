@@ -1,0 +1,4 @@
+{"event": "session.started", "model": "test-model:1b", "resumed": false, "session": "cap-2"}
+{"event": "model.status", "state": "generating"}
+{"delta": "Half an ", "event": "token"}
+{"delta": "answ

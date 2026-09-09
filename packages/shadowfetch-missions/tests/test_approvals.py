@@ -66,11 +66,15 @@ class PolicyDecisions(unittest.TestCase):
                   "/missions/sf_policy.py").read_text()
         self.assertNotIn("provider_available", source.split('"""')[0] + source)
 
-    def test_a_decision_names_what_it_cannot_enforce(self):
+    def test_a_decision_does_not_warn_about_a_control_that_works(self):
+        """This asserted the opposite until Stage C, and it was right to: a
+        mission relying on an unenforced allowlist had to be told. The allowlist
+        is enforced now, and an advisory that names a working control is how
+        real caveats come to be ignored."""
         d = self.decide(spec(network="allowlist", egress_allowlist=("a.example",)))
-        self.assertIn("network_destination", d.advisory_fields)
         self.assertEqual(d.mediation["network_destination"]["mediation"],
-                         pol.OBSERVABLE_ONLY)
+                         pol.FULLY_MEDIATED)
+        self.assertNotIn("network_destination", d.advisory_fields)
 
     def test_a_mission_not_relying_on_a_gap_is_not_warned_about_it(self):
         """Noise is how real caveats come to be ignored."""
@@ -78,10 +82,12 @@ class PolicyDecisions(unittest.TestCase):
         self.assertNotIn("network_destination", d.advisory_fields)
 
     def test_the_matrix_covers_every_mediation_level_honestly(self):
+        """OBSERVABLE_ONLY is no longer required to appear: Stage C and Stage E
+        emptied that level. The matrix must still never claim a level it cannot
+        justify, which is what the per-row mechanism check below enforces."""
         matrix = pol.PolicyEngine.capability_matrix()
         levels = {entry["mediation"] for entry in matrix.values()}
         self.assertIn(pol.FULLY_MEDIATED, levels)
-        self.assertIn(pol.OBSERVABLE_ONLY, levels)
         self.assertIn(pol.NOT_OBSERVABLE, levels)
         for name, entry in matrix.items():
             with self.subTest(name=name):
@@ -92,9 +98,42 @@ class PolicyDecisions(unittest.TestCase):
         """path_masking left this list in Stage E, having gained a real
         mechanism. The other two have not, and must keep saying so."""
         matrix = pol.PolicyEngine.capability_matrix()
-        self.assertEqual(matrix["network_destination"]["mediation"], pol.OBSERVABLE_ONLY)
+        # path_masking left in Stage E and network_destination in Stage C, each
+        # by gaining a mechanism. Only the syscall profile remains, and it is
+        # not observable at all.
         self.assertEqual(matrix["syscalls"]["mediation"], pol.NOT_OBSERVABLE)
         self.assertEqual(matrix["path_masking"]["mediation"], pol.FULLY_MEDIATED)
+        # PARTIAL, and not a hedge. A declared allowlist becomes a default-DROP
+        # ruleset and IS full mediation; the same posture with no hosts declared
+        # gets a NAT and no ruleset and mediates nothing. The static table is
+        # asked with no mission in hand, so it cannot know which of the two a
+        # mission will be -- and answering with the better one is exactly the
+        # overclaim this test exists to prevent. The decision knows, and says.
+        self.assertEqual(matrix["network_destination"]["mediation"],
+                         pol.PARTIALLY_MEDIATED)
+        filtered = self.decide(spec(network="allowlist",
+                                    egress_allowlist=("api.example.com",)))
+        self.assertEqual(
+            filtered.mediation["network_destination"]["mediation"],
+            pol.FULLY_MEDIATED)
+        self.assertIn("api.example.com",
+                      filtered.mediation["network_destination"]["mechanism"],
+                      "a filter claimed without naming what it permits")
+        self.assertNotIn("network_destination", filtered.advisory_fields)
+
+        unfiltered = self.decide(spec(network="allowlist", egress_allowlist=()))
+        self.assertEqual(
+            unfiltered.mediation["network_destination"]["mediation"],
+            pol.OBSERVABLE_ONLY)
+        self.assertIn("network_destination", unfiltered.advisory_fields,
+                      "the network is on, nothing filters it, and the decision "
+                      "does not say so")
+
+        closed = self.decide(spec(network="none"))
+        self.assertEqual(
+            closed.mediation["network_destination"]["mediation"],
+            pol.FULLY_MEDIATED)
+        self.assertFalse(closed.mediation["network_destination"]["relied_on"])
 
 
 class ScopeContainment(unittest.TestCase):
@@ -164,7 +203,7 @@ class EngineEnforcesApproval(MigrationHarness):
         (ws / "facts.md").write_text("x\n")
 
     def cloud_mission(self):
-        return self.store.create(kind="report", workspace_value="proj",
+        return self.store.create(kind="report", provider_id="codex", workspace_value="proj",
                                  title="t", prompt="p", inputs=["facts.md"],
                                  network="allow")
 

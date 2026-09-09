@@ -1,0 +1,7 @@
+Error: a line the CLI printed before any JSON
+{"type":"system","subtype":"api_retry","attempt":1,"max_retries":10,"retry_delay_ms":511.86,"error_status":401,"error":"authentication_failed","session_id":"3c9f1f8e-2a1d-5f6b-8c7d-9e0a1b2c3d4e"}
+{"type":"assistant","message":{"id":"msg_synthetic","model":"claude-sonnet-4-6","role":"assistant","type":"message","content":[{"type":"text","text":"Partial answer."}]},"parent_tool_use_id":null,"session_id":"3c9f1f8e-2a1d-5f6b-8c7d-9e0a1b2c3d4e"}
+{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":
+[]
+{"type":"result","subtype":"success","is_error":false,"duration_ms":8123,"duration_api_ms":7902,"num_turns":3,"result":"","session_id":"3c9f1f8e-2a1d-5f6b-8c7d-9e0a1b2c3d4e","total_cost_usd":0.0431,"usage":{"input_tokens":1200,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":64,"service_tier":"standard"},"permission_denials":[]}
+-- firebreak session 4f2a closed; 0 denied syscalls --

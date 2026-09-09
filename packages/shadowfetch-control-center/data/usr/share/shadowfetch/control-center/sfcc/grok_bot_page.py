@@ -8,6 +8,10 @@ from sfcc.theme import Card, ProcessDialog, label, fmt_bytes
 
 
 class GrokBotPage(QWidget):
+    @classmethod
+    def build(cls, context):
+        return cls(context.open_route)
+
     def __init__(self, open_route):
         super().__init__()
         self.open_route = open_route

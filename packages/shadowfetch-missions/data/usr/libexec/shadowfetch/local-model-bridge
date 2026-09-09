@@ -1,0 +1,385 @@
+#!/usr/bin/python3
+"""Local model bridge: one turn of on-device inference, over one unix socket.
+
+PACKAGED. This is the program `localmodel.json` declares at
+
+    /usr/libexec/shadowfetch/local-model-bridge
+
+and it ships from this path -- `data/*` is the package's install line, so the
+file the tests execute and the file a person gets are the same file. It was
+written under tests/fixtures because the stage that built it was not permitted
+to add a packaged file; keeping the copy there afterwards would have meant two
+programs behind one declaration, so it was MOVED rather than installed.
+
+Every test in test_provider_localmodel.py and test_localmodel_transport.py
+executes this file, including the live turn against a real inference service
+and the real sandboxed turn under bwrap --unshare-net.
+
+WHERE IT RUNS
+-------------
+Inside the Firebreak sandbox, which has NO network: `bwrap --unshare-net`, no
+interfaces, no route, no host loopback. The only thing it can reach outside the
+sandbox is the unix socket named by --endpoint, which Firebreak bind-mounted
+read-only because the provider's manifest declared its directory in
+`sandbox_profile.read_grants`. A read-only bind is enough: the kernel denies
+write access on a read-only superblock for regular files, directories and
+symlinks, and a socket is none of those.
+
+WHAT IT SPEAKS
+--------------
+To the service: HTTP/1.1 over that socket -- GET /api/tags to discover models,
+POST /api/chat with "stream": true for the turn.
+
+To Mission Control: `localmodel-ndjson-v1` on stdout, one JSON object per line,
+flushed as it happens. Every line is an object with an "event" key:
+
+    session.started   {session, model, resumed}
+    model.status      {state}
+    token             {delta}              incremental; the answer is the sum
+    heartbeat         {elapsed_ms}
+    generation.done   {stop, model, usage}   the terminal event
+    session.ended     {turns}
+    error             {code, message}
+    cancelled         {reason}
+
+Nothing else is ever written to stdout, and stderr is left empty, because the
+orchestrator merges the two into one stream.
+
+EXIT STATUS
+-----------
+    0    generation.done was emitted
+    1    an error event was emitted
+    143  a cancelled event was emitted (SIGTERM/SIGINT)
+
+A stream carries no way to tell "finished" from "killed"; the exit code is the
+fact that does, which is why cancellation has a status of its own.
+
+SESSIONS
+--------
+--session NAME keeps the conversation in the MISSION WORKSPACE, at
+.shadowfetch-localmodel/NAME.json relative to the working directory, which
+Firebreak binds to the workspace. Nothing is stored on the host, nothing is
+stored in the provider adapter, and a read-only mission cannot use one --
+--read-only refuses --session rather than silently losing the history.
+"""
+from __future__ import annotations
+
+import argparse
+import http.client
+import json
+import os
+import re
+import signal
+import socket
+import sys
+import time
+import uuid
+from pathlib import Path
+
+PROTOCOL = "localmodel-ndjson-v1"
+SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
+SESSION_DIR = ".shadowfetch-localmodel"
+HEARTBEAT_SECONDS = 5.0
+MAX_PROMPT_BYTES = 4_000_000
+MAX_HISTORY_TURNS = 200
+# One protocol line from the service. Unbounded readline() on a socket the
+# sandbox does not control is an out-of-memory the sandbox's MemoryMax would
+# have to catch; bounding it here turns it into a reported failure instead.
+MAX_SERVICE_LINE = 1_000_000
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_CANCELLED = 143
+
+
+class Cancelled(Exception):
+    """SIGTERM or SIGINT arrived."""
+
+
+class Deadline(Exception):
+    """The whole-turn deadline expired."""
+
+
+def emit(event, **fields):
+    """One protocol line, flushed. The only thing that writes to stdout."""
+    fields["event"] = event
+    sys.stdout.write(json.dumps(fields, ensure_ascii=False, sort_keys=True) + "\n")
+    sys.stdout.flush()
+
+
+class UnixHTTPConnection(http.client.HTTPConnection):
+    """HTTP/1.1 over an AF_UNIX socket.
+
+    http.client is used for exactly one reason: it decodes chunked transfer
+    encoding, which the streaming endpoint uses, and hand-rolling that is how
+    a subtle truncation bug gets shipped. The socket it is handed is opened
+    here, so no name resolution and no TCP happens anywhere.
+    """
+
+    def __init__(self, path, timeout):
+        # "localhost" and not the socket path: an HTTP service behind a unix
+        # socket still validates Host/Origin, and a loopback-equivalent
+        # transport should present the loopback name. No resolution happens --
+        # connect() below opens the socket by path.
+        super().__init__("localhost", timeout=timeout)
+        self._unix_path = path
+
+    def connect(self):
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(self.timeout)
+        sock.connect(self._unix_path)
+        self.sock = sock
+
+
+def open_endpoint(path, connect_timeout, idle_timeout):
+    conn = UnixHTTPConnection(path, connect_timeout)
+    conn.connect()
+    # Connect and idle are separate bounds: a service that accepts instantly
+    # and then says nothing is the failure the idle bound exists for.
+    conn.sock.settimeout(idle_timeout)
+    conn.timeout = idle_timeout
+    return conn
+
+
+def list_models(path, connect_timeout, idle_timeout):
+    conn = open_endpoint(path, connect_timeout, idle_timeout)
+    try:
+        conn.request("GET", "/api/tags", headers={"Accept": "application/json"})
+        response = conn.getresponse()
+        body = response.read()
+        if response.status != 200:
+            raise OSError(f"the local model service answered HTTP {response.status}")
+        document = json.loads(body.decode("utf-8", "replace"))
+    finally:
+        conn.close()
+    names = []
+    for entry in (document.get("models") or []) if isinstance(document, dict) else []:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name") or entry.get("model")
+        if isinstance(name, str) and MODEL_ID.match(name) and name not in names:
+            names.append(name)
+    return names
+
+
+# --------------------------------------------------------------------------- #
+# Session history, inside the workspace
+# --------------------------------------------------------------------------- #
+
+def session_path(name):
+    directory = Path(SESSION_DIR)
+    return directory / f"{name}.json"
+
+
+def load_session(name):
+    path = session_path(name)
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    messages = document.get("messages") if isinstance(document, dict) else None
+    if not isinstance(messages, list):
+        return []
+    clean = []
+    for message in messages[-(MAX_HISTORY_TURNS * 2):]:
+        if (isinstance(message, dict) and message.get("role") in ("user", "assistant")
+                and isinstance(message.get("content"), str)):
+            clean.append({"role": message["role"], "content": message["content"]})
+    return clean
+
+
+def save_session(name, messages):
+    path = session_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".json.partial")
+    temporary.write_text(
+        json.dumps({"protocol": PROTOCOL, "messages": messages[-(MAX_HISTORY_TURNS * 2):]},
+                   ensure_ascii=False),
+        encoding="utf-8")
+    os.replace(temporary, path)
+
+
+# --------------------------------------------------------------------------- #
+# One turn
+# --------------------------------------------------------------------------- #
+
+def run_turn(args, prompt):
+    started = time.monotonic()
+    deadline_at = started + args.deadline
+
+    def check_deadline():
+        if time.monotonic() >= deadline_at:
+            raise Deadline()
+
+    model = args.model
+    if not model:
+        available = list_models(args.endpoint, args.connect_timeout, args.idle_timeout)
+        if not available:
+            emit("error", code="no-model",
+                 message="the local model service has no model loaded")
+            return EXIT_ERROR
+        model = available[0]
+
+    history = load_session(args.session) if args.session else []
+    resumed = bool(history)
+    session_name = args.session or ("turn-" + uuid.uuid4().hex[:16])
+    emit("session.started", session=session_name, model=model, resumed=resumed)
+
+    messages = [*history, {"role": "user", "content": prompt}]
+    payload = json.dumps({"model": model, "messages": messages, "stream": True},
+                         ensure_ascii=False).encode("utf-8")
+
+    conn = open_endpoint(args.endpoint, args.connect_timeout, args.idle_timeout)
+    answer = []
+    usage = None
+    stop = None
+    try:
+        conn.request("POST", "/api/chat", body=payload,
+                     headers={"Content-Type": "application/json",
+                              "Accept": "application/x-ndjson",
+                              "Content-Length": str(len(payload))})
+        response = conn.getresponse()
+        if response.status != 200:
+            detail = response.read(4096).decode("utf-8", "replace").strip()
+            emit("error", code="service-error",
+                 message=f"the local model service answered HTTP {response.status}: {detail}"[:2000])
+            return EXIT_ERROR
+        emit("model.status", state="generating")
+        last_beat = time.monotonic()
+        while True:
+            check_deadline()
+            line = response.readline(MAX_SERVICE_LINE)
+            if not line:
+                break
+            if len(line) >= MAX_SERVICE_LINE and not line.endswith(b"\n"):
+                emit("error", code="oversized-chunk",
+                     message="the local model service sent a single line larger "
+                             "than this bridge will read")
+                return EXIT_ERROR
+            now = time.monotonic()
+            if now - last_beat >= HEARTBEAT_SECONDS:
+                emit("heartbeat", elapsed_ms=int((now - started) * 1000))
+                last_beat = now
+            text = line.decode("utf-8", "replace").strip()
+            if not text:
+                continue
+            try:
+                chunk = json.loads(text)
+            except ValueError:
+                # The service is not ours to trust either. A line we cannot
+                # read is reported, not guessed at.
+                emit("error", code="malformed-chunk",
+                     message="the local model service sent a line that is not JSON")
+                return EXIT_ERROR
+            if not isinstance(chunk, dict):
+                continue
+            if chunk.get("error"):
+                emit("error", code="service-error", message=str(chunk["error"])[:2000])
+                return EXIT_ERROR
+            message = chunk.get("message")
+            if isinstance(message, dict):
+                delta = message.get("content")
+                if isinstance(delta, str) and delta:
+                    answer.append(delta)
+                    emit("token", delta=delta)
+            if chunk.get("done"):
+                stop = chunk.get("done_reason") if isinstance(chunk.get("done_reason"), str) else "stop"
+                usage = {
+                    "input_tokens": chunk.get("prompt_eval_count"),
+                    "output_tokens": chunk.get("eval_count"),
+                    "total_duration_ns": chunk.get("total_duration"),
+                }
+                break
+    finally:
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+    joined = "".join(answer)
+    if args.session:
+        save_session(args.session, [*messages, {"role": "assistant", "content": joined}])
+        emit("session.ended", turns=(len(messages) + 1) // 2)
+    emit("generation.done", stop=stop or "stop", model=model, usage=usage)
+    return EXIT_OK
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(add_help=True, description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    turn = sub.add_parser("serve-turn")
+    turn.add_argument("--protocol", required=True)
+    turn.add_argument("--endpoint", required=True)
+    turn.add_argument("--stream", default="tokens", choices=("tokens",))
+    turn.add_argument("--model", default=None)
+    turn.add_argument("--session", default=None)
+    turn.add_argument("--read-only", action="store_true")
+    turn.add_argument("--connect-timeout", type=int, default=5)
+    turn.add_argument("--idle-timeout", type=int, default=120)
+    turn.add_argument("--deadline", type=int, default=1800)
+    args = parser.parse_args(argv)
+
+    def cancel(signum, _frame):
+        raise Cancelled(signal.Signals(signum).name)
+
+    signal.signal(signal.SIGTERM, cancel)
+    signal.signal(signal.SIGINT, cancel)
+
+    try:
+        if args.protocol != PROTOCOL:
+            emit("error", code="protocol",
+                 message=f"this bridge speaks {PROTOCOL}, not {args.protocol!r}")
+            return EXIT_ERROR
+        if not str(args.endpoint).startswith("/"):
+            emit("error", code="endpoint",
+                 message="the endpoint must be an absolute path to a unix socket")
+            return EXIT_ERROR
+        if args.session is not None and not SESSION_ID.match(args.session):
+            emit("error", code="session",
+                 message="a session name must be 1-64 characters of letters, digits, "
+                         "dot, dash or underscore, starting with a letter or digit")
+            return EXIT_ERROR
+        if args.session and args.read_only:
+            emit("error", code="session-read-only",
+                 message="a session keeps its conversation in the mission workspace, "
+                         "which a read-only mission cannot write")
+            return EXIT_ERROR
+        if args.model is not None and not MODEL_ID.match(args.model):
+            emit("error", code="model", message="that is not a usable model name")
+            return EXIT_ERROR
+        for name in ("connect_timeout", "idle_timeout", "deadline"):
+            if getattr(args, name) < 1:
+                emit("error", code="bounds",
+                     message=f"--{name.replace('_', '-')} must be at least one second")
+                return EXIT_ERROR
+
+        prompt = sys.stdin.buffer.read(MAX_PROMPT_BYTES).decode("utf-8", "replace")
+        if not prompt.strip():
+            emit("error", code="no-prompt", message="the turn was given no prompt")
+            return EXIT_ERROR
+        return run_turn(args, prompt)
+    except Cancelled as exc:
+        emit("cancelled", reason=str(exc) or "cancelled")
+        return EXIT_CANCELLED
+    except Deadline:
+        emit("error", code="deadline",
+             message="the local model turn ran past its deadline")
+        return EXIT_ERROR
+    except socket.timeout:
+        emit("error", code="idle-timeout",
+             message="the local model service stopped sending data")
+        return EXIT_ERROR
+    except FileNotFoundError:
+        emit("error", code="no-endpoint",
+             message=f"there is no local model endpoint at {args.endpoint} inside this "
+                     "sandbox; the provider's read grant is what puts it there")
+        return EXIT_ERROR
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        emit("error", code="transport",
+             message=f"the local model transport failed: {exc}"[:2000])
+        return EXIT_ERROR
+
+
+if __name__ == "__main__":
+    sys.exit(main())

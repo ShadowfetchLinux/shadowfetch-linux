@@ -57,10 +57,21 @@ POLICY_MEDIATION = {
                        "bwrap --unshare-net in every posture: the sandbox has "
                        "its own network namespace and cannot reach the host's "
                        "loopback, abstract sockets or LAN"),
-    "network_destination": (OBSERVABLE_ONLY,
-                            "the allowed posture reaches the internet through a "
-                            "NAT that does not filter by destination, so declared "
-                            "hosts are recorded and constrain nothing. Stage C"),
+    # PARTIAL, and the word is load-bearing. A declared allowlist becomes a
+    # default-DROP nftables ruleset in the sandbox's own network namespace, and
+    # that is full mediation. A posture that reaches the network while declaring
+    # NO hosts gets a NAT and no ruleset, so it reaches anything -- there is
+    # nothing to filter against. The static table cannot know which of those a
+    # mission is, so it must not claim the better one; _mediation_for() decides
+    # it per mission, where the answer is actually knowable.
+    "network_destination": (PARTIALLY_MEDIATED,
+                            "with declared hosts: nftables in the sandbox's own "
+                            "network namespace, default DROP, permitting only the "
+                            "addresses those hosts resolved to at launch -- the "
+                            "sandbox never chooses what a name means, resolution "
+                            "happens on the host before the namespace is handed "
+                            "over. With NO declared hosts and the network on: "
+                            "nothing filters destinations at all"),
     "credential_identity": (FULLY_MEDIATED,
                             "bwrap --clearenv then one --setenv per declared "
                             "identity; an undeclared name is not in the environment"),
@@ -114,6 +125,15 @@ class Scope:
     network: str = "none"
     credential_ids: tuple = ()
     paths: tuple = ()
+    # The destinations the sandbox will be ALLOWED to reach. This was absent
+    # while nothing filtered destinations: an approval cannot bind a privilege
+    # that does not exist, and naming hosts in a grant would have implied a
+    # control the system did not have. Stage C installs a default-DROP ruleset
+    # in the sandbox's own network namespace, so the host list became a real
+    # privilege -- and an enforced privilege outside the scope is one that can
+    # be widened after a human has agreed, which is precisely what
+    # attack_approval's egress-widened-after-approval demonstrated.
+    egress_hosts: tuple = ()
 
     @staticmethod
     def from_json(blob):
@@ -124,7 +144,12 @@ class Scope:
             workspace=data.get("workspace") or "",
             network=data.get("network") or "none",
             credential_ids=tuple(data.get("credential_ids") or ()),
-            paths=tuple(data.get("paths") or ()))
+            paths=tuple(data.get("paths") or ()),
+            # An approval stored before this field existed reads as no hosts,
+            # so it covers a mission that wants none and stops covering one
+            # that wants any. That direction is deliberate: the alternative is
+            # honouring an old grant for destinations nobody was shown.
+            egress_hosts=tuple(data.get("egress_hosts") or ()))
 
     def to_json(self):
         return json.dumps(dataclasses.asdict(self), sort_keys=True)
@@ -171,6 +196,17 @@ def approval_covers(granted: Scope, requested: Scope):
         if not any(path == allowed or path.startswith(allowed.rstrip("/") + "/")
                    or allowed == "*" for allowed in granted.paths):
             return False, f"this mission wants read access to {path}, which is not approved"
+
+    # Destinations, by exact name. No prefix rule and no suffix rule: 'evil.com'
+    # ends with 'l.com' and 'api.example.com.attacker.net' starts with
+    # 'api.example.com', and either rule would hand an attacker the widening
+    # this check exists to stop. '*' is the one wildcard, because a human types
+    # it deliberately.
+    if "*" not in granted.egress_hosts:
+        extra = sorted(set(requested.egress_hosts) - set(granted.egress_hosts))
+        if extra:
+            return False, ("this mission may reach destinations the approval does "
+                           "not cover: " + ", ".join(extra))
     return True, None
 
 
@@ -216,7 +252,9 @@ class PolicyEngine:
                      workspace=str(workspace),
                      network=getattr(sandbox, "network", "none") or "none",
                      credential_ids=tuple(getattr(sandbox, "credential_ids", ()) or ()),
-                     paths=tuple(str(p) for p in getattr(sandbox, "read_grants", ()) or ()))
+                     paths=tuple(str(p) for p in getattr(sandbox, "read_grants", ()) or ()),
+                     egress_hosts=tuple(
+                         str(h) for h in getattr(sandbox, "egress_allowlist", ()) or ()))
 
     def evaluate(self, *, capability, provider_id, workspace, sandbox,
                  provider_trust="unknown"):
@@ -294,6 +332,33 @@ class PolicyEngine:
                 # exact string "allowlist" meant a broader posture escalated for
                 # network access and then dropped the caveat.
                 relied_on = scope.network != "none"
+                # And now the level itself, because it is knowable HERE and not
+                # in the static table. Declared hosts are filtered; the same
+                # posture with no hosts is a NAT and no ruleset, which is the
+                # honest observable_only -- the destinations are recorded in the
+                # session and stopped by nothing.
+                hosts = tuple(getattr(sandbox, "egress_allowlist", ()) or ())
+                if not relied_on:
+                    # Fully mediated by absence: no NAT is attached, so every
+                    # destination is unreachable. A weaker word here would read
+                    # as a gap on the most contained posture there is.
+                    level = FULLY_MEDIATED
+                    mechanism = ("the sandbox has its own network namespace and "
+                                 "no NAT was attached to it, so no destination "
+                                 "is reachable at all")
+                elif hosts:
+                    level = FULLY_MEDIATED
+                    mechanism = ("nftables in the sandbox's own network "
+                                 "namespace, default DROP, permitting only the "
+                                 "addresses these declared hosts resolved to at "
+                                 "launch: " + ", ".join(sorted(hosts)))
+                else:
+                    level = OBSERVABLE_ONLY
+                    mechanism = ("the network is on and NO destination was "
+                                 "declared, so a NAT is attached and no ruleset "
+                                 "is installed: the sandbox reaches anything the "
+                                 "host can reach. The session records what was "
+                                 "asked for; nothing stops it")
             elif name == "path_masking":
                 # This used to be hard-coded False with a comment saying the
                 # caller would set it. No caller did, so a mission declaring

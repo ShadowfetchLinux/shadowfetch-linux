@@ -1,4 +1,11 @@
-"""Private workspace folders and measured hardware facts."""
+"""Private workspace folders and measured hardware facts.
+
+Named for what the section is.  It shipped as `agents_page.AgentsPage` behind
+a sidebar row labelled "Workspaces", which W-31 asks to correct: the agents
+live in Mission Control and Grok Bot, and this page lists project folders and
+the hardware scan.  `agents` remains a route alias (sfcc.pages.REGISTRY), so
+every deep link, .desktop file and servicemenu that used it still lands here.
+"""
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QHBoxLayout, QPushButton, QScrollArea, QVBoxLayout, QWidget
 from sfcc import busutil
@@ -20,9 +27,14 @@ class WorkspaceRow(Card):
         layout.addWidget(button)
 
 
-class AgentsPage(QWidget):
-    """Workspaces page; class name retained for internal compatibility."""
-    def __init__(self, _firewatch, _open_route):
+class WorkspacesPage(QWidget):
+    """Project folders on this machine, and what the hardware scan measured."""
+
+    @classmethod
+    def build(cls, context):
+        return cls(context.firewatch, context.open_route)
+
+    def __init__(self, _firewatch=None, _open_route=None):
         super().__init__()
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -112,4 +124,4 @@ class AgentsPage(QWidget):
 
     @staticmethod
     def _open_ws(name):
-        busutil.start_detached(["xdg-open", str(workspaces_root() / name)])
+        busutil.start_detached("xdg-open", [str(workspaces_root() / name)])

@@ -1,0 +1,17 @@
+{
+  "localmodel": {
+    "approved_note": "Stage J. On-device inference with no network and no credential. Reviewed for: network_policy 'none' with an empty egress allowlist (there is no egress to filter, so the unenforced-destination gap does not apply); no credential identity, so nothing to broker; exactly one read grant, the directory holding the endpoint socket, which is what makes a net-none sandbox able to reach a local service at all; and a single packaged bridge program under executable trust 'system'. MERGE NOTE: this provider is only usable once /usr/libexec/shadowfetch/local-model-bridge is packaged; until then readiness reports it unavailable with a reason.",
+    "capabilities": [
+      "code_change",
+      "sourced_report"
+    ],
+    "credential_ids": [],
+    "egress_allowlist": [],
+    "executable_trust": "system",
+    "interface_version": 1,
+    "manifest_sha256": "9e255c7926b16efea02f04eb301a2fe6cfc4a5b5813ee2d96dffb5807d17f8a8",
+    "network_policy": "none",
+    "package": "shadowfetch-missions",
+    "trust": "distro-managed"
+  }
+}

@@ -259,7 +259,7 @@ class ReceiptV2(MigrationHarness):
         (ws / "facts.md").write_text("The launch is Friday.\n")
 
     def receipt(self):
-        mission = self.store.create(kind="report", workspace_value="proj", title="t",
+        mission = self.store.create(kind="report", provider_id="codex", workspace_value="proj", title="t",
                                     prompt="p", inputs=["facts.md"], network="allow")
         mission_approvals.approve(self.store, mission)
         with mock.patch.object(sf.Executor, "agent_turn", return_value="Friday. [S1:L1]"):

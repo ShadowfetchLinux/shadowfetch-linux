@@ -15,9 +15,12 @@ import re
 from pathlib import Path
 import resource
 import shutil
+import socket
 import signal
 import subprocess
 import sys
+import tempfile
+import time
 import uuid
 
 VERSION = "4.0.0"
@@ -373,6 +376,25 @@ def applied(argv, *tokens):
                for index in range(len(argv) - width + 1))
 
 
+def network_namespaced(argv):
+    """Whether this argv creates a network namespace. Two mechanisms count.
+
+    bwrap's own --unshare-net makes one for posture 'none'. Posture 'allow'
+    needs the namespace to exist BEFORE bwrap so the NAT and the egress filter
+    can be installed into the one the sandbox will really run in, so an
+    `unshare --net` helper makes it and bwrap inherits it -- and bwrap must not
+    also be given --unshare-net there, or it would make a second, empty
+    namespace and leave the filtered one behind. Reading only bwrap's flag would
+    report a contained session as an uncontained one.
+    """
+    if applied(argv, "--unshare-net"):
+        return True
+    for index, value in enumerate(argv):
+        if os.path.basename(value) == "unshare" and "--net" in argv[index:]:
+            return True
+    return False
+
+
 def _status(active, mechanism, missing):
     return {"status": ENFORCED if active else NOT_ENFORCED,
             "mechanism": mechanism if active else missing}
@@ -384,8 +406,10 @@ def enforcement(argv, args, ws, grants, credentials, net):
     Read out of the BUILT argv rather than echoed back from the request. A
     record that repeated the request would make a control merely asked for
     indistinguishable from one the kernel is told to apply -- and two of these
-    fields, the egress allowlist and the masked paths, are asked for and
-    applied by nothing whatsoever.
+    fields' mechanisms differ by posture, and saying which one ran is the
+    whole point: an allowlist on an unshared namespace with no NAT is enforced
+    by there being no route at all, which is a different fact from an nftables
+    ruleset that permits three addresses.
     """
     egress = list(getattr(args, "egress_host", None) or [])
     masks = list(getattr(args, "mask_path", None) or [])
@@ -412,10 +436,20 @@ def enforcement(argv, args, ws, grants, credentials, net):
         "egress_allowlist": (
             {"status": NOT_APPLICABLE, "mechanism": "no egress host was asked for"}
             if not egress else
-            {"status": NOT_ENFORCED,
-             "mechanism": "there are two network postures, none and allow, and no "
-                          "destination filter anywhere. These hosts are recorded "
-                          "and reach nothing"}),
+            {"status": ENFORCED,
+             "mechanism": "no route exists: the sandbox has its own network "
+                          "namespace and no NAT was attached to it, so every "
+                          "destination is unreachable, allowlisted or not"}
+            if net != "allow" else
+            {"status": ENFORCED,
+             "mechanism": "an nftables ruleset in the sandbox's own network "
+                          "namespace, default DROP, permitting only the addresses "
+                          "these names resolved to plus the NAT itself. Installed "
+                          "before the sandbox starts, by the process that created "
+                          "the namespace. Filtering is BY ADDRESS: a name is "
+                          "resolved once, on the host, at launch -- an address set "
+                          "that changes afterwards is no longer reachable until "
+                          "the next run"}),
         "masked_paths": (
             {"status": NOT_APPLICABLE, "mechanism": "no masked path was asked for"}
             if not masks else
@@ -446,11 +480,19 @@ def enforcement(argv, args, ws, grants, credentials, net):
     # its own namespace instead, so the host's loopback and abstract sockets are
     # out of reach either way.
     report["network"] = _status(
-        applied(argv, "--unshare-net"),
-        ("bwrap --unshare-net: the sandbox gets its own network namespace. "
-         + ("Posture 'none' leaves it empty" if net == "none" else
-            "Posture 'allow' adds a slirp4netns NAT with --disable-host-loopback, "
-            "so the sandbox reaches the internet and not the host")),
+        network_namespaced(argv),
+        ("the sandbox gets its own network namespace. "
+         + ("bwrap --unshare-net makes it and posture 'none' leaves it empty"
+            if net == "none" else
+            "Names are resolved through the NAT's own forwarder at "
+            + SLIRP_RESOLVER + ", because the host's resolver is a loopback "
+            "stub that does not exist in this namespace -- so a query name can "
+            "carry data out even where an address cannot. "
+            "`unshare --user --net` makes it before bwrap, which inherits it "
+            "rather than making a second one, so the slirp4netns NAT and the "
+            "egress filter are installed into the namespace the sandbox really "
+            "runs in. --disable-host-loopback keeps the host's loopback "
+            "services and its abstract sockets out of reach")),
         "a network namespace was not created")
     report["read_grants"] = (
         {"status": NOT_APPLICABLE, "mechanism": "no read grant was asked for"}
@@ -475,10 +517,41 @@ def enforcement(argv, args, ws, grants, credentials, net):
     return report
 
 
-def arguments(args, ws, sid):
-    net = args.net or ("none" if element() == "ice" else "allow")
+def effective_network(args):
+    """The posture this run will really have.
+
+    Extracted because the launcher has to know it BEFORE the argv is built: a
+    networked sandbox needs a resolver file that the argv has to bind, and the
+    argv is built here.
+    """
+    return args.net or ("none" if element() == "ice" else "allow")
+
+
+# The NAT's own DNS forwarder. slirp4netns --configure lays out 10.0.2.0/24 with
+# the gateway at .2 and a DNS forwarder at .3, and the egress ruleset accepts
+# that subnet because without it nothing resolves or routes.
+#
+# WHAT THIS BUYS AND WHAT IT COSTS. Without it a networked sandbox could open a
+# socket to an address and could not turn a NAME into one: the host's
+# /etc/resolv.conf points at 127.0.0.53, which inside the sandbox's own network
+# namespace is the sandbox's own empty loopback. Every cloud provider addresses
+# its API by name, so every turn failed at getaddrinfo. What it costs is stated
+# rather than hidden: DNS queries leave through the forwarder, so a payload can
+# encode data in query names and the destination allowlist -- which filters by
+# address -- does not see it. An allowlist narrows where bytes can be SENT; it
+# is not a claim that nothing can be signalled out.
+SLIRP_RESOLVER = "10.0.2.3"
+SLIRP_RESOLV_CONF = ("# Written by Shadowfetch Firebreak for a sandbox that has\n"
+                     "# its own network namespace: the host's resolver is not\n"
+                     "# reachable from inside one.\n"
+                     "nameserver " + SLIRP_RESOLVER + "\n"
+                     "options timeout:2 attempts:2\n")
+
+
+def arguments(args, ws, sid, resolv=None):
+    net = effective_network(args)
     grants = read_grants(args.read, ws)
-    command = ["bwrap", "--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid", "--unshare-uts", "--unshare-ipc", "--hostname", "firebreak", "--clearenv"]
+    command = [trusted_program(BWRAP_PATHS, "bubblewrap"), "--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid", "--unshare-uts", "--unshare-ipc", "--hostname", "firebreak", "--clearenv"]
     for system in ("/usr", "/bin", "/sbin", "/lib", "/lib64"):
         path = Path(system)
         if path.is_symlink():
@@ -487,9 +560,17 @@ def arguments(args, ws, sid):
             command += ["--ro-bind", system, system]
     command += ["--dir", "/etc"]
     for public in PUBLIC_ETC:
+        # The host's resolver is deliberately NOT carried into a sandbox that
+        # has its own network namespace: it names a loopback stub that only
+        # exists in the host's namespace, so binding it hands the sandbox a
+        # resolver that cannot answer. The caller supplies one that can.
+        if public == "resolv.conf" and resolv is not None:
+            continue
         source = Path("/etc") / public
         if source.exists():
             command += ["--ro-bind", str(source.resolve()), str(source)]
+    if resolv is not None:
+        command += ["--ro-bind", str(resolv), "/etc/resolv.conf"]
     command += ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp", "--tmpfs", "/run", "--dir", "/home", "--dir", "/home/agent", "--dir", "/home/agent/.config", "--dir", "/home/agent/.cache", "--dir", "/home/agent/.local", "--dir", "/home/agent/.local/state", "--dir", "/home/agent/.local/share"]
     for grant in grants:
         command += ["--ro-bind", str(grant), str(grant)]
@@ -509,12 +590,13 @@ def arguments(args, ws, sid):
     for masked in mask_targets(args, ws):
         command += masked
     
-    # EVERY session gets its own network namespace. 'allow' used to create
-    # none at all, so a sandbox that wanted the internet also got the host's
-    # loopback, its abstract AF_UNIX namespace and its LAN. Connectivity for
-    # 'allow' comes from a user-space NAT attached to this namespace instead,
-    # wired up in run() once bwrap reports the child pid.
-    command += ["--unshare-net"]
+    # 'none' unshares here and stays empty. 'allow' does NOT: run() has
+    # already created, NAT'd and filtered a namespace, and bwrap INHERITS it --
+    # unsharing again would hand the sandbox a fresh empty one and undo both the
+    # connectivity and the allowlist. Either way the sandbox never has the
+    # host's network, its loopback services or its abstract sockets.
+    if net == "none":
+        command += ["--unshare-net"]
     environment = {"HOME": "/home/agent", "USER": "agent", "LOGNAME": "agent", "PATH": SANDBOX_PATH, "LANG": "C.UTF-8", "XDG_CONFIG_HOME": "/home/agent/.config", "XDG_CACHE_HOME": "/home/agent/.cache", "XDG_STATE_HOME": "/home/agent/.local/state", "XDG_DATA_HOME": "/home/agent/.local/share", "SHADOWFETCH_FIREBREAK": sid, "SHADOWFETCH_FIREBREAK_WORKSPACE": ws.name, "TMPDIR": "/tmp", "PYTHONDONTWRITEBYTECODE": "1"}
     if getattr(args, "codex_account", False):
         if net != "allow":
@@ -570,6 +652,92 @@ def user_service_env():
         env.setdefault("XDG_RUNTIME_DIR", str(runtime))
         env.setdefault("DBUS_SESSION_BUS_ADDRESS", "unix:path=" + str(runtime / "bus"))
     return env
+
+
+# The programs that build and police the sandbox's network. Absolute paths:
+# these decide whether a sandbox is contained, and a helper found on PATH would
+# let the caller choose what "contained" means.
+BWRAP_PATHS = ("/usr/bin/bwrap", "/bin/bwrap")
+UNSHARE_PATHS = ("/usr/bin/unshare", "/bin/unshare")
+NFT_PATHS = ("/usr/sbin/nft", "/sbin/nft", "/usr/bin/nft")
+EGRESS_DNS_TIMEOUT = 10
+
+
+def trusted_program(candidates, what):
+    for candidate in candidates:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    raise Error("no %s exists at any of %s, and the sandbox will not run "
+                "without it rather than run unfiltered"
+                % (what, " or ".join(candidates)))
+
+
+def egress_addresses(hosts):
+    """Resolve the declared allowlist to IPv4 literals, on the HOST.
+
+    The filter is by address because that is what a packet carries. Resolving
+    here rather than in the sandbox is deliberate: the sandbox never gets to
+    choose what a name means. The cost is stated rather than hidden -- a host
+    whose address set changes after this moment (a CDN, a failover) is no longer
+    reachable until the next run, and a name that resolves to several addresses
+    is pinned to the ones seen now.
+    """
+    resolved = {}
+    for host in hosts:
+        try:
+            infos = socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
+        except OSError as exc:
+            raise Error("cannot resolve the declared egress host %s: %s. The "
+                        "sandbox is not started with an allowlist that could not "
+                        "be turned into addresses" % (redact(host), redact(exc)))
+        resolved[host] = sorted({info[4][0] for info in infos})
+    return resolved
+
+
+def egress_ruleset(addresses):
+    """The nftables policy the sandbox runs under.
+
+    Default drop. The slirp subnet is allowed because that is the NAT itself --
+    the gateway and its DNS -- and without it nothing resolves or routes. Every
+    other destination must be an address the allowlist named.
+    """
+    lines = ["table inet sfegress {",
+             "  chain output {",
+             "    type filter hook output priority 0; policy drop;",
+             "    ct state established,related counter accept",
+             '    oif "lo" counter accept',
+             "    ip daddr 10.0.2.0/24 counter accept"]
+    for host, ips in sorted(addresses.items()):
+        for ip in ips:
+            lines.append("    ip daddr %s counter accept" % ip)
+    lines += ["    counter drop", "  }", "}"]
+    return "\n".join(lines) + "\n"
+
+
+# The helper that owns the namespace. It runs INSIDE a fresh user+net namespace,
+# so it holds CAP_NET_ADMIN there and can install the filter without anybody
+# reaching in from outside -- which is the step that could not be made to work
+# when bwrap owned the namespace.
+EGRESS_HELPER = r"""
+import os, subprocess, sys
+pid_path, ready_path, nft_bin, rules = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+with open(pid_path, "w") as handle:
+    handle.write(str(os.getpid()))
+# Block until the NAT has been attached from outside. A payload that ran before
+# this point would run on an unconfigured interface.
+with open(ready_path) as handle:
+    handle.read(1)
+subprocess.run(["/usr/sbin/ip", "link", "set", "lo", "up"],
+               check=False, capture_output=True)
+if rules:
+    done = subprocess.run([nft_bin, "-f", "-"], input=rules,
+                          text=True, capture_output=True)
+    if done.returncode != 0:
+        sys.stderr.write("firebreak: the egress allowlist did not install: "
+                         + done.stderr[-300:])
+        raise SystemExit(70)
+os.execv(sys.argv[5], sys.argv[5:])
+"""
 
 
 # The user-space NAT that gives an isolated namespace outbound connectivity.
@@ -656,6 +824,23 @@ def mask_targets(args, ws):
 
 
 def run(args):
+    """Cleanup wrapper.
+
+    The networked posture needs a scratch directory before the argv exists --
+    the resolver file is bound BY the argv -- and it holds the namespace pid
+    file and the release FIFO as well. It must not survive any exit path,
+    including the ones that refuse before a sandbox is ever built, so the
+    directory is owned here and the work happens below.
+    """
+    holder = {"scratch": None}
+    try:
+        return _run(args, holder)
+    finally:
+        if holder["scratch"]:
+            shutil.rmtree(holder["scratch"], ignore_errors=True)
+
+
+def _run(args, holder):
     if args.agent_command and args.agent_command[0] == "--":
         args.agent_command.pop(0)
     if not args.agent_command:
@@ -666,7 +851,14 @@ def run(args):
         raise Error("Invalid memory, CPU time or process limit")
     ws = workspace(args.workspace)
     sid = session_id(getattr(args, "session_id", None))
-    cmd, net, grants, credentials = arguments(args, ws, sid)
+    resolv = None
+    if effective_network(args) == "allow":
+        holder["scratch"] = tempfile.mkdtemp(prefix="sf-egress-")
+        resolv = os.path.join(holder["scratch"], "resolv.conf")
+        with open(resolv, "w", encoding="utf-8") as handle:
+            handle.write(SLIRP_RESOLV_CONF)
+        os.chmod(resolv, 0o644)
+    cmd, net, grants, credentials = arguments(args, ws, sid, resolv=resolv)
     # The values behind the granted identities, so the record can strike them
     # from an argv by EQUALITY. Held only for the length of building the record
     # and never written anywhere; arguments() read them from this same
@@ -699,9 +891,62 @@ def run(args):
     # run id is minted here so a started record and an ended record still pair
     # up unambiguously when it is.
     run_id = uuid.uuid4().hex
+    directory = state()
+    record = directory / (sid + ".session")
+    # THE RECORDED ARGV HAS TO BE THE ARGV THAT RUNS. Posture 'allow' wraps the
+    # sandbox in a helper that owns the network namespace and installs the
+    # egress filter, so a record built from the bwrap argv alone would omit both
+    # mechanisms doing the containment -- and enforcement(), which reads the
+    # argv rather than the request, would report a namespace nobody created.
+    # Built here, recorded, and spawned unchanged.
+    scratch = holder["scratch"]
+    ready_path = None
+    launch = list(cmd)
+    if net == "allow":
+        try:
+            pid_path = os.path.join(scratch, "ns.pid")
+            ready_path = os.path.join(scratch, "ready")
+            os.mkfifo(ready_path)
+            addresses = egress_addresses(args.egress_host or [])
+            rules = egress_ruleset(addresses) if addresses else ""
+            marker = launch.index("--") + 1
+            # systemd-run wraps the WHOLE tree, so the cgroup limits still cover
+            # the helper, the sandbox and everything they start.
+            launch[marker:marker] = [
+                trusted_program(UNSHARE_PATHS, "unshare"),
+                "--user", "--map-root-user", "--net", "--fork",
+                "/usr/bin/python3", "-c", EGRESS_HELPER,
+                pid_path, ready_path,
+                trusted_program(NFT_PATHS, "nft"), rules]
+        except BaseException as exc:
+            # A REFUSAL IS A DECISION, AND IT IS THE ONE WORTH KEEPING. Building
+            # this argv can refuse -- an egress host that resolves to no address
+            # is refused rather than run unfiltered -- and because the started
+            # record is written after it, that decision left no trace whatsoever:
+            # the audit directory showed no session, as though nobody had asked.
+            # One line, with what is known at this point.
+            try:
+                append_record(record, {
+                    "record": "refused", "schema": RECORD_SCHEMA,
+                    "firebreak": VERSION, "at": started, "started": started,
+                    "session": sid, "run": run_id,
+                    "mission": getattr(args, "mission", None),
+                    "task": getattr(args, "task", None),
+                    "workspace": str(ws),
+                    "network_requested": args.net,
+                    "network_effective": net,
+                    "egress_allowlist_requested": [
+                        redact(str(host)) for host in
+                        (getattr(args, "egress_host", None) or [])],
+                    "refused_before": "sandbox-launch",
+                    "reason": redact(exc)})
+            except OSError as write_failure:
+                print("Firebreak: the refusal of session " + sid
+                      + " was not recorded: " + redact(write_failure),
+                      file=sys.stderr)
+            raise
     program = args.agent_command[0] if args.agent_command else ""
     resolved, resolution = resolved_executable(program, ws)
-    directory = state()
     manifest = {"record": "started",
                 "schema": RECORD_SCHEMA,
                 "firebreak": VERSION,
@@ -731,7 +976,7 @@ def run(args):
                 # the process.
                 "agent_command": redacted_argv(args.agent_command,
                                                values=granted_values),
-                "sandbox_argv": redacted_argv(cmd, values=granted_values),
+                "sandbox_argv": redacted_argv(launch, values=granted_values),
                 "network_requested": args.net,
                 "network_effective": net,
                 # Redacted like everything else: a host can carry credentials
@@ -756,11 +1001,15 @@ def run(args):
                 "limits_requested": {"memory_mb": args.memory_mb,
                                      "cpu_seconds": args.cpu_seconds,
                                      "processes": args.processes},
-                "enforcement": enforcement(cmd, args, ws, grants, credentials, net)}
-    record = directory / (sid + ".session")
+                "enforcement": enforcement(launch, args, ws, grants, credentials, net)}
     # Before the sandbox is spawned, not after: a session that cannot be
     # recorded is not executed.
-    append_record(record, manifest)
+    try:
+        append_record(record, manifest)
+    except BaseException:
+        if scratch:
+            shutil.rmtree(scratch, ignore_errors=True)
+        raise
     process = None
     rc = None
     reason = "not-started"
@@ -773,38 +1022,45 @@ def run(args):
         try:
             nat = None
             if net == "allow":
-                # bwrap makes the namespace, reports the child pid on --info-fd,
-                # and then WAITS on --block-fd. slirp4netns configures tap0 in
-                # that namespace and signals --ready-fd. Only then is the block
-                # released, so the payload never runs on an unconfigured
-                # interface and never runs before the NAT exists.
-                info_r, info_w = os.pipe()
-                block_r, block_w = os.pipe()
-                ready_r, ready_w = os.pipe()
-                launch = list(cmd)
-                marker = launch.index("--") + 1        # after systemd-run's --
-                launch[marker + 1:marker + 1] = ["--info-fd", str(info_w),
-                                                 "--block-fd", str(block_r)]
-                process = subprocess.Popen(
-                    launch, preexec_fn=limits(args), env=user_service_env(),
-                    pass_fds=(info_w, block_r))
-                os.close(info_w); os.close(block_r)
+                # THE NAMESPACE IS OURS FROM THE FIRST INSTANT. bwrap used to
+                # create it, and reaching into bwrap's namespace could not be
+                # made to work: joining it stopped slirp4netns attaching
+                # afterwards, and attaching first made it unjoinable. Both
+                # directions were measured -- see STAGE_C_FINDINGS.md.
+                #
+                # So a helper unshares user+net, slirp attaches the NAT to that
+                # namespace from outside, the helper installs the allowlist
+                # ITSELF (it holds CAP_NET_ADMIN over the namespace it just
+                # created, so no nsenter is needed at all), and it finally execs
+                # bwrap WITHOUT --unshare-net. The sandbox inherits a namespace
+                # that is already NAT'd and already filtered. The argv for all
+                # of that was built and recorded above, and is spawned as-is.
+                process = subprocess.Popen(launch, preexec_fn=limits(args),
+                                           env=user_service_env())
+                nat = None
                 try:
-                    info = b""
-                    with os.fdopen(info_r, "rb") as handle:
-                        while b"}" not in info:
-                            chunk = handle.read(1)
-                            if not chunk:
-                                break
-                            info += chunk
-                    try:
-                        child_pid = json.loads(info.decode("utf-8"))["child-pid"]
-                    except (ValueError, KeyError, UnicodeDecodeError):
+                    deadline = time.monotonic() + 20
+                    ns_pid = None
+                    pid_file = os.path.join(scratch, "ns.pid")
+                    while time.monotonic() < deadline:
+                        try:
+                            with open(pid_file) as handle:
+                                text = handle.read().strip()
+                        except OSError:
+                            text = ""
+                        if text.isdigit():
+                            ns_pid = int(text)
+                            break
+                        if process.poll() is not None:
+                            break
+                        time.sleep(0.05)
+                    if ns_pid is None:
                         raise Error(
-                            "the sandbox did not report its network namespace, so "
-                            "no NAT could be attached to it and execution is "
-                            "refused rather than run with the host network")
-                    nat = attach_network(child_pid, ready_w)
+                            "the network namespace helper never reported itself, "
+                            "so no NAT could be attached and execution is refused "
+                            "rather than run unfiltered")
+                    ready_r, ready_w = os.pipe()
+                    nat = attach_network(ns_pid, ready_w)
                     os.close(ready_w)
                     with os.fdopen(ready_r, "rb") as handle:
                         if not handle.read(1):
@@ -812,12 +1068,12 @@ def run(args):
                                 "the network helper exited before the sandbox "
                                 "interface came up: "
                                 + (nat.stderr.read() if nat.stderr else "")[-300:])
-                finally:
-                    os.close(block_w)      # release bwrap either way
-                try:
+                    with open(ready_path, "w") as handle:
+                        handle.write("go")     # release the helper
                     rc = process.wait()
                 finally:
                     terminate_nat(nat)
+                    shutil.rmtree(scratch, ignore_errors=True)
             else:
                 process = subprocess.Popen(cmd, preexec_fn=limits(args),
                                            env=user_service_env())
@@ -875,9 +1131,13 @@ def main(argv=None):
     execute.add_argument("--codex-account", action="store_true", help="Grant the dedicated Mission Control account for an approved cloud task")
     execute.add_argument("--credential-env", action="append", default=[], metavar="NAME")
     execute.add_argument("--egress-host", action="append", default=[], metavar="HOST",
-                         help="Destination the caller intends to allow. RECORDED ONLY: "
-                              "there are two network postures and no destination filter, "
-                              "so this reaches nothing and the session record says so")
+                         help="Destination the sandbox may reach under --net allow. "
+                              "Resolved to addresses on the host at launch and installed "
+                              "as a default-DROP nftables ruleset in the sandbox's own "
+                              "network namespace, before the payload starts. Filtering is "
+                              "BY ADDRESS: a name whose address set changes afterwards is "
+                              "unreachable until the next run. Under --net none there is "
+                              "no route to filter and the record says so")
     execute.add_argument("--mask-path", action="append", default=[], metavar="ABSOLUTE_PATH",
                          help="Path inside the workspace to hide from the sandbox. A "
                               "directory becomes an empty tmpfs, a file becomes "

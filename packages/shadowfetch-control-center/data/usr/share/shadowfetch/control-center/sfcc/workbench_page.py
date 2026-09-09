@@ -2,7 +2,6 @@
 
 import json
 import os
-import shutil
 from pathlib import Path
 
 from PyQt6.QtCore import Qt
@@ -105,7 +104,8 @@ class ProfileCard(Card):
         package_state = busutil.installed_map(packages)
         have_packages = sum(package_state.values())
         commands = [str(value) for value in self.profile.get("commands", [])]
-        have_commands = sum(1 for command in commands if shutil.which(command))
+        have_commands = sum(1 for command in commands
+                            if busutil.installed_command(command))
         ready = have_packages == len(packages) and have_commands == len(commands)
         self.ready = ready
         if ready:
@@ -119,13 +119,17 @@ class ProfileCard(Card):
                 f"{have_commands}/{len(commands)} commands ready.")
             self.state.setObjectName("statusWarn")
             self.install.setText("Install tools")
-            self.install.setEnabled(os.access(busutil.BUNDLE_INSTALL, os.X_OK))
+            self.install.setEnabled(busutil.bundle_install_argv("probe") is not None)
         self.state.style().unpolish(self.state)
         self.state.style().polish(self.state)
 
 
 class WorkbenchPage(QWidget):
     """Operational profile launcher; all root work stays in the bundle helper."""
+
+    @classmethod
+    def build(cls, context):
+        return cls(context.open_route)
 
     def __init__(self, open_route=None):
         super().__init__()
@@ -196,10 +200,21 @@ class WorkbenchPage(QWidget):
                 self, "Connection needed",
                 "This profile installs signed packages. Nothing changed; connect to the internet and retry.")
             return
+        # ONE builder for this argv, shared with Software & Updates. It used to
+        # be spelled out here and there, and both spellings named pkexec as a
+        # bare word that $PATH resolved -- the program that decides whether the
+        # password dialog the person is about to answer is the real one.
+        argv = busutil.bundle_install_argv(str(profile.get("catalog_id", "")))
+        if argv is None:
+            QMessageBox.information(
+                self, "Bundle installer not available",
+                "The root-owned bundle installer is not installed, so this "
+                "profile cannot be installed from here. Nothing changed.")
+            return
         dialog = ProcessDialog(
             self,
             f"Installing {profile['name']}",
-            ["pkexec", busutil.BUNDLE_INSTALL, "install", profile["catalog_id"]],
+            argv,
             "The package plan is fixed by the root-owned catalog. On Btrfs, a Phoenix Point protects this transaction.",
         )
         dialog.completed.connect(lambda _code: self.refresh())

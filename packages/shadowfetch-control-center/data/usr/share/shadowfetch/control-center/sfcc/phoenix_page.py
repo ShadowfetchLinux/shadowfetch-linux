@@ -308,7 +308,7 @@ class PhoenixPage(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No)
         if answer == QMessageBox.StandardButton.Yes:
-            subprocess.Popen(["systemctl", "reboot"])
+            subprocess.Popen([busutil.SYSTEMCTL, "reboot"])
 
     # ---- apt-snapshot toggle ----------------------------------------------
     def _toggle_apt_snapshots(self, checked: bool) -> None:
@@ -393,10 +393,12 @@ class PhoenixPage(QWidget):
             except OSError:
                 pass
         restarted = subprocess.run(
-            ["systemctl", "--user", "restart", "plasma-plasmashell.service"],
+            [busutil.SYSTEMCTL, "--user", "restart",
+             "plasma-plasmashell.service"],
             timeout=15, check=False).returncode == 0
-        if not restarted and shutil.which("plasmashell"):
-            subprocess.Popen(["plasmashell", "--replace"],
+        plasmashell = busutil.installed_command("plasmashell")
+        if not restarted and plasmashell:
+            subprocess.Popen([plasmashell, "--replace"],
                              stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
         QMessageBox.information(

@@ -64,11 +64,11 @@ columns; `may claim?` is the only one that answers "may the UI say this".
 | 10 | Mission creation/audit atomic | SQLite `BEGIN IMMEDIATE` | PARTIAL | PARTIAL | INDIRECT | internal |
 | 11 | Cancellation recorded | SQL txn + `kill_tree` + systemd scope | YES | YES | YES | YES |
 | 12 | Provider executable trust classified | `stat` walk + manifest path allowlist | YES | YES | **NO** | YES |
-| 13 | masked_paths enforced | **none** | YES (honesty) | YES (honesty) | YES | **NO — PLANNED PHASE 4** |
+| 13 | masked_paths enforced | `bwrap --tmpfs` / `--ro-bind /dev/null` | YES | YES (live) | YES | YES |
 | 14 | workspace_mode enforced | `bwrap --ro-bind` | YES | YES (live) | PARTIAL | YES |
-| 15 | egress_allowlist enforced | **none** | YES (honesty) | YES (honesty) | YES | **NO — PLANNED PHASE 4** |
+| 15 | egress_allowlist enforced | nftables default-DROP in the sandbox's own netns | YES | YES (live) | YES | YES, by address, when hosts are declared |
 | 16 | Credential isolation | `bwrap --clearenv` + `--setenv` | YES | YES (live) | YES | YES |
-| 17 | Network namespace isolation | `bwrap --unshare-net` for `none` only | YES | YES (live) | PARTIAL | YES for `none`, **NO** otherwise |
+| 17 | Network namespace isolation | `bwrap --unshare-net`, or `unshare --net` + slirp4netns NAT | YES | YES (live) | YES | YES, both postures |
 | 18 | Resource limits (mem/proc/CPU) | systemd `MemoryMax`/`TasksMax`; `RLIMIT_CPU` | YES | YES (live) | PARTIAL | YES for mem+proc, PARTIAL for CPU |
 | 19 | MCP destructive gated and audited | Python gate + hash-chained JSONL + journald | YES | YES | YES | YES as "withheld and audited" only |
 
@@ -103,7 +103,7 @@ as unenforced. There is nothing else there to test.
 | **ADVERSARIAL TESTED** | YES -- attack_approval.py `approval-scope-widened-after-grant`, `credential-ceiling-widened`, `network-value-forged-in-config`, `workspace-prefix-sibling`, `workspace-glob-in-the-scope`, `workspace-root-repointed`, `capability-swapped-after-approval`, `provider-swapped-after-approval`, `provider-upgraded-after-approval`. All PASS. |
 | **ENFORCEMENT LAYER** | Python containment test over a scope re-derived from the manifest, evaluated under the workspace execution lock. |
 | **USER-FACING CLAIM ALLOWED?** | YES for capability, provider, workspace, network POSTURE, credential identity and read path. NO for network DESTINATION -- see row 15. |
-| **NOTES** | Two honest caveats. (a) `_covers_value()` sf_policy.py:140 honours `*` and `fnmatch` globs, so a human who types a wildcard workspace has genuinely widened the grant; `workspace-glob-in-the-scope` treats that as intended and the UI must render the granted string rather than "this workspace". (b) `egress-widened-after-approval` observed the ceiling change from `api.openai.com` to `attacker.example` while the same approval kept covering it: hosts are not in `Scope` at all, so there is nothing to widen and nothing to detect. |
+| **NOTES** | Two honest caveats. (a) `_covers_value()` honours `*` and `fnmatch` globs, so a human who types a wildcard workspace has genuinely widened the grant; `workspace-glob-in-the-scope` treats that as intended and the UI must render the granted string rather than "this workspace". (b) `Scope` now carries `egress_hosts`, because Stage C made destinations an enforced privilege and a privilege outside the approved scope is one that can be widened after the human agreed -- `egress-widened-after-approval` had observed exactly that. Consequence, stated rather than hidden: an approval stored before that field existed reads as NO hosts, so it stops covering a mission that wants any, and the mission goes back for a fresh grant. That direction is deliberate; the alternative is honouring an old grant for destinations nobody was shown. |
 
 ---
 
@@ -262,13 +262,13 @@ as unenforced. There is nothing else there to test.
 | | |
 |---|---|
 | **CLAIM** | Paths a provider declares must not be visible to it are hidden from the sandbox. |
-| **IMPLEMENTED** | **NO — PLANNED PHASE 4.** The field exists and is recorded and nothing else. `SandboxSpec.masked_paths` sf_providers.py:295; `sandbox_from_manifest()` :864 reads it; `SandboxSpec.narrow()` :336 and `verify_invocation()` :1009-1013 refuse to DROP a declared mask; `SANDBOX_ENFORCEMENT["masked_paths"]` :912 is `NOT_ENFORCED` with the reason. Firebreak accepts `--mask-path` (shadowfetch-firebreak:719) and its own `enforcement()` reports it `not_enforced` (:407-412). The flag reaches no bwrap argument: `arguments()` :459-521 builds no mask. |
-| **UNIT TESTED** | YES, for the honesty of the reporting, which is the only thing there is to test. tests/test_sandbox_spec_audit.py `test_phase_4_backlog_is_exactly_these_two_fields` (:480), `test_no_field_names_a_restriction_firebreak_does_not_apply` (test_firebreak_records.py:330), `test_a_masked_path_changes_nothing_and_says_it_changes_nothing` (test_firebreak_records.py:319), tests/test_correlation.py `test_the_unenforced_list_is_exactly_the_known_gaps` (:244). |
-| **INTEGRATION TESTED** | YES, same sense -- test_firebreak_records.py:319 runs Firebreak and reads the `.session` record back. |
-| **ADVERSARIAL TESTED** | YES -- attack_concurrency.py `21-a-declared-mask-reaches-nothing` and `21-declared-masks-are-disclosed`. Observed this run: `shadowfetch-firebreak run --mask-path .../canary.txt -- /usr/bin/cat .../canary.txt` returned rc 0 and printed `SHADOWFETCH-ATTACK-CANARY`; the sandboxed process read the "masked" file in full. The session record said `masked_paths ... status: not_enforced`. The attack PASSES only on the claim that no surface called it a control. |
-| **ENFORCEMENT LAYER** | **none.** No bwrap flag, no systemd directive, no filter. The only mechanism attached to the field is the anti-widening check, which prevents an adapter dropping a mask that already reaches nothing. |
-| **USER-FACING CLAIM ALLOWED?** | **NO.** Not as protection, not as a "best effort", not with a footnote. The schema's own description says it: "Do not rely on them for containment; a path that must be invisible must not be inside the workspace or a read grant." |
-| **NOTES** | No shipped manifest declares any masked path (`codex.json` and `offline-media.json` both `[]`), so today the field is inert as well as unenforced. That is why this must be written down: the day someone adds one, nothing will change and nothing will complain. |
+| **IMPLEMENTED** | **YES, since Stage E.** Each declared path is mounted over inside the sandbox's own mount namespace: an empty tmpfs over a directory, `/dev/null` over a file (`mask_targets()`, shadowfetch-firebreak). `enforcement()` reads the mounts back out of the argv about to be spawned rather than echoing the request, so a mask that did not reach bwrap reports `not_enforced`. The anti-widening checks that were the only mechanism before are still there: `SandboxSpec.narrow()` and `verify_invocation()` refuse to DROP a declared mask. |
+| **UNIT TESTED** | YES. test_firebreak_records.py `test_a_masked_path_changes_the_sandbox_and_says_so` and `test_a_masked_directory_becomes_an_empty_tmpfs`; tests/test_sandbox_spec_audit.py for the audit table and the remaining backlog. |
+| **INTEGRATION TESTED** | YES -- the tests run Firebreak and read the `.session` record back. |
+| **ADVERSARIAL TESTED** | YES -- attack_concurrency.py `21-a-declared-mask-reaches-nothing` (which now measures that it reaches something) and `21-declared-masks-are-disclosed`. Measured through the real Firebreak: direct open, absolute path, relative traversal, symlink, nested file and renaming the target are each denied. |
+| **ENFORCEMENT LAYER** | The kernel, via the sandbox's own mount namespace. No cooperation from the payload is involved. |
+| **USER-FACING CLAIM ALLOWED?** | YES, with its real limit stated: masking is BY PATH. A hardlink to the same inode under an unmasked name is still readable, and a path outside the workspace is refused rather than masked. |
+| **NOTES** | The claim that may be made is "this path is not visible in the sandbox", not "this data is unreachable". The shipped `claude` manifest declares no masks and `localmodel` declares none either, so the field is exercised today mainly by the tests -- which is why the adversarial cases matter more here than the shipped ones. |
 
 ---
 
@@ -292,13 +292,13 @@ as unenforced. There is nothing else there to test.
 | | |
 |---|---|
 | **CLAIM** | A provider only reaches the hosts its allowlist names. |
-| **IMPLEMENTED** | **NO — PLANNED PHASE 4.** Declared, validated, recorded, and reaching no filter. `SandboxSpec.egress_allowlist` sf_providers.py:293 (with `__post_init__` :307 refusing an allowlist on an offline spec); `SANDBOX_ENFORCEMENT["egress_allowlist"]` :908 is `NOT_ENFORCED`; `POLICY_MEDIATION["network_destination"]` sf_policy.py:58 is `OBSERVABLE_ONLY`. Firebreak has two postures only -- `--net` accepts `none` and `allow` (shadowfetch-firebreak:711) -- so `allowlist` collapses to `allow`, i.e. the host's network. `sandbox_enforcement()` sf_providers.py:958-967 downgrades the `network` row to PARTIAL for any posture that is not `none`, for exactly this reason. |
-| **UNIT TESTED** | YES, for the honesty of the reporting only. tests/test_correlation.py `test_an_egress_allowlist_is_recorded_as_requested_never_as_enforced` (:134); tests/test_sandbox_spec_audit.py `test_phase_4_backlog_is_exactly_these_two_fields` (:480), `test_an_offline_ceiling_cannot_even_construct_an_egress_allowlist` (:622); test_firebreak_records.py `test_an_egress_allowlist_changes_nothing_and_says_it_changes_nothing` (:308), `test_network_allow_is_never_recorded_as_enforced` (:293); tests/test_approvals.py `test_the_two_known_gaps_are_not_claimed_as_mediated` (:91). |
-| **INTEGRATION TESTED** | YES, same sense -- the Firebreak record is read back from a real run. |
-| **ADVERSARIAL TESTED** | YES -- attack_concurrency.py `21-an-allowlist-reaches-a-destination-it-never-allowed` and attack_approval.py `egress-widened-after-approval`. Observed this run: with `--net allow --egress-host api.example.com`, the sandbox connected to `127.0.0.1:47625` and delivered `b'REACHED'`. Separately, a ceiling silently changed to `['api.openai.com', 'attacker.example']` was still covered by the existing approval and produced no finding -- "THE DESTINATION CHANGE WAS NOT PREVENTED AND WAS NOT DETECTED". |
-| **ENFORCEMENT LAYER** | **none.** No nftables rule, no proxy, no DNS restriction, no namespace beyond on/off. |
-| **USER-FACING CLAIM ALLOWED?** | **NO.** Never list the hosts as "allowed destinations" in any surface where a reader could take that as a boundary. What a human approves is the POSTURE -- "this reaches the internet" -- and that is the only thing the approval record actually means. |
-| **NOTES** | The allowlist is genuinely useful as a declaration: it is in the manifest, in the sealed policy, in the session record and in the receipt, so a reviewer can see what a provider SAYS it will contact. That is a disclosure, and calling it a permission is the specific error this row exists to prevent. |
+| **IMPLEMENTED** | **YES, since Stage C, and only where hosts are declared.** A helper unshares user+net BEFORE bwrap, slirp4netns attaches the NAT to that namespace from outside, the helper installs an nftables ruleset in the namespace it owns (default `policy drop`, accepting established/related, `lo`, the NAT's own 10.0.2.0/24, and one `ip daddr` per resolved address), and only then execs bwrap without `--unshare-net`. The sandbox inherits a namespace that is already NAT'd and already filtered. Names are resolved ON THE HOST at launch: the sandbox never chooses what a name means, and a host that resolves to nothing refuses the run rather than starting it unfiltered. |
+| **UNIT TESTED** | YES. test_firebreak_records.py `test_an_egress_allowlist_reaches_a_real_filter_and_says_so`, `test_an_egress_allowlist_on_an_unrouted_namespace_is_enforced_by_absence`, `test_the_recorded_argv_is_the_argv_that_was_spawned`; tests/test_approvals.py for the per-decision mediation; tests/test_sandbox_spec_audit.py for the audit table. |
+| **INTEGRATION TESTED** | YES -- measured through the real Firebreak: `with allowlist -> allowed REACHED, denied blocked:TimeoutError`; `no allowlist -> both REACHED`; `net=none -> both blocked`. |
+| **ADVERSARIAL TESTED** | YES -- attack_concurrency.py `21-an-allowlist-reaches-a-destination-it-never-allowed` (loopback contained, the allowlisted address reached, an un-allowlisted address blocked) and attack_approval.py `egress-widened-after-approval`, which now reports THE DESTINATION CHANGE WAS PREVENTED: `Scope.egress_hosts` carries the destinations, so widening the ceiling after a grant stops the approval covering the mission. |
+| **ENFORCEMENT LAYER** | nftables in a network namespace the launcher owns, installed by the process that created it, before the payload runs. |
+| **USER-FACING CLAIM ALLOWED?** | YES, with three limits stated. (a) FILTERING IS BY ADDRESS: a name is resolved once, on the host, at launch, so an address set that changes afterwards is unreachable until the next run. (b) IPv4 only -- the ruleset matches `ip daddr`, so IPv6 falls to the default drop. (c) DNS QUERIES LEAVE: the sandbox resolves through the NAT's forwarder at 10.0.2.3, which the ruleset permits, so a payload can encode data in query names. An allowlist narrows where bytes may be SENT; it is not a claim that nothing can be signalled out. |
+| **NOTES** | Declaring NO hosts while the network is on is the case to watch: a NAT is attached and no ruleset is installed, so the sandbox reaches anything. That is why `POLICY_MEDIATION["network_destination"]` is `partially_mediated` in the static table and decided PER MISSION in `_mediation_for()` -- `fully_mediated` with declared hosts, `observable_only` without, and the decision lists it in `advisory_fields` in the second case. |
 
 ---
 
@@ -385,11 +385,16 @@ none prevents; root defeats all of them.
 **Partial, and the residual must travel with the claim:** `cpu_seconds`
 (`RLIMIT_CPU` is per-process; a forking provider gets a fresh budget per child).
 
-**Not enforced — NO — PLANNED PHASE 4, and no surface may present these as
-controls:** `masked_paths`, `egress_allowlist`. Both are declared, validated
-against widening, recorded in the manifest, the session record and the receipt,
-and reach no mechanism whatsoever. A sandbox with a mask reads the file; a
-sandbox with an allowlist reaches any host.
+**Enforced since this phase, each with its residual stated above:**
+`masked_paths` (Stage E, by mount namespace, BY PATH) and `egress_allowlist`
+(Stage C, by nftables in the sandbox's own network namespace, BY ADDRESS, IPv4,
+and only where hosts are declared). Both were "declared and reaching nothing"
+when this document was first written, and both rows above record the measured
+before-and-after rather than replacing one claim with another.
+
+**Not enforced, and no surface may present it as a control:** nothing in the
+sandbox spec remains. `unenforced_fields()` is `["syscall_profile"]`, which is
+the next row rather than a gap in an existing one.
 
 **Not representable at all:** syscall filtering. There is no schema property
 and no `bwrap --seccomp` anywhere in the tree (`SANDBOX_ENFORCEMENT` marks it

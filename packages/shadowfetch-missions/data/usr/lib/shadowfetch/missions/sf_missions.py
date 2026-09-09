@@ -2710,8 +2710,31 @@ class Store:
             raise MissionError("Provide a title (1–160 characters) and task (1–20,000 characters)")
         if not 10 <= timeout <= 7200:
             raise MissionError("Timeout must be 10–7200 seconds")
+        if model is not None and not isinstance(model, str):
+            raise MissionError("A model selection must be a name")
+        model = (model or "").strip()
         if model:
-            raise MissionError("Mission model selection is unavailable; local AI is deferred")
+            # THE PROVIDER DECIDES WHICH MODELS IT HAS. This refused every model
+            # for every provider, which was the honest answer while no provider
+            # could take one -- and became a refusal of a capability the system
+            # has the moment one could. Codex still refuses a model, in its own
+            # accepts() and in its own words; the engine no longer refuses on
+            # its behalf.
+            #
+            # What stays here is the SHAPE, because a model name becomes an
+            # argv element: how long it may be and which characters it may
+            # contain is the engine's business, and which names exist is not.
+            # A LEADING DASH IS A FLAG, not a name. '-' is legal inside a
+            # model name and cannot start one: every CLI this reaches would
+            # read "--dangerous" as an option rather than as the thing to run.
+            # A provider that happens to keep a name allowlist would catch it
+            # too; one that does not would hand it straight to argv.
+            if (len(model) > 100 or model.startswith("-")
+                    or not re.fullmatch(r"[A-Za-z0-9._:@/-]+", model)):
+                raise MissionError(
+                    "A model name may be up to 100 characters of letters, digits "
+                    "and . _ : @ / - ; this one is not something that can be put "
+                    "on a command line")
         # The provider decides whether it will take this job, and says why not.
         # This replaces three hard-coded kind/runtime/network rules; a new
         # provider expresses its own requirements in its own accepts().
@@ -3352,6 +3375,12 @@ class Executor:
             # agent read the file.
             for masked in (spec.masked_paths if spec else ()):
                 wrapper.extend(["--mask-path", str(masked)])
+            # The declared allowlist, actually passed. Firebreak filters by
+            # address now; before Stage C it recorded the hosts and applied
+            # nothing, and Mission Control did not even send them -- so the
+            # control existed and was unreachable from a mission.
+            for host in (spec.egress_allowlist if spec else ()):
+                wrapper.extend(["--egress-host", str(host)])
             if self.session_id:
                 wrapper.extend(["--session-id", self.session_id,
                                 "--mission", self.mid])
@@ -4587,6 +4616,38 @@ def provider_for(capability, provider_id=None):
     return chosen
 
 
+AI_CAPABILITIES = frozenset({"code_change", "sourced_report"})
+
+
+def on_device_providers(described):
+    """The providers that do an AI capability with NO network at all.
+
+    Media export with network_policy 'none' is offline, but it is not a model,
+    so 'no network' alone is not the test.
+    """
+    return sorted(p for p, info in described.items()
+                  if info["network_policy"] == "none"
+                  and AI_CAPABILITIES & set(info["capabilities"]))
+
+
+def local_ai_state(described):
+    """Whether this installation can run a model without leaving the machine.
+
+    This was the literal "deferred": written when nothing on-device shipped,
+    true for as long as that held, and simply a false answer the moment an
+    on-device provider is registered. Three states, because two cannot say the
+    thing that is actually true here -- "deferred" would hide a provider the
+    person can see in the registry, and "available" would promise a mission
+    that cannot start.
+    """
+    on_device = on_device_providers(described)
+    if not on_device:
+        return "deferred"
+    if any(described[p]["available"] for p in on_device):
+        return "available"
+    return "installed-unavailable"
+
+
 def capabilities():
     """What this installation can do, assembled from the provider registry.
 
@@ -4637,7 +4698,7 @@ def capabilities():
     else:
         summary = "No agent providers are installed."
 
-    return {"version": VERSION, "workspace_root": str(workspace_root()), "runtimes": runtimes, "providers": described, "capabilities": list(CAPABILITIES), "capability_kinds": dict(CAPABILITY_LEGACY_KIND), "summary": summary, "provider_errors": list(reg.errors), "schema_version": SCHEMA_VERSION, "tools": {name: bool(trusted_which(name)) for name in ("bwrap", "ffmpeg", "ffprobe", "shadowfetch-firebreak")}, "kinds": ["code", "report", "media"], "states": ["queued", "running", "waiting-review", "completed", "failed", "cancelled", "undone"], "max_attempts": MAX_ATTEMPTS, "max_parallel": 1, "local_ai": "deferred", "grok_bot": "Launch the official desktop cloud teammate separately; it has no supported mission CLI adapter"}
+    return {"version": VERSION, "workspace_root": str(workspace_root()), "runtimes": runtimes, "providers": described, "capabilities": list(CAPABILITIES), "capability_kinds": dict(CAPABILITY_LEGACY_KIND), "summary": summary, "provider_errors": list(reg.errors), "schema_version": SCHEMA_VERSION, "tools": {name: bool(trusted_which(name)) for name in ("bwrap", "ffmpeg", "ffprobe", "shadowfetch-firebreak")}, "kinds": ["code", "report", "media"], "states": ["queued", "running", "waiting-review", "completed", "failed", "cancelled", "undone"], "max_attempts": MAX_ATTEMPTS, "max_parallel": 1, "local_ai": local_ai_state(described), "grok_bot": "Launch the official desktop cloud teammate separately; it has no supported mission CLI adapter"}
 
 
 def worker(store, once=False):
@@ -4725,7 +4786,75 @@ def audit_exit_code(report):
     return AUDIT_EXIT_OK
 
 
+CREDENTIAL_DIR = ".config/shadowfetch/missions"
+
+
+def load_provider_credentials(home=None, environ=None):
+    """Read declared credential identities out of ~/.config/shadowfetch/missions/*.env.
+
+    A PROVIDER NAME IN A UNIT FILE IS STILL A PROVIDER NAME IN CODE. The worker
+    unit carried `EnvironmentFile=-%h/.config/shadowfetch/missions/codex.env`,
+    so exactly one provider's credential ever reached the worker's environment.
+    A second provider could ship its manifest, its adapter and its tests, report
+    'save your key at ~/.config/shadowfetch/missions/<id>.env' -- and that file
+    was read by nothing at all. Its readiness then said authenticated about a
+    value no mission would ever be given.
+
+    Two rules make reading a directory safe:
+
+    * ONLY IDENTITIES THE REGISTRY DECLARES are taken. A file dropped in this
+      directory cannot put an arbitrary name into the worker's environment, so
+      it cannot set PATH, LD_PRELOAD or anything else that decides what runs.
+    * AN ALREADY-SET VALUE WINS. A name exported deliberately is not quietly
+      replaced by a file, which is also what EnvironmentFile did.
+
+    Returns the names it set, for the caller to log or test.
+    """
+    directory = Path(home or Path.home()) / CREDENTIAL_DIR
+    target = os.environ if environ is None else environ
+    try:
+        entries = sorted(p for p in directory.iterdir() if p.suffix == ".env")
+    except OSError:
+        return ()
+    try:
+        declared = set()
+        for pid in registry().ids():
+            declared |= set(registry().manifest(pid).get("credential_ids") or ())
+    except Exception:                                             # noqa: BLE001
+        # A registry that will not load is reported loudly elsewhere; it must
+        # not turn into a traceback on the way to reading a config file.
+        return ()
+    taken = []
+    for path in entries:
+        try:
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                continue
+            if info.st_mode & 0o077:
+                sys.stderr.write(
+                    "shadowfetch-missions: ignoring " + str(path)
+                    + " because it is readable by others; chmod 600 it\n")
+                continue
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            name, _, value = line.partition("=")
+            name, value = name.strip(), value.strip().strip("\"'")
+            if name in declared and name not in target and value:
+                target[name] = value
+                taken.append(name)
+    return tuple(taken)
+
+
 def main(argv=None):
+    # Before anything reads the environment: the credential VALUES a mission
+    # will be given live in files this reads, and the worker's environment is
+    # where Firebreak picks them up.
+    load_provider_credentials()
     parser = argparse.ArgumentParser(description=__doc__)
     # --json is accepted BEFORE or AFTER the subcommand. Written after -- which
     # is where anyone would naturally put it -- it used to be swallowed as an

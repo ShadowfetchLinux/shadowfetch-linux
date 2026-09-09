@@ -136,19 +136,36 @@ AUDIT = (
         "declared": True,
         "validated": True,
         "narrowed": True,
-        "passed": False,
-        "firebreak_flag": None,
-        "enforced": "no",
-        "status": NOT_ENFORCED_PHASE_4,
+        "passed": True,
+        "firebreak_flag": "--egress-host",
+        "enforced": "yes",
+        "status": "ENFORCED",
         "looks_enforced_but_is_not": False,
-        "mechanism": "none. Firebreak has no egress-filtering flag; firebreak_network "
-                     "maps 'allowlist' onto 'allow'.",
+        "mechanism": "nftables in the sandbox's own network namespace, default DROP, "
+                     "permitting only the addresses the declared names resolved to "
+                     "plus the NAT itself.",
         "evidence": {
             "declared": "source", "validated": "executed", "narrowed": "executed",
             "passed": "executed", "enforced": "executed",
         },
-        "notes": "Already recorded in PHASE2_REMAINING_RISKS §1 and in "
-                 "docs/AGENT_ARCHITECTURE §6.6. Audit record only; not a control.",
+        "notes": "STAGE C, and the obstacle was OWNERSHIP rather than mechanism. The "
+                 "first attempt let bwrap create the network namespace and then tried "
+                 "to reach into it: joining it stopped slirp4netns attaching "
+                 "afterwards, and attaching first made it unjoinable -- both measured, "
+                 "with the decisive case an nsenter that ran /usr/bin/true and "
+                 "installed no rules at all. Inverting the ownership dissolves it. A "
+                 "helper unshares user+net so the namespace is ours from the first "
+                 "instant, slirp attaches the NAT from outside, the helper installs "
+                 "the allowlist ITSELF because it holds CAP_NET_ADMIN over the "
+                 "namespace it just created, and it execs bwrap WITHOUT "
+                 "--unshare-net so the sandbox inherits a namespace already NAT'd "
+                 "and already filtered. Measured through the real Firebreak: an "
+                 "allowlisted host is reached, one that is not is blocked, and the "
+                 "host's loopback and abstract sockets stay unreachable. Filtering "
+                 "is BY ADDRESS -- a name resolved once on the host at launch -- so "
+                 "an address set that changes later is unreachable until the next "
+                 "run, and a host sharing an address with an allowed one is "
+                 "reachable.",
     },
     {
         "field": "read_grants",
@@ -493,7 +510,10 @@ class TableShapeTests(unittest.TestCase):
         unenforced = sorted(r["field"] for r in AUDIT if r["status"] == NOT_ENFORCED_PHASE_4)
         # masked_paths left this list in Stage E by gaining a real mechanism,
         # which is the only way out of it.
-        self.assertEqual(unenforced, ["egress_allowlist"])
+        # Empty. masked_paths left in Stage E and egress_allowlist in Stage C,
+        # each by gaining a mechanism and a measurement -- the only way out of
+        # this list. syscall_profile is tracked separately as not representable.
+        self.assertEqual(unenforced, [])
 
 
 # --------------------------------------------------------------------------- #
@@ -655,7 +675,7 @@ class PassedTests(unittest.TestCase):
             "SHADOWFETCH_MISSIONS_STATE": str(self.base / "state")})
         self.env.start()
         self.store = m.Store()
-        self.mission = self.store.create(kind="report", workspace_value="example",
+        self.mission = self.store.create(kind="report", provider_id="codex", workspace_value="example",
                                          title="Audit", prompt="Audit", inputs=["facts.md"],
                                          network="allow")
         self.executor = m.Executor(self.store, self.mission)
@@ -715,8 +735,13 @@ class PassedTests(unittest.TestCase):
         self.assertIn("read-only", joined,
                       "a read-only spec did not reach Firebreak")
         self.assertNotIn("workspace-write", joined)
+        # These used to be asserted ABSENT, correctly: passing a host that
+        # reached no filter would have made the argv describe a control that did
+        # not exist. Stage C gave it one, so the hosts must now be present --
+        # the same fact read from the other side.
         for host in ("api.openai.com", "chatgpt.com"):
-            self.assertNotIn(host, joined, "egress_allowlist leaked into the argv")
+            self.assertIn(host, joined,
+                          "a declared egress host is not passed to Firebreak")
         for mask in ("/home/agent/.ssh", "/etc/shadow"):
             self.assertIn(mask, joined,
                       "a declared mask is not passed to Firebreak")
@@ -801,7 +826,11 @@ class FirebreakSurfaceTests(unittest.TestCase):
                 with patch.dict(os.environ, {"OPENAI_API_KEY": "unit-only-placeholder"}):
                     command, net, grants, credentials = FB.arguments(args, resolved_ws, "fb-audit")
         joined = " ".join(command)
-        self.assertEqual(command[0], "bwrap")
+        # An ABSOLUTE path: the sandbox command used to begin with the bare
+        # name "bwrap", so whoever launched Firebreak chose which program became
+        # the sandbox. There is no program whose identity matters more.
+        self.assertTrue(command[0].startswith("/"), command[0])
+        self.assertEqual(Path(command[0]).name, "bwrap")
         # network -> a real namespace, read_grants -> a real read-only bind,
         # workspace -> a real writable bind, credentials -> clearenv + setenv.
         self.assertIn("--unshare-net", command)

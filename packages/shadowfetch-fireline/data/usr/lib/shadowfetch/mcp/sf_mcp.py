@@ -793,7 +793,16 @@ def _workspaces_root() -> Path:
 
 
 def _safe_name(name: str) -> str:
-    if not isinstance(name, str) or not name.strip() or len(name) > 160 or name in (".", "..") or any(char in name for char in ("/", "\\")) or any(ord(char) < 32 or ord(char) == 127 for char in name):
+    # A LEADING DOT IS REJECTED, like everywhere else that decides this. It was
+    # accepted here and nowhere else, so this surface would hand an agent
+    # ~/Workspaces/.ssh -- a name Firebreak, the security boundary, then
+    # refuses to open. The rule is one decision set (tools/drift_gate.py
+    # WORKSPACE_NAME_RULE) executed against a shared corpus, because four
+    # regexes that look alike still disagreed on exactly this case.
+    if (not isinstance(name, str) or not name.strip() or len(name) > 160
+            or name in (".", "..") or name.startswith(".")
+            or any(char in name for char in ("/", "\\"))
+            or any(ord(char) < 32 or ord(char) == 127 for char in name)):
         raise _ToolError(f"invalid workspace name: {name!r}")
     return name
 

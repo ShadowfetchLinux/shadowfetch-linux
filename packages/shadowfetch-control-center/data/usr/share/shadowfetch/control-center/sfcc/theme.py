@@ -19,6 +19,9 @@ from PyQt6.QtWidgets import (
 # ---- palette ---------------------------------------------------------------
 
 BG = "#151619"
+# The sidebar well. Named here because app.py carried it as a bare literal,
+# which is one of the unnamed shipped colours tools/drift_gate.py reports.
+SIDEBAR = "#101114"
 CARD = "#202126"
 CARD_HOVER = "#26272d"
 BORDER = "#34363d"

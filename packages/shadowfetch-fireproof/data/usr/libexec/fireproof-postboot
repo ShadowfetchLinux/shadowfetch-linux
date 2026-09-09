@@ -20,6 +20,17 @@
 # boots that never get there. Part of Shadowfetch Linux.
 set -u
 
+# PERMANENT INVARIANT: this script runs as root and its output decides
+# whether a Phoenix Point is offered for restore. Pin PATH rather than
+# inherit one - systemd gives units a default PATH, but a unit started
+# from a session, a test harness or a future ExecStartPre does not
+# necessarily. Resolving the program is not enough; the children here
+# (systemctl, journalctl, loginctl) resolve their own helpers too.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+LC_ALL=C
+export LC_ALL
+
 FLAG=/var/lib/shadowfetch/fireproof-pending
 MARKER_DIR=/run/shadowfetch
 MARKER=$MARKER_DIR/fireproof-failed-boot

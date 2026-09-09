@@ -2,7 +2,6 @@
 
 import html
 import json
-import shutil
 from pathlib import Path
 
 from PyQt6.QtCore import QProcess, Qt, QTimer
@@ -69,28 +68,42 @@ def _report_html(document: dict) -> str:
 <title>Shadowfetch System Passport</title><style>
 body{margin:0;background:#0b0e12;color:#e6e9ed;font:16px system-ui,sans-serif}
 main{max-width:920px;margin:auto;padding:48px 24px 64px}h1{font-size:36px;margin:8px 0}
-.eyebrow{color:#d8a24a;font-weight:700}.hero{border-bottom:1px solid #2c333b;padding-bottom:28px}
+.eyebrow{color:%(accent)s;font-weight:700}.hero{border-bottom:1px solid #2c333b;padding-bottom:28px}
 .verdict{font-size:21px}.check{background:#141922;border:1px solid #2c333b;border-radius:8px;
 padding:18px;margin:12px 0}.row{display:flex;gap:16px;align-items:center;justify-content:space-between}
-h2{font-size:18px;margin:0}.ready strong{color:#7fb069}.attention strong{color:#e2533b}
-.note strong{color:#d8a24a}.unknown strong,.not-present strong,small{color:#9aa3ad}
+h2{font-size:18px;margin:0}.ready strong{color:#7fb069}.attention strong{color:%(alarm)s}
+.note strong{color:%(accent)s}.unknown strong,.not-present strong,small{color:#9aa3ad}
 p{line-height:1.5}.privacy{margin-top:28px;padding-top:20px;border-top:1px solid #2c333b;color:#9aa3ad}
 </style></head><body><main><header class="hero"><div class="eyebrow">SHADOWFETCH GUIDE</div>
-<h1>System Passport</h1><p class="verdict"><strong>%s</strong><br>%s</p>
-<small>Shadowfetch Linux %s | %s</small></header>%s
+<h1>System Passport</h1><p class="verdict"><strong>%(title)s</strong><br>%(summary)s</p>
+<small>Shadowfetch Linux %(version)s | %(generated)s</small></header>%(cards)s
 <p class="privacy">Generated locally. No upload was performed. Host, account, network,
 serial, and filesystem identifiers are omitted.</p></main></body></html>
-""" % (
-        html.escape(str(verdict.get("title") or "Passport complete")),
-        html.escape(str(verdict.get("summary") or "")),
-        html.escape(str(document.get("release_version") or "unknown")),
-        html.escape(str(document.get("generated_at") or "")),
-        "".join(cards),
-    )
+""" % {
+        # The accent and the alarm colour come from sfcc.theme, so the element
+        # a person chose reaches this page too. They used to be literals here,
+        # which meant the System Passport stayed Fire gold on an Ice desktop
+        # and one of them was a second spelling of theme.RED. The remaining
+        # literals above are this document's own web palette, named nowhere
+        # else; tools/drift_gate.py reports the unnamed shipped colours as a
+        # separate BLOCKED finding whose remedy is a palette.json shipped from
+        # shadowfetch-branding.
+        "accent": theme.GOLD,
+        "alarm": theme.RED,
+        "title": html.escape(str(verdict.get("title") or "Passport complete")),
+        "summary": html.escape(str(verdict.get("summary") or "")),
+        "version": html.escape(str(document.get("release_version") or "unknown")),
+        "generated": html.escape(str(document.get("generated_at") or "")),
+        "cards": "".join(cards),
+    }
 
 
 class GuidePage(QWidget):
     """A local-only, read-only system explanation surface."""
+
+    @classmethod
+    def build(cls, context):
+        return cls(context.open_route)
 
     def __init__(self, open_route):
         super().__init__()
@@ -179,7 +192,7 @@ class GuidePage(QWidget):
     def run_check(self) -> None:
         if self._process.state() != QProcess.ProcessState.NotRunning:
             return
-        program = shutil.which("shadowfetch-passport")
+        program = busutil.trusted_program("shadowfetch-passport")
         if not program:
             self._show_error("The System Passport tool is not installed.")
             return

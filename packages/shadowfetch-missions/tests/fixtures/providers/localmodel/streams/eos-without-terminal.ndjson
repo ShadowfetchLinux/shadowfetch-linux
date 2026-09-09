@@ -1,0 +1,3 @@
+{"event": "session.started", "model": "test-model:1b", "resumed": false, "session": "cap-4"}
+{"event": "model.status", "state": "generating"}
+{"delta": "The bridge closed its pipe on end of stream.", "event": "token"}

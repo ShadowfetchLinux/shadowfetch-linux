@@ -242,10 +242,9 @@ class EnforcementTableIsHonest(unittest.TestCase):
                     self.assertEqual(status, P.NOT_ENFORCED)
 
     def test_the_unenforced_list_is_exactly_the_known_gaps(self):
-        """masked_paths left this list in Stage E. egress_allowlist stays: the
-        sandbox has its own namespace but nothing filters destinations yet."""
-        self.assertEqual(P.unenforced_fields(),
-                         ["egress_allowlist", "syscall_profile"])
+        """masked_paths left in Stage E, egress_allowlist in Stage C. Only the
+        syscall profile remains, and it is not even representable."""
+        self.assertEqual(P.unenforced_fields(), ["syscall_profile"])
 
     def test_a_field_with_nothing_declared_is_not_applicable_rather_than_a_warning(self):
         spec = P.SandboxSpec(workspace_mode="workspace-write", network="none",
@@ -254,10 +253,13 @@ class EnforcementTableIsHonest(unittest.TestCase):
         self.assertEqual(status["egress_allowlist"]["status"], "not_applicable")
 
     def test_a_field_with_something_declared_keeps_its_honest_status(self):
+        """It used to be 'not_enforced' here, honestly. Stage C gave it a
+        mechanism, so the honest status is now 'enforced'."""
         spec = P.SandboxSpec(workspace_mode="workspace-write", network="allowlist",
                              egress_allowlist=("api.example",))
         status = P.sandbox_enforcement(spec)
-        self.assertEqual(status["egress_allowlist"]["status"], "not_enforced")
+        self.assertEqual(status["egress_allowlist"]["status"], "enforced")
+        self.assertIn("nftables", status["egress_allowlist"]["mechanism"])
 
 
 if __name__ == "__main__":

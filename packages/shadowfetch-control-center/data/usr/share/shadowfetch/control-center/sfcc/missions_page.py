@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSplitter,
     QTabWidget, QVBoxLayout, QWidget,
 )
-from sfcc import theme
+from sfcc import desktop, theme
 from sfcc.mission_client import MissionClient, JsonCommand, workspace_path, workspaces_root
 from sfcc.theme import Card, label
 
@@ -38,11 +38,17 @@ def mission_summary(mission):
 # panel and a person reading the database are looking at the same words.
 RECORD_SECTIONS = (
     ("tasks", "Steps",
-     ("seq", "kind", "state", "started_at", "finished_at", "exit_code", "error")),
+     ("seq", "id", "kind", "state", "depends_on", "started_at", "finished_at",
+      "exit_code", "error")),
     ("sessions", "Agent sessions",
      ("id", "provider_id", "provider_version", "provider_trust", "attempt",
-      "network_requested", "network_effective", "started_at", "ended_at",
-      "exit_code", "outcome")),
+      "firebreak_session", "executable", "executable_trust",
+      "credentials_requested", "credentials_granted", "read_grants",
+      "network_requested", "egress_requested", "network_effective",
+      "started_at", "ended_at", "exit_code", "outcome")),
+    ("tool_executions", "Tool calls",
+     ("seq", "at", "tool", "requested_action", "decision", "approval_id",
+      "exit_status", "files_changed", "bytes_changed")),
     ("test_runs", "Test runs",
      ("started_at", "command", "network_requested", "network_effective",
       "guard_state", "duration_ms", "exit_code", "result")),
@@ -167,19 +173,26 @@ def approval_line(row):
         expires=field_text(row.get("expires_at")), revoked=field_text(row.get("revoked_at")))
 
 
-def records_text(mission):
-    """Steps, sessions, test runs, repository change and review, as reported.
+def records_text(records):
+    """Steps, sessions, tool calls, tests, repository change and review.
 
-    Absent and empty are different facts. This engine's CLI publishes no record
-    sets at all, so each section says that rather than rendering an empty list a
-    reader would take for "nothing happened".
+    `records` is what `shadowfetch-missions --json records <id>` returned.
+
+    Absent and empty are different facts and stay different here.  Until Stage
+    P this function told the reader "the mission CLI has no command that
+    returns tasks" -- which had stopped being true: the engine grew a `records`
+    verb publishing every set below, and the desktop simply never asked.  A UI
+    sentence about what the engine cannot do is a claim, and a claim goes stale
+    silently.  It now says only what this reply did or did not carry.
     """
+    if records is None:
+        return "Not requested yet."
     lines = []
     for key, heading, fields in RECORD_SECTIONS:
-        rows = mission.get(key)
+        rows = records.get(key)
         if rows is None:
-            lines.append(heading + ": not reported. The mission CLI has no command "
-                         "that returns " + key + "; their events appear in Activity.")
+            lines.append(heading + ": not reported. This reply carried no "
+                         + key + "; their events appear in Activity.")
         elif not rows:
             lines.append(heading + ": none recorded.")
         else:
@@ -187,6 +200,126 @@ def records_text(mission):
             lines += ["    " + "   ·   ".join(
                 name + ": " + field_text(row.get(name)) for name in fields if name in row)
                 for row in rows if isinstance(row, dict)]
+    return "\n".join(lines)
+
+
+def graph_text(records):
+    """The Mission graph: the step order the engine recorded, as edges.
+
+    `tasks.depends_on` is a list of task ids.  This resolves each id to the
+    step's own `seq` so the order is readable, and prints an id it cannot
+    resolve rather than dropping the edge -- a missing dependency is exactly
+    the thing worth seeing.  No ordering is computed here: the engine decides
+    what runs after what, and this draws what it recorded.
+    """
+    if records is None:
+        return "Not requested yet."
+    tasks = records.get("tasks")
+    if tasks is None:
+        return "Step order: not reported. This reply carried no tasks."
+    rows = [row for row in tasks if isinstance(row, dict)]
+    if not rows:
+        return "Step order: no steps recorded."
+    by_id = {str(row.get("id")): row.get("seq") for row in rows}
+    lines = []
+    for row in rows:
+        seq = field_text(row.get("seq"))
+        after = []
+        for dependency in row.get("depends_on") or []:
+            resolved = by_id.get(str(dependency))
+            after.append("step " + str(resolved) if resolved is not None
+                         else "unknown step " + str(dependency))
+        head = ("step " + seq + "  " + field_text(row.get("kind"))
+                + "  ·  " + field_text(row.get("state")))
+        lines.append(head + ("    after: " + ", ".join(after) if after
+                             else "    (no prerequisite recorded)"))
+    return "\n".join(lines)
+
+
+def live_sessions_text(records):
+    """Which agent sessions the engine has not recorded an end for.
+
+    "Live" is `ended_at` being absent in the engine's own row -- not a guess
+    from a process table, and not this page deciding what running means.  A
+    session with no end recorded is exactly what Stop acts on.
+    """
+    if records is None:
+        return "Not requested yet."
+    sessions = records.get("sessions")
+    if sessions is None:
+        return "Live sessions: not reported. This reply carried no sessions."
+    live = [row for row in sessions
+            if isinstance(row, dict) and not row.get("ended_at")]
+    if not live:
+        return ("Live sessions: none. Every agent session recorded for this "
+                "mission has an end time.")
+    lines = ["Live sessions: " + str(len(live))
+             + " with no end time recorded. Stop acts on the mission."]
+    for row in live:
+        lines.append("    " + "   ·   ".join(
+            name + ": " + field_text(row.get(name))
+            for name in ("id", "provider_id", "firebreak_session",
+                         "network_effective", "started_at")
+            if name in row))
+    return "\n".join(lines)
+
+
+def enforcement_text(matrix, error=None):
+    """What this installation can and cannot MAKE HAPPEN, in the engine's words.
+
+    `matrix` is `policy matrix`: one row per control, each carrying the level
+    of mediation and the mechanism that provides it.  Both strings are printed
+    verbatim.  Nothing here sorts controls into enforced and not-enforced,
+    scores them, or shortens a mechanism, because doing any of those would make
+    this panel a second opinion about enforcement rather than a view of the
+    engine's.
+    """
+    if error:
+        return "The engine did not report what it enforces: " + error
+    if not isinstance(matrix, dict) or not matrix:
+        return ("This build did not report what it enforces. Treat nothing "
+                "here as enforced.")
+    lines = []
+    for name in sorted(matrix):
+        entry = matrix[name] if isinstance(matrix[name], dict) else {}
+        lines.append(str(name) + " — " + field_text(entry.get("mediation")))
+        lines.append("    " + field_text(entry.get("mechanism")))
+    return "\n".join(lines)
+
+
+def readiness_text(capabilities, error=None):
+    """Which agents are installed, which can run, and what is missing.
+
+    Every word is the engine's: `summary` is its sentence, `installed`,
+    `available` and `reason` are its per-provider facts, `tools` is its own
+    probe of the programs a mission needs.  The desktop does not decide that a
+    provider is ready.
+    """
+    if error:
+        return "The engine did not report its capabilities: " + error
+    if not isinstance(capabilities, dict) or not capabilities:
+        return "The engine has not reported what this installation can do."
+    lines = [field_text(capabilities.get("summary"))]
+    providers = capabilities.get("providers")
+    if not isinstance(providers, dict) or not providers:
+        lines.append("Agents: none reported.")
+    else:
+        lines.append("Agents:")
+        for provider_id in sorted(providers):
+            info = providers[provider_id] if isinstance(providers[provider_id], dict) else {}
+            lines.append("    " + str(provider_id) + "   ·   " + "   ·   ".join(
+                name + ": " + field_text(info.get(name))
+                for name in ("display_name", "installed", "available",
+                             "requires_network_approval", "capabilities")
+                if name in info))
+            if info.get("reason"):
+                lines.append("        " + field_text(info.get("reason")))
+    tools = capabilities.get("tools")
+    if isinstance(tools, dict) and tools:
+        lines.append("Programs a mission needs: " + "   ·   ".join(
+            name + ": " + field_text(tools[name]) for name in sorted(tools)))
+    for problem in capabilities.get("provider_errors") or []:
+        lines.append("PROBLEM: " + field_text(problem))
     return "\n".join(lines)
 
 
@@ -267,10 +400,16 @@ class NewMissionDialog(QDialog):
         form.addRow("Code test", self.tests)
         self.workflow_note = label("", "detail", wrap=True)
         form.addRow("", self.workflow_note)
-        if capabilities:
-            ready = capabilities.get("summary")
-            if isinstance(ready, str):
-                form.addRow("Readiness", label(ready, "detail", wrap=True))
+        # Readiness, in the engine's own words (W-39). The 4.0.0 audit
+        # recorded `summary` as a key capabilities() does not publish; verified
+        # against the shipped engine it DOES, alongside per-provider
+        # installed/available/reason and its own probe of the programs a
+        # mission needs, so all of it is rendered rather than none of it.
+        self.readiness = label("", "detail", wrap=True)
+        form.addRow("Readiness", self.readiness)
+        self.readiness.setText(readiness_text(capabilities) if capabilities
+                               else "The engine has not reported what this "
+                                    "installation can do.")
         scroll.setWidget(body)
         root.addWidget(scroll, 1)
         self.error = label("", "statusWarn", wrap=True)
@@ -336,8 +475,18 @@ class NewMissionDialog(QDialog):
         self.provider.setText(
             info.get("display_name") or ("Chosen by Mission Control" if not known
                                          else "No installed agent performs this"))
-        self.provider_setup.setText("" if not known or info.get("available")
-                                    else (info.get("reason") or ""))
+        # A provider the engine says is unavailable cannot start work, so the
+        # dialog says why and stops offering to queue it. This is a rendering
+        # of the engine's readiness fact and a local NARROWING of what the
+        # button offers -- the engine still refuses independently, and nothing
+        # here can make an unready provider run.
+        blocked = known and not info.get("available")
+        self.provider_setup.setText(
+            (info.get("reason") or "This agent is not ready to run work.")
+            if blocked else "")
+        self.queue.setEnabled(not blocked)
+        self.queue.setToolTip("" if not blocked else
+                              "The engine reports this agent is not ready.")
         self.network.setEnabled(needs_network and theme.ELEMENT != "ice")
         if known:
             self.network.setCurrentIndex(0 if not needs_network or theme.ELEMENT == "ice" else 1)
@@ -404,7 +553,17 @@ class NewMissionDialog(QDialog):
         if theme.ELEMENT == "ice":
             self.error.setText("Switch to Fire deliberately before signing in to a cloud account.")
             return
-        started, _ = QProcess.startDetached("konsole", ["--hold", "-e", "shadowfetch-mission-account", "login"])
+        # Both programs come from the trusted table: this launches the flow
+        # that signs the desktop in to a provider account, and a $PATH lookup
+        # would let anything that can write a directory on PATH decide which
+        # binary is handed the person's credentials.
+        konsole = desktop.trusted_program("konsole")
+        account = desktop.trusted_program("shadowfetch-mission-account")
+        if konsole is None or account is None:
+            self.error.setText("Could not open Konsole. Run "
+                               "shadowfetch-mission-account login in a terminal.")
+            return
+        started, _ = QProcess.startDetached(konsole, ["--hold", "-e", account, "login"])
         if not started:
             self.error.setText("Could not open Konsole. Run shadowfetch-mission-account login in a terminal.")
 
@@ -428,10 +587,29 @@ class NewMissionDialog(QDialog):
 
 
 class MissionsPage(QWidget):
+
+    @classmethod
+    def build(cls, context):
+        return cls(context.open_route)
+
+    def blocking_reason(self):
+        """Why the window must not close yet, in this page's own words.
+
+        The shell used to read a bare attribute off every page and then write
+        the warning itself, which meant the sentence describing a restore was
+        maintained a file away from the code doing the restoring.
+        """
+        if not self.review_pending:
+            return None
+        return ("Mission Control is waiting for a review operation to finish. "
+                "Closing it could interrupt restoration. You can minimize the "
+                "window and close it after the result arrives.")
+
     def __init__(self, open_route):
         super().__init__()
         self.open_route = open_route
         self.client = MissionClient(self)
+        self.mission_records = None
         self.records = []
         self.selected_id = None
         self.selected = None
@@ -538,6 +716,9 @@ class MissionsPage(QWidget):
         QTimer.singleShot(0, self.refresh)
         self.client.grok_status(self._grok_ready)
         self.client.call(["capabilities"], self._capabilities_ready)
+        # What this installation can enforce does not change while the window
+        # is open, so it is read once and never attached to the queue poll.
+        self.client.call(["policy", "matrix"], self._matrix_ready)
         self._verify_audit()
 
     def _poll(self):
@@ -650,7 +831,7 @@ class MissionsPage(QWidget):
             self.artifacts.addItem(item)
         self._buttons()
         self.mission_view.setText(mission_text(data))
-        self.records_view.setText(records_text(data))
+        self.client.call(["records", requested], lambda value, err: self._records_ready(requested, value, err))
         self.client.call(["events", requested], lambda value, err: self._events_ready(requested, value, err))
         self.client.call(["diff", requested], lambda value, err: self._diff_ready(requested, value, err))
         self.client.call(["policy", "show", requested], lambda value, err: self._policy_ready(requested, value, err))
@@ -662,6 +843,29 @@ class MissionsPage(QWidget):
             position = widget.verticalScrollBar().value()
             widget.setPlainText(text)
             widget.verticalScrollBar().setValue(position)
+
+    def _records_ready(self, requested, data, error):
+        """Steps, sessions, tool calls, tests and review, from `records <id>`.
+
+        An engine that cannot answer says so; the panel does not fall back to a
+        prettier story. `records` is one read per selected mission, alongside
+        the decision and the approvals -- not on the three-second queue poll.
+        """
+        if requested != self.selected_id:
+            return
+        if error:
+            self.mission_records = None
+            message = "The engine did not report this mission's records: " + error
+            self.records_view.setText(message)
+            self.graph_view.setText(message)
+            self.live_view.setText(message)
+            self._buttons()
+            return
+        self.mission_records = data if isinstance(data, dict) else None
+        self.records_view.setText(records_text(self.mission_records))
+        self.graph_view.setText(graph_text(self.mission_records))
+        self.live_view.setText(live_sessions_text(self.mission_records))
+        self._buttons()
 
     def _events_ready(self, requested, data, error):
         if requested != self.selected_id:
@@ -687,6 +891,9 @@ class MissionsPage(QWidget):
                 "folder": bool(mission.get("workspace")),
                 "receipt": bool(mission.get("receipt")),
             }[key])
+        # One source for "can this be stopped": the Cancel action's own
+        # availability, which is pinned to the engine's transition table.
+        self.stop_button.setEnabled(self.actions["cancel"].isEnabled())
 
     def _action(self, action):
         mission = self.selected
@@ -804,9 +1011,38 @@ class MissionsPage(QWidget):
         audit_row.addWidget(verify)
         audit_row.addStretch(1)
         column.addLayout(audit_row)
-        column.addWidget(label("STEPS, SESSIONS, TESTS AND REVIEW", "safety"))
+        column.addWidget(label("STEP ORDER", "safety"))
+        self.graph_view = label("", "detail", wrap=True)
+        column.addWidget(self.graph_view)
+        column.addWidget(label("LIVE AGENT SESSIONS", "safety"))
+        self.live_view = label("", "detail", wrap=True)
+        column.addWidget(self.live_view)
+        # Stop is the mission-level control. It is the same button the action
+        # row offers; putting it beside the live sessions means the person
+        # looking at what is running can act on it without hunting.
+        stop_row = QHBoxLayout()
+        self.stop_button = QPushButton("Stop this mission")
+        self.stop_button.setObjectName("quiet")
+        self.stop_button.clicked.connect(lambda: self._action("cancel"))
+        stop_row.addWidget(self.stop_button)
+        stop_row.addStretch(1)
+        column.addLayout(stop_row)
+        column.addWidget(label("STEPS, SESSIONS, TOOL CALLS, TESTS AND REVIEW",
+                               "safety"))
         self.records_view = label("", "detail", wrap=True)
         column.addWidget(self.records_view)
+        column.addWidget(label("AGENTS ON THIS INSTALLATION", "safety"))
+        self.readiness_view = label("", "detail", wrap=True)
+        column.addWidget(self.readiness_view)
+        column.addWidget(label("WHAT THIS INSTALLATION CAN ENFORCE", "safety"))
+        column.addWidget(label(
+            "One row per control, with the level of mediation and the "
+            "mechanism that provides it, exactly as the engine reports them. "
+            "This is the whole installation, not this mission: a mission's own "
+            "decision, and the controls it relies on that nothing applies, are "
+            "above.", "detail", wrap=True))
+        self.enforcement_view = label("", "detail", wrap=True)
+        column.addWidget(self.enforcement_view)
         column.addStretch(1)
         scroll.setWidget(body)
         self._clear_control()
@@ -819,7 +1055,11 @@ class MissionsPage(QWidget):
         self.caveat_view.setText("")
         self.approvals.clear()
         self.approval_notice.setText("")
+        self.mission_records = None
         self.records_view.setText("")
+        self.graph_view.setText("")
+        self.live_view.setText("")
+        self.stop_button.setEnabled(False)
         self._approval_buttons()
 
     def _approval_buttons(self):
@@ -919,9 +1159,13 @@ class MissionsPage(QWidget):
         else:
             self.grok_state.setText("Install the native app · Cloud service · Eligible account and plan required")
 
+    def _matrix_ready(self, data, error):
+        self.enforcement_view.setText(enforcement_text(data, error))
+
     def _capabilities_ready(self, data, error):
         if not error and isinstance(data, dict):
             self.capabilities = data
+        self.readiness_view.setText(readiness_text(self.capabilities, error))
 
     def new_mission(self, workspace="", kind="code"):
         dialog = NewMissionDialog(self, self.client, self._created, workspace, kind, self.capabilities)

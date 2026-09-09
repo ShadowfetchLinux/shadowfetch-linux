@@ -1,4 +1,5 @@
 data/usr/libexec/fireproofd                                          usr/libexec/
+data/usr/lib/shadowfetch/sfupdate/*.py                             usr/lib/shadowfetch/sfupdate/
 data/usr/libexec/fireproof-postboot                                  usr/libexec/
 data/usr/libexec/fireproof-session-check                             usr/libexec/
 data/usr/bin/fireproof                                               usr/bin/

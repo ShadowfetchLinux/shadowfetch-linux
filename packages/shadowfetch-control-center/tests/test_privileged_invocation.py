@@ -10,10 +10,14 @@ W-08  Two pkexec call sites built argv the helper does not accept, so the
 W-09  terminal_command ran those tools through `bash -lc`. A login shell
       sources ~/.profile / ~/.bash_profile, which the unprivileged user can
       write, and the tools then ask for an administrator password.
+
+Stage P moved the bundle-install argv and terminal_command into sfcc.desktop,
+so their tests moved to test_desktop_library.py with them. What stays here is
+the part that is about the HELPERS' own argv grammar and the dialog that
+reports their exit status.
 """
 import os
 import re
-import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -30,30 +34,6 @@ EMBER_HELPER = REPO / "packages/shadowfetch-ember/usr/libexec/ember-duration"
 
 def source(name):
     return (SFCC / name).read_text()
-
-
-class BundleInstallArgv(unittest.TestCase):
-    """The helper dispatches on a verb; the caller must send one."""
-
-    def test_helper_requires_a_verb(self):
-        helper = BUNDLE_HELPER.read_text()
-        self.assertIn('verb, rest = args[0], args[1:]', helper)
-        self.assertIn('if verb == "install":', helper)
-
-    def test_software_page_sends_the_install_verb(self):
-        call = re.search(r'\[\s*"pkexec",\s*busutil\.BUNDLE_INSTALL[^\]]*\]',
-                         source("software_page.py"), re.S)
-        self.assertIsNotNone(call, "the bundle install call site moved")
-        self.assertIn('"install"', call.group(0),
-                      "the catalog id is passed where the helper expects a verb, "
-                      "so the helper prints usage and exits 2")
-
-    def test_both_call_sites_agree(self):
-        """workbench_page always had it right; software_page did not."""
-        shape = re.compile(r'"pkexec",\s*busutil\.BUNDLE_INSTALL,\s*"install",')
-        for page in ("software_page.py", "workbench_page.py"):
-            with self.subTest(page=page):
-                self.assertRegex(source(page), shape)
 
 
 class EmberDurationArgv(unittest.TestCase):
@@ -91,60 +71,27 @@ class ProcessDialogExitCodes(unittest.TestCase):
                       "a helper that could not be executed is not distinguished")
 
 
-class TerminalCommandIsNotALoginShell(unittest.TestCase):
-    def setUp(self):
-        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-        from sfcc import busutil
-        self.busutil = busutil
-        self.calls = []
-        self._popen = subprocess.Popen
-        subprocess.Popen = lambda argv, **kw: self.calls.append((argv, kw))
+class MissionCommandIsNotEnvironmentSelectable(unittest.TestCase):
+    def test_the_engine_binary_is_absolute(self):
+        """Which binary answers "what did the policy decide" and "does the
+        audit chain verify" is itself a security fact, so it comes from the
+        trusted program table, absolute, with no PATH lookup."""
+        from sfcc import mission_client
+        self.assertTrue(mission_client.MISSION_COMMAND.startswith("/"))
+        self.assertTrue(mission_client.GROK_COMMAND.startswith("/"))
 
-    def tearDown(self):
-        subprocess.Popen = self._popen
-
-    def _run(self, command="shadowfetch-gpu"):
-        self.busutil.terminal_command(command)
-        self.assertEqual(len(self.calls), 1)
-        return self.calls[0]
-
-    def test_never_uses_a_login_shell(self):
-        argv, _ = self._run()
-        joined = " ".join(argv)
-        self.assertNotIn("-lc", joined,
-                         "a login shell sources user-writable ~/.profile before "
-                         "running a tool that asks for an admin password")
-        self.assertNotIn("bash", joined)
-
-    def test_runs_with_a_fixed_system_path(self):
-        _, kw = self._run()
-        self.assertEqual(kw["env"]["PATH"], self.busutil.TRUSTED_PATH)
-
-    def test_strips_shell_startup_and_loader_hooks(self):
-        os.environ["BASH_ENV"] = "/tmp/evil"
-        os.environ["LD_PRELOAD"] = "/tmp/evil.so"
-        try:
-            _, kw = self._run()
-            self.assertNotIn("BASH_ENV", kw["env"])
-            self.assertNotIn("LD_PRELOAD", kw["env"])
-        finally:
-            os.environ.pop("BASH_ENV", None)
-            os.environ.pop("LD_PRELOAD", None)
-
-    def test_resolves_the_tool_against_system_directories_only(self):
-        """A user-writable directory earlier in PATH must not win."""
-        resolved = self.busutil.resolve_tool("sh -c true")
-        self.assertTrue(resolved.startswith("/"), resolved)
+    def test_the_session_path_cannot_choose_the_binary(self):
         os.environ["PATH"] = "/tmp/attacker:" + os.environ.get("PATH", "")
         try:
-            self.assertEqual(self.busutil.resolve_tool("sh"),
-                             self.busutil.resolve_tool("sh"))
-            self.assertNotIn("/tmp/attacker", self.busutil.resolve_tool("sh"))
+            for name in list(sys.modules):
+                if name.endswith("mission_client"):
+                    del sys.modules[name]
+            from sfcc import mission_client
+            self.assertNotIn("/tmp/attacker", mission_client.MISSION_COMMAND)
+            self.assertNotIn("/tmp/attacker", mission_client.GROK_COMMAND)
         finally:
             os.environ["PATH"] = os.environ["PATH"].replace("/tmp/attacker:", "")
 
-
-class MissionCommandIsNotEnvironmentSelectable(unittest.TestCase):
     def test_environment_cannot_choose_the_binary(self):
         os.environ["SHADOWFETCH_MISSIONS_COMMAND"] = "/tmp/attacker-missions"
         os.environ["SHADOWFETCH_GROK_BOT_COMMAND"] = "/tmp/attacker-grok"

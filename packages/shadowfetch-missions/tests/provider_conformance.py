@@ -799,7 +799,16 @@ class ProviderConformanceTests(unittest.TestCase):
         try:
             program = resolve_executable(self.manifest)
         except ProviderError as exc:
-            self.skipTest(f"this provider has no resolvable program here: {exc}")
+            self.skipTest(f"this provider declares a program this build cannot "
+                          f"resolve at all: {exc}")
+        if program is None:
+            # NOT an error, and not a pass either. An uninstalled program is
+            # the ordinary state of a provider on a machine that does not use
+            # it, and resolve_executable says so by returning None rather than
+            # raising. Passing None on to classify_executable is what actually
+            # happened: Path(None) -> TypeError, reported as a broken provider.
+            self.skipTest("this provider's declared program is not installed "
+                          "here, so there is no file to classify")
         tier, reason = classify_executable(program)
         self.assertIn(tier, ACCEPTED_EXECUTABLE_TRUST[declaration],
                       f"{program} classifies as {tier} ({reason}), which executable "

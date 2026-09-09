@@ -1,10 +1,13 @@
 {
   "name": "shadowfetch-linux-worker",
   "private": true,
-  "version": "1.0.0",
-  "description": "Cloudflare Worker serving shadowfetch.com/linux/* — landing page, ISO downloads, APT repo proxy.",
+  "version": "2.0.0",
+  "description": "Cloudflare Worker serving shadowfetch.com/linux/* artifacts: R2 downloads, APT repo proxy, retirement 410s, current-release pointer.",
   "main": "src/index.js",
+  "type": "module",
   "scripts": {
+    "test": "node --test tests/worker.test.mjs",
+    "test:all": "bash tests/run.sh",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev",
     "tail": "wrangler tail"

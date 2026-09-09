@@ -19,48 +19,16 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from sfcc import busutil, theme
-from sfcc.agents_page import AgentsPage
-from sfcc.drivers_page import DriversPage
-from sfcc.ember_page import EmberPage
-from sfcc.firewatch_page import FirewatchPage
-from sfcc.guide_page import GuidePage
-from sfcc.missions_page import MissionsPage
-from sfcc.grok_bot_page import GrokBotPage
-from sfcc.phoenix_page import PhoenixPage
-from sfcc.software_page import SoftwarePage
-from sfcc.workbench_page import WorkbenchPage
+from sfcc import busutil, pages, theme
+from sfcc.pages import PageContext
 from sfcc.theme import label
 
 BUS_NAME = "com.shadowfetch.ControlCenter"
 OBJ_PATH = "/com/shadowfetch/ControlCenter"
 
-SECTIONS = [
-    ("missions", "Mission Control", "Work you can inspect"),
-    ("grok-bot", "Grok Bot", "Featured teammate"),
-    ("guide", "Guide", "System Passport"),
-    ("workbench", "Workbench", "Fire & Ice projects"),
-    ("ignite", "Ignite", None),
-    ("watch", "Watch", None),
-    ("recover", "Recover", None),
-    ("workspaces", "Workspaces", "Project folders"),
-    ("drivers", "Drivers", None),
-    ("software", "Software", "Updates & bundles"),
-]
-
-ALIASES = {
-    "missions": "missions", "mission-control": "missions", "home": "missions",
-    "grok-bot": "grok-bot", "grokbot": "grok-bot",
-    "guide": "guide", "passport": "guide", "system-passport": "guide",
-    "workbench": "workbench", "forge": "workbench", "projects": "workbench",
-    "ignite": "ignite", "ember": "ignite",
-    "watch": "watch", "firewatch": "watch",
-    "recover": "recover", "phoenix": "recover", "recovery": "recover",
-    "workspaces": "workspaces", "local-ai": "workspaces", "agents": "workspaces", "ai": "workspaces", "buzz": "workspaces",
-    "drivers": "drivers",
-    "software": "software", "software-updates": "software",
-    "updates": "software", "bundles": "software",
-}
+# The sidebar, the pages behind it and every accepted route word all come from
+# sfcc.pages.REGISTRY. There is no second list here to keep in step with it.
+SECTIONS = pages.REGISTRY
 
 try:
     import dbus
@@ -132,6 +100,7 @@ class ControlCenterWindow(QWidget):
             self.setWindowIcon(icon)
         self.setStyleSheet(theme.STYLESHEET)
 
+        self.version = busutil.sf_version()
         self.firewatch = busutil.FirewatchClient(self)
 
         root = QHBoxLayout(self)
@@ -143,7 +112,7 @@ class ControlCenterWindow(QWidget):
         side.setContentsMargins(0, 0, 0, 0)
         side.setSpacing(0)
         side_wrap = QWidget()
-        side_wrap.setStyleSheet("background: #101114;")
+        side_wrap.setStyleSheet(f"background: {theme.SIDEBAR};")
         side_wrap.setFixedWidth(216)
         side_wrap.setLayout(side)
 
@@ -160,16 +129,16 @@ class ControlCenterWindow(QWidget):
         self.sidebar = QListWidget()
         self.sidebar.setObjectName("sidebar")
         self._entries: list[SidebarEntry] = []
-        for _key, title, subtitle in SECTIONS:
+        for section in SECTIONS:
             item = QListWidgetItem()
-            entry = SidebarEntry(title, subtitle)
-            item.setSizeHint(QSize(200, 46 if subtitle else 36))
+            entry = SidebarEntry(section.title, section.subtitle)
+            item.setSizeHint(QSize(200, 46 if section.subtitle else 36))
             self.sidebar.addItem(item)
             self.sidebar.setItemWidget(item, entry)
             self._entries.append(entry)
         side.addWidget(self.sidebar, 1)
 
-        footer = QLabel(f"Shadowfetch Linux {busutil.sf_version()}\n"
+        footer = QLabel(f"Shadowfetch Linux {self.version}\n"
                         "Local-first · No account required")
         footer.setStyleSheet(f"background: transparent; color: {theme.MUTED};"
                              "font-size: 11px; padding: 10px 16px;")
@@ -191,18 +160,12 @@ class ControlCenterWindow(QWidget):
         content.addWidget(header)
 
         self.stack = QStackedWidget()
-        self.pages = [
-            MissionsPage(self.open_route),
-            GrokBotPage(self.open_route),
-            GuidePage(self.open_route),
-            WorkbenchPage(self.open_route),
-            EmberPage(self.firewatch, self.open_route),
-            FirewatchPage(self.firewatch),
-            PhoenixPage(),
-            AgentsPage(self.firewatch, self.open_route),
-            DriversPage(),
-            SoftwarePage(),
-        ]
+        # One context object per window, handed to every section. The shell
+        # knows nothing about what any individual page needs.
+        context = PageContext(open_route=self.open_route,
+                              firewatch=self.firewatch, version=self.version)
+        self.context = context
+        self.pages = [section.build(context) for section in SECTIONS]
         for page in self.pages:
             self.stack.addWidget(page)
         content.addWidget(self.stack, 1)
@@ -227,17 +190,21 @@ class ControlCenterWindow(QWidget):
 
     # ---- shell behaviour --------------------------------------------------
     def closeEvent(self, event):
-        if any(getattr(page, "review_pending", False) for page in self.pages):
-            event.ignore()
-            QMessageBox.warning(self, "Review is still running",
-                                "Mission Control is waiting for a review operation to finish. Closing it could interrupt restoration. You can minimize the window and close it after the result arrives.")
-            return
+        # The page supplies the verdict AND the sentence. The shell used to
+        # test one page's attribute name and then write the warning itself,
+        # so a second page with a reason to block had no way to say so.
+        for page in self.pages:
+            reason = pages.section_blocking_reason(page)
+            if reason:
+                event.ignore()
+                QMessageBox.warning(self, "This window is still busy", reason)
+                return
         super().closeEvent(event)
 
     def _section_changed(self, row: int) -> None:
         if 0 <= row < len(self.pages):
             self.stack.setCurrentIndex(row)
-            self.page_title.setText(SECTIONS[row][1])
+            self.page_title.setText(SECTIONS[row].title)
 
     def _refresh_status(self) -> None:
         state, detail = busutil.system_summary()
@@ -249,27 +216,20 @@ class ControlCenterWindow(QWidget):
         self.status.setAccessibleName(f"{state}. {detail}")
 
     def _refresh_badge(self) -> None:
-        # Only Software & Updates ever shows a badge; fireproofd suppresses
-        # the count itself for a set the user already rolled back.
-        count = busutil.fireproof_updates()
-        index = next(i for i, (key, _title, _subtitle) in enumerate(SECTIONS)
-                     if key == "software")
-        self._entries[index].set_badge(count if count else None)
+        # Asked OF each page. The shell no longer knows which section counts
+        # something, so a page that grows a badge does not need a change here,
+        # and the `next(...)` that raised StopIteration when its hard-coded key
+        # left SECTIONS is gone.
+        for entry, page in zip(self._entries, self.pages):
+            entry.set_badge(pages.section_badge(page))
 
     def open_route(self, route: str) -> None:
-        parts = [p for p in str(route).split(":") if p]
-        if not parts:
+        resolved = pages.resolve(route)
+        if resolved is None:
             return
-        section = ALIASES.get(parts[0].strip().lower())
-        if section is None:
-            return
-        index = next(i for i, (key, _t, _s) in enumerate(SECTIONS)
-                     if key == section)
+        index, rest = resolved
         self.sidebar.setCurrentRow(index)
-        page = self.pages[index]
-        rest = parts[1:]
-        if rest and hasattr(page, "route"):
-            page.route(rest)
+        pages.section_route(self.pages[index], rest)
 
 
 def _parse_page(argv: list[str]) -> str:

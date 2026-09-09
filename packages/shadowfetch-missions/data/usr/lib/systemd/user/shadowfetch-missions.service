@@ -3,7 +3,11 @@ Description=Shadowfetch Mission Control task queue
 After=default.target
 
 [Service]
-EnvironmentFile=-%h/.config/shadowfetch/missions/codex.env
+# No EnvironmentFile. It named ONE provider -- codex.env -- so every
+# other provider's credential file was read by nothing, and adding a
+# provider meant editing this unit. shadowfetch-missions reads the
+# whole directory itself and takes only the identities the provider
+# registry declares, so a stray file there cannot inject a name.
 Type=simple
 ExecStart=/usr/bin/shadowfetch-missions worker
 Restart=on-failure

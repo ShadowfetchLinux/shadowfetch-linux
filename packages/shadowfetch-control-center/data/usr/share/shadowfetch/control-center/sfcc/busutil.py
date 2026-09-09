@@ -1,24 +1,66 @@
-"""Local D-Bus and system helpers for the Control Center.
+"""Local D-Bus clients for the Control Center.
 
-Every function here is tolerant: a missing daemon, a missing python3-dbus,
-or an unexpected member name returns None (or a False-ish value) instead of
-raising, and the calling page renders its honest degradation state.  Pages
-read hardware sensors through Firewatch1. Mission and model verification use
-the separate mission client and its explicit runtime/connection policy.
+Every function here is tolerant: a missing daemon, a missing python3-dbus, or
+an unexpected member name returns None (or a False-ish value) instead of
+raising, and the calling page renders its honest degradation state.
 
-The bus connections here use the local system and session buses. Subprocess
-helpers and optional applications retain their declared connection behavior.
+Scope, since Stage P: this module is the D-BUS half only.  Facts that do not
+need a bus -- the bundle catalog, the hwscan file, the trusted program table,
+launch helpers, the privileged argv builders -- moved to sfcc.desktop, which
+imports no Qt and no dbus and is therefore shareable with the other desktop
+front-end (W-30).  The names below are re-exported so existing call sites and
+`busutil.X` spellings keep working; sfcc.desktop is the one implementation.
+
+Network facts stay here on purpose and are NOT shared with Welcome: this
+process talks to NetworkManager through dbus-python, Welcome talks to it
+through Qt DBus.  Sharing them means one of the two changing its D-Bus stack,
+which is a larger change than this stage owns.
 """
 
-import glob
 import json
 import os
-import shutil
-import subprocess
-import time
-from pathlib import Path
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
+
+# Re-exported for call sites and for tests that reach through busutil. One
+# implementation, in sfcc.desktop; these are names for it, not copies of it.
+from sfcc.desktop import (  # noqa: F401
+    BUNDLE_INSTALL,
+    CATALOG_DIR,
+    DPKG_QUERY,
+    HWSCAN_CLI,
+    HWSCAN_JSON,
+    OVERLAY_MARKER,
+    PHOENIX_APT_REPAIR,
+    PHOENIX_APT_SNAPSHOT,
+    PHOENIX_RESTORE,
+    PKEXEC,
+    PROFILE_DIR,
+    SNAPPER_DEFAULTS,
+    SYSTEMCTL,
+    TRUSTED_PATH,
+    apt_snapshot_toggle_argv,
+    apt_snapshots_enabled,
+    bundle_install_argv,
+    catalog_by_id,
+    installed_command,
+    installed_map,
+    load_catalog,
+    load_ember_profiles,
+    load_hwscan,
+    overlay_boot,
+    overlay_point,
+    rfkill_devices,
+    root_fstype,
+    sf_version,
+    start_detached,
+    system_summary,
+    terminal_command,
+    trusted_env,
+    trusted_program,
+    unit_active,
+    user_unit_active,
+)
 
 try:
     import dbus
@@ -62,24 +104,6 @@ EMBER_HELPER_CANDIDATES = (
     "/usr/libexec/ember-helper",
     "/usr/libexec/ember-duration",
 )
-
-# Stage V: pkexec decides whether a privileged operation happened at all,
-# so it is named by absolute path.  Resolved through PATH it is a
-# session-local process that can swallow the operation while reporting
-# success, or imitate the authentication dialog.
-PKEXEC = "/usr/bin/pkexec"
-
-PHOENIX_RESTORE = "/usr/libexec/phoenix-restore"
-PHOENIX_APT_REPAIR = "/usr/libexec/phoenix-apt-repair"
-PHOENIX_APT_SNAPSHOT = "/usr/libexec/phoenix-apt-snapshot"
-BUNDLE_INSTALL = "/usr/libexec/shadowfetch-bundle-install"
-HWSCAN_CLI = "/usr/libexec/shadowfetch-hwscan"
-HWSCAN_JSON = "/var/lib/shadowfetch/hwscan.json"
-CATALOG_DIR = "/usr/share/shadowfetch/welcome/catalog"
-PROFILE_DIR = "/usr/share/shadowfetch/ember/profiles"
-OVERLAY_MARKER = "/run/phoenix-overlay"
-SNAPPER_DEFAULTS = "/etc/default/snapper"
-
 
 # ---- bus plumbing ----------------------------------------------------------
 
@@ -334,24 +358,6 @@ def find_ember_helper() -> str | None:
     return None
 
 
-def unit_active(unit: str) -> bool:
-    try:
-        rc = subprocess.run(["systemctl", "is-active", "--quiet", unit],
-                            timeout=5, check=False)
-        return rc.returncode == 0
-    except Exception:
-        return False
-
-
-def user_unit_active(unit: str) -> bool:
-    try:
-        rc = subprocess.run(["systemctl", "--user", "is-active", "--quiet", unit],
-                            timeout=5, check=False)
-        return rc.returncode == 0
-    except Exception:
-        return False
-
-
 def gamemode_clients() -> int | None:
     """Live GameMode status from the session bus; None when GameMode is not
     on the bus (which is normal when no game is running)."""
@@ -366,26 +372,6 @@ def gamemode_clients() -> int | None:
         return int(unwrap(value))
     except Exception:
         return None
-
-
-def load_ember_profiles() -> list[dict]:
-    """Read the root-owned profile cards from
-    /usr/share/shadowfetch/ember/profiles/*.conf (key=value lines)."""
-    profiles = []
-    for path in sorted(glob.glob(os.path.join(PROFILE_DIR, "*.conf"))):
-        entry: dict = {}
-        try:
-            for line in Path(path).read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                entry[key.strip()] = value.strip()
-        except OSError:
-            continue
-        if entry.get("id") and entry.get("name"):
-            profiles.append(entry)
-    return profiles
 
 
 # ---- Fireproof -------------------------------------------------------------
@@ -445,152 +431,10 @@ def snapper_list() -> list[dict] | None:
     return out
 
 
-def root_fstype() -> str:
-    try:
-        for line in Path("/proc/mounts").read_text(encoding="utf-8").splitlines():
-            parts = line.split()
-            if len(parts) >= 3 and parts[1] == "/":
-                return parts[2]
-    except OSError:
-        pass
-    return "unknown"
-
-
-def overlay_boot() -> bool:
-    """True when this session is riding a read-only Phoenix Point via the
-    grub-btrfs overlay hook."""
-    if os.path.exists(OVERLAY_MARKER):
-        return True
-    return root_fstype() == "overlay"
-
-
-def overlay_point() -> int | None:
-    """The snapshot number this overlay session was booted from, taken from
-    the marker file or the kernel cmdline."""
-    try:
-        text = Path(OVERLAY_MARKER).read_text(encoding="utf-8").strip()
-        for token in text.replace("=", " ").split():
-            if token.isdigit():
-                return int(token)
-    except OSError:
-        pass
-    try:
-        cmdline = Path("/proc/cmdline").read_text(encoding="utf-8")
-    except OSError:
-        return None
-    import re
-    match = re.search(r"@snapshots/(\d+)/snapshot", cmdline)
-    if match:
-        return int(match.group(1))
-    return None
-
-
-def apt_snapshots_enabled() -> bool:
-    """True unless /etc/default/snapper carries DISABLE_APT_SNAPSHOT=yes."""
-    try:
-        for line in Path(SNAPPER_DEFAULTS).read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line.startswith("DISABLE_APT_SNAPSHOT="):
-                value = line.split("=", 1)[1].strip().strip('"').strip("'").lower()
-                return value not in ("yes", "true", "1")
-    except OSError:
-        pass
-    return True
-
-
-def apt_snapshot_toggle_argv(enable: bool) -> list[str] | None:
-    """The pkexec command that flips DISABLE_APT_SNAPSHOT, or None when the
-    root helper for it is not installed.
-
-    Stage V (privileged-operations review).  When no helper was found this
-    used to fall back to running a shell as root -- pkexec on the system
-    shell, with -c and a fixed sed script -- and no helper was ever shipped
-    under either name it probed, so on a real install the fallback was the
-    only path.  That authorises org.freedesktop.policykit.exec on a shell: a
-    generic root shell, not this operation.  The script text being constant
-    was a property of THIS file, not of the authorization, and not of
-    what the user was asked to approve: the prompt named a shell rather than
-    the setting being changed.  shadowfetch-phoenix now ships
-    /usr/libexec/phoenix-apt-snapshot with a two-verb grammar and its own
-    polkit action (org.shadowfetch.phoenix.apt-snapshot), and there is no
-    fallback: a missing helper must never widen the grant, so the switch
-    reports that it cannot change the setting instead.
-    """
-    if os.access(PHOENIX_APT_SNAPSHOT, os.X_OK):
-        return [PKEXEC, PHOENIX_APT_SNAPSHOT, "enable" if enable else "disable"]
-    return None
-
-
 # ---- hwscan ----------------------------------------------------------------
-
-def _boot_timestamp() -> float:
-    try:
-        uptime = float(Path("/proc/uptime").read_text().split()[0])
-        return time.time() - uptime
-    except (OSError, ValueError, IndexError):
-        return 0.0
-
-
-def load_hwscan(rescan: bool = False) -> dict | None:
-    """The hardware fact file.  The boot-time service writes
-    /var/lib/shadowfetch/hwscan.json; if the file predates this boot (or a
-    rescan is requested) the unprivileged CLI is executed instead."""
-    if not rescan:
-        try:
-            stat = os.stat(HWSCAN_JSON)
-            if stat.st_mtime >= _boot_timestamp():
-                return json.loads(Path(HWSCAN_JSON).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            pass
-    if os.access(HWSCAN_CLI, os.X_OK):
-        try:
-            out = subprocess.run([HWSCAN_CLI, "--json"], capture_output=True,
-                                 text=True, timeout=8, check=False)
-            if out.returncode == 0 and out.stdout.strip():
-                return json.loads(out.stdout)
-        except (OSError, ValueError, subprocess.TimeoutExpired):
-            pass
-    # Fall back to a stale file rather than nothing: the page labels the
-    # scan timestamp, so staleness is visible, never silent.
-    try:
-        return json.loads(Path(HWSCAN_JSON).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
 
 
 # ---- Welcome catalog / bundles --------------------------------------------
-
-def load_catalog(kinds: tuple[str, ...] = ("preset",)) -> list[dict]:
-    entries = []
-    for path in sorted(glob.glob(os.path.join(CATALOG_DIR, "*.json"))):
-        try:
-            data = json.loads(Path(path).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        records = data if isinstance(data, list) else [data]
-        for record in records:
-            if isinstance(record, dict) and record.get("kind") in kinds:
-                entries.append(record)
-    return entries
-
-
-def installed_map(packages: list[str]) -> dict[str, bool]:
-    """One dpkg-query for a whole bundle; unknown packages count as not
-    installed."""
-    result = {p: False for p in packages}
-    if not packages:
-        return result
-    try:
-        out = subprocess.run(
-            ["dpkg-query", "-W", "-f", "${Package} ${db:Status-Status}\n"] + packages,
-            capture_output=True, text=True, timeout=10, check=False)
-        for line in out.stdout.splitlines():
-            parts = line.split()
-            if len(parts) == 2 and parts[0] in result:
-                result[parts[0]] = parts[1] == "installed"
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    return result
 
 
 def nm_connectivity_full() -> bool | None:
@@ -647,104 +491,3 @@ def nm_devices() -> list[dict] | None:
             "firmware_missing": bool(props.get("FirmwareMissing", False)),
         })
     return devices
-
-
-def rfkill_devices() -> list[dict]:
-    """Bluetooth/Wi-Fi kill-switch state straight from /sys/class/rfkill."""
-    out = []
-    for entry in sorted(glob.glob("/sys/class/rfkill/rfkill*")):
-        try:
-            rtype = Path(entry, "type").read_text().strip()
-            name = Path(entry, "name").read_text().strip()
-            soft = Path(entry, "soft").read_text().strip() == "1"
-            hard = Path(entry, "hard").read_text().strip() == "1"
-        except OSError:
-            continue
-        out.append({"type": rtype, "name": name, "soft": soft, "hard": hard})
-    return out
-
-
-# ---- shared shell helpers --------------------------------------------------
-
-# System directories only. These buttons launch tools that then ask for an
-# administrator password, so a user-writable directory must never be able to
-# decide which binary the user is about to authenticate.
-TRUSTED_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-
-def resolve_tool(command: str) -> str:
-    """Resolve a command's program name against the trusted system PATH.
-
-    Returns the command with an absolute program name, or unchanged if the
-    tool is not installed there (the terminal then reports it plainly).
-    """
-    head, sep, tail = command.partition(" ")
-    found = shutil.which(head, path=TRUSTED_PATH)
-    return (found + sep + tail) if found else command
-
-
-def trusted_env() -> dict:
-    """The environment for a Control Center tool: a fixed system PATH and
-    no shell-startup hooks."""
-    env = dict(os.environ)
-    env["PATH"] = TRUSTED_PATH
-    for hook in ("BASH_ENV", "ENV", "SHELLOPTS", "LD_PRELOAD",
-                 "LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONSTARTUP"):
-        env.pop(hook, None)
-    return env
-
-
-def terminal_command(command: str) -> None:
-    """Run a Control Center tool in a visible terminal.
-
-    The shell is deliberately NOT a login shell. `bash -lc` sources
-    /etc/profile and then ~/.bash_profile or ~/.profile, every one of which
-    the unprivileged user can write, and the tools started here go on to ask
-    for an administrator password. A non-login `sh -c` with a fixed system
-    PATH and no BASH_ENV means the button runs the packaged tool.
-    """
-    resolved = resolve_tool(command)
-    wrapped = (f"{resolved}; rc=$?; echo; "
-               f"printf 'Finished (status %s). Press Enter to close...' \"$rc\"; "
-               f"read -r _; exit $rc")
-    env = trusted_env()
-    terminal = shutil.which("konsole", path=TRUSTED_PATH) or \
-        shutil.which("x-terminal-emulator", path=TRUSTED_PATH)
-    if terminal:
-        subprocess.Popen([terminal, "-e", "sh", "-c", wrapped], env=env)
-    else:
-        subprocess.Popen(["/bin/sh", "-c", wrapped], env=env)
-
-
-def start_detached(argv: list[str]) -> bool:
-    try:
-        subprocess.Popen(argv)
-        return True
-    except OSError:
-        return False
-
-
-def sf_version() -> str:
-    try:
-        return Path("/usr/share/shadowfetch/version").read_text().strip()
-    except OSError:
-        return "unknown"
-
-
-def system_summary() -> tuple[str, str]:
-    """Summarize disk use and system units; desktop user units are separate."""
-    try:
-        usage = shutil.disk_usage("/")
-        used = round((usage.used / usage.total) * 100)
-        result = subprocess.run(
-            ["systemctl", "--failed", "--no-legend", "--plain"],
-            capture_output=True, text=True, timeout=3, check=False,
-        )
-        if result.returncode:
-            return "Status unavailable", "Open Watch for a complete report"
-        failed = result.stdout.strip().splitlines()
-        if failed or used >= 90:
-            return "Needs attention", f"{len(failed)} failed system units · disk {used}% used"
-        return "System check passed", f"No failed system units · disk {used}% used"
-    except Exception:
-        return "Status available", "Open Watch for a complete report"

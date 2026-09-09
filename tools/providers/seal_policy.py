@@ -26,7 +26,26 @@ POLICY = (ROOT / "packages/shadowfetch-missions/data/usr/share/shadowfetch"
           / "provider-policy/approved.json")
 
 PINNED = ("package", "interface_version", "capabilities", "credential_ids",
-          "network_policy", "egress_allowlist")
+          "network_policy", "egress_allowlist", "executable_trust")
+
+
+def pinned_values(manifest):
+    """The privileges the policy pins, read out of the manifest.
+
+    executable_trust is the one that is not a top-level manifest field -- it
+    lives under executable.trust -- and it was missing here entirely. It IS a
+    privilege: it says how far outside the packaging system a provider's
+    program is allowed to live, and approve() refuses outright any entry that
+    does not carry it. An entry sealed without it therefore approved a provider
+    that could never run, and the refusal blamed the policy rather than the
+    tool that wrote it. Carried over from a previous entry it survived; for a
+    NEW provider there was nothing to carry over, so no new provider could be
+    sealed at all.
+    """
+    values = {field: manifest.get(field) for field in PINNED
+              if field != "executable_trust"}
+    values["executable_trust"] = (manifest.get("executable") or {}).get("trust", "system")
+    return values
 
 
 def shipped():
@@ -40,7 +59,7 @@ def shipped():
 
 
 def entry_for(manifest, digest, previous=None):
-    entry = {field: manifest.get(field) for field in PINNED}
+    entry = pinned_values(manifest)
     entry["manifest_sha256"] = digest
     entry["trust"] = (previous or {}).get("trust", "distro-managed")
     entry["approved_note"] = (previous or {}).get(
@@ -69,9 +88,10 @@ def main(argv=None):
         proposed["providers"][provider_id] = entry
         if was is None:
             changes.append(
-                "NEW PROVIDER   %s: caps=%s net=%s creds=%s"
+                "NEW PROVIDER   %s: caps=%s net=%s creds=%s egress=%s exec=%s"
                 % (provider_id, entry["capabilities"], entry["network_policy"],
-                   entry["credential_ids"]))
+                   entry["credential_ids"], entry["egress_allowlist"],
+                   entry["executable_trust"]))
             continue
         for field in PINNED:
             if was.get(field) != entry.get(field):
