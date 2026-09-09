@@ -917,6 +917,18 @@ SANDBOX_ENFORCEMENT = {
 }
 
 
+# A field a session did not use has no enforcement status worth reporting, and
+# saying "enforced" about it describes a mechanism that never ran. The message
+# says what was not asked for, because "not_applicable" alone reads as a gap.
+UNUSED_MEANS_NOT_APPLICABLE = {
+    "credential_ids": "this session was granted no credential identity",
+    "egress_allowlist": "this session declared no egress host",
+    "masked_paths": "this session declared no masked path",
+    "read_grants": "this session was granted no read access outside its workspace",
+    "account_mount": "this session mounts no provider account",
+}
+
+
 def sandbox_enforcement(spec=None) -> dict:
     """Per-field enforcement status for a SandboxSpec, as a plain dict.
 
@@ -945,13 +957,15 @@ def sandbox_enforcement(spec=None) -> dict:
                     "bwrap --unshare-net enforces network on/off. This session is "
                     "not 'none', so the sandbox has the host's network and the "
                     "declared destinations are not filtered -- see egress_allowlist")
-        if spec is not None and field == "credential_ids" and not (
-                getattr(spec, "credential_ids", None) or ()):
-            # all([]) is True, which reported a control as working for a session
-            # that never asked for it. Consistent with the convention applied to
-            # every other unused field.
-            entry["status"] = "not_applicable"
-            entry["mechanism"] = "this session was granted no credential identity"
+        # Every field a session did not use, not merely the two that were
+        # noticed one at a time. all([]) is True, so a control with nothing to
+        # apply reported itself working -- account_mount said "enforced" for a
+        # session that mounts no account, which is a claim about a mechanism
+        # that never ran.
+        if spec is not None and field in UNUSED_MEANS_NOT_APPLICABLE:
+            if not (getattr(spec, field, None) or ()) and getattr(spec, field, None) is not True:
+                entry["status"] = "not_applicable"
+                entry["mechanism"] = UNUSED_MEANS_NOT_APPLICABLE[field]
         result[field] = entry
     return result
 

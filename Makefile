@@ -91,7 +91,7 @@ R2_REGION   ?= auto
 LINUX_HOST ?= shadowfetch-linux
 LINUX_PATH ?= ~/projects/shadowfetch-4.0.0
 
-.PHONY: all help test source-gate package-gate iso-gate acceptance-audit acceptance-gate deps packages repo refresh-index check-index iso sign pre-release-check publish qemu clean distclean \
+.PHONY: all help test attacks source-gate package-gate iso-gate acceptance-audit acceptance-gate deps packages repo refresh-index check-index iso sign pre-release-check publish qemu clean distclean \
         sync-from-linux deploy-worker ship stamp-version
 
 all: iso
@@ -136,6 +136,17 @@ test:
 	SHADOWFETCH_CHECKPOINT_BIN=$(CURDIR)/packages/shadowfetch-fireline/data/usr/bin/shadowfetch-checkpoint \
 	bash packages/shadowfetch-fireline/tests/test_firebreak.sh
 	python3 -m unittest discover -s tools/tests -v
+	$(MAKE) attacks
+
+# Adversarial suites. Separate from `test` only in name: `test` runs them.
+# They assert what the system REFUSES, which unit tests structurally cannot --
+# a test written against the implementation cannot notice a guard the
+# implementation never had.
+attacks:
+	python3 tools/attacks/attack_approval.py
+	python3 tools/attacks/attack_integrity.py
+	python3 tools/attacks/attack_lifecycle.py
+	python3 tools/attacks/attack_concurrency.py
 
 source-gate:
 	@test -x $(SOURCE_GATE) || { echo "Missing source gate: $(SOURCE_GATE)" >&2; exit 1; }

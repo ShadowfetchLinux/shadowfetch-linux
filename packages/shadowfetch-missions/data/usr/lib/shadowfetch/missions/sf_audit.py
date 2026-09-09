@@ -117,7 +117,12 @@ def read_head(chain: str, *, identifier: str = AUDIT_IDENTIFIER,
     """
     result = {"available": False, "reason": None, "head_seq": None,
               "head_hash": None, "entries": 0, "identifier": identifier,
-              "chain": chain}
+              # Every seq the journal can still see, not only the newest. The
+              # head alone made a rewrite detectable for exactly as long as the
+              # rewritten row stayed newest: one honest append later the two
+              # heads agreed again over a row that had been rewritten. The
+              # evidence was never missing, only unread.
+              "heads": {}, "chain": chain}
     if not chain:
         result["reason"] = (
             "this database has no chain id, so its entries cannot be told apart "
@@ -154,6 +159,8 @@ def read_head(chain: str, *, identifier: str = AUDIT_IDENTIFIER,
         if entry.get("chain") != chain:
             continue                       # another database's chain
         result["entries"] += 1
+        if entry.get("hash"):
+            result["heads"][entry["seq"]] = entry["hash"]
         if best is None or entry["seq"] > best["seq"]:
             best = entry
     if best is not None:

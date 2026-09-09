@@ -231,7 +231,7 @@ class PolicyEngine:
         if provider_trust not in KNOWN_TRUST:
             return self._decide(DENY,
                                 (f"provider trust {provider_trust!r} is not one this "
-                                 "build will execute",), scope)
+                                 "build will execute",), scope, sandbox)
 
         if self.require_approval_for_network and scope.network != "none":
             outcome = ESCALATE
@@ -254,9 +254,9 @@ class PolicyEngine:
             reasons.append(
                 "offline, no credentials, and bounded by an enforced sandbox")
 
-        return self._decide(outcome, tuple(reasons), scope)
+        return self._decide(outcome, tuple(reasons), scope, sandbox)
 
-    def _decide(self, outcome, reasons, scope):
+    def _decide(self, outcome, reasons, scope, sandbox=None):
         """The ONLY place a Decision is built.
 
         Every path computes advisory_fields, including DENY. A Decision that
@@ -266,14 +266,14 @@ class PolicyEngine:
         type is how a field comes to be optional in practice while looking
         required in the dataclass.
         """
-        mediation = self._mediation_for(scope)
+        mediation = self._mediation_for(scope, sandbox)
         advisory = tuple(sorted(
             name for name, entry in mediation.items()
             if entry["mediation"] in (OBSERVABLE_ONLY, NOT_OBSERVABLE)
             and entry.get("relied_on")))
         return Decision(outcome, tuple(reasons), scope, mediation, advisory)
 
-    def _mediation_for(self, scope):
+    def _mediation_for(self, scope, sandbox=None):
         """The matrix, annotated with whether THIS mission relies on each row.
 
         A mission with no egress allowlist is not relying on egress filtering,
@@ -284,9 +284,17 @@ class PolicyEngine:
         for name, (level, mechanism) in POLICY_MEDIATION.items():
             relied_on = False
             if name == "network_destination":
-                relied_on = scope.network == "allowlist"
+                # ANY posture that is not "none" reaches the host network, so the
+                # destination caveat applies to all of them. Testing for the
+                # exact string "allowlist" meant a broader posture escalated for
+                # network access and then dropped the caveat.
+                relied_on = scope.network != "none"
             elif name == "path_masking":
-                relied_on = False           # set by the caller when masks are declared
+                # This used to be hard-coded False with a comment saying the
+                # caller would set it. No caller did, so a mission declaring
+                # masks was never told masking reaches nothing -- on the one
+                # surface built to disclose that.
+                relied_on = bool(getattr(sandbox, "masked_paths", None))
             elif name == "tool_actions_inside_a_turn":
                 relied_on = True            # every provider turn relies on this
             elif name == "syscalls":

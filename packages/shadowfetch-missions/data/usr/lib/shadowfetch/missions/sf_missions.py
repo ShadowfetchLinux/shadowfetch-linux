@@ -93,6 +93,16 @@ MISSION_TRANSITIONS = {
 }
 
 
+# Three attempts, published by capabilities() and enforced on the edge below.
+MAX_ATTEMPTS = 3
+
+# event name -> the state that event records. Unambiguous: several edges share
+# an event name ('undone', 'retry-queued') and every one of them lands on the
+# same state.
+STATE_EVENTS = {event: to for (_frm, to), (event, _reason)
+                in MISSION_TRANSITIONS.items()}
+
+
 def transition_allowed(current, target):
     """(allowed, event, reason). The single answer to FROM/TO/ALLOWED/REASON."""
     edge = MISSION_TRANSITIONS.get((current, target))
@@ -123,7 +133,8 @@ from sf_providers import (LEGACY_KIND_CAPABILITY, CAPABILITY_LEGACY_KIND,
                          sandbox_enforcement, unenforced_fields,
                          classify_executable, sandbox_from_manifest,
                          CAPABILITIES, Capability, ProviderRegistry,
-                         ProviderError, verify_invocation, trusted_executable)
+                         ProviderError, verify_invocation, trusted_executable,
+                         SandboxSpec)
 
 MAX_FILES = 40
 REVIEW_LOCK_WAIT_SECONDS = 10
@@ -803,6 +814,78 @@ class Store:
         """The name every existing call site uses. Now chained."""
         return self.append_event(mid, event, detail, **correlation)
 
+    # -------------------------------------------- tool executions ----
+    def record_tool_execution(self, session_id, *, seq, tool, at=None,
+                              args_redacted=None, args_digest=None,
+                              requested_action=None, decision="observed",
+                              approval_id=None, started_at=None, ended_at=None,
+                              exit_status=None, result_digest=None,
+                              bytes_changed=None, files_changed=None):
+        """One observed tool action. Returns the id, or None if it is a duplicate.
+
+        decision defaults to "observed", NOT "auto_allow". Nothing intercepted
+        this call and nothing could have refused it; recording a permissive
+        decision would describe an approval that never happened. The vocabulary
+        is deliberately different from the PolicyEngine's for that reason.
+
+        (session_id, seq) is UNIQUE, so a provider that repeats a record -- a
+        retry, a replayed stream, a duplicated event -- gets one row rather than
+        two. The duplicate is reported to the caller instead of raising, because
+        a repeated event is a provider quirk and not a mission failure.
+        """
+        tid = "tool-" + uuid.uuid4().hex[:16]
+        stamp = at or now()
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            existing = db.execute(
+                "SELECT id FROM tool_executions WHERE session_id=? AND seq=?",
+                (session_id, seq)).fetchone()
+            if existing is not None:
+                return None
+            db.execute(
+                "INSERT INTO tool_executions(id,session_id,seq,at,tool,args_redacted,"
+                "args_digest,requested_action,decision,approval_id,started_at,ended_at,"
+                "exit_status,result_digest,bytes_changed,files_changed) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (tid, session_id, seq, stamp, tool,
+                 json.dumps(args_redacted) if args_redacted is not None else None,
+                 args_digest, requested_action, decision, approval_id,
+                 started_at, ended_at, exit_status, result_digest,
+                 bytes_changed, files_changed))
+            row = db.execute(
+                "SELECT mission_id,task_id FROM agent_sessions WHERE id=?",
+                (session_id,)).fetchone()
+            appended = self._append(
+                db, mission=(row["mission_id"] if row else "*"),
+                event="tool-observed", at=stamp,
+                task_id=(row["task_id"] if row else None),
+                session_id=session_id, tool_execution_id=tid,
+                actor="provider",
+                detail=f"{tool}: {requested_action or 'no action reported'}")
+        self.mirror(appended)
+        return tid
+
+    def tool_executions(self, session_id=None, mission_id=None):
+        with self.db() as db:
+            if session_id is not None:
+                rows = db.execute("SELECT * FROM tool_executions WHERE session_id=? "
+                                  "ORDER BY seq", (session_id,)).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT t.* FROM tool_executions t JOIN agent_sessions s "
+                    "ON t.session_id = s.id WHERE s.mission_id=? "
+                    "ORDER BY s.started_at, t.seq", (mission_id,)).fetchall()
+        out = []
+        for row in rows:
+            item = dict(row)
+            if item.get("args_redacted"):
+                try:
+                    item["args_redacted"] = json.loads(item["args_redacted"])
+                except (ValueError, TypeError):
+                    pass
+            out.append(item)
+        return out
+
     # ------------------------------------------------- test runs -----
     def record_test_run(self, mission_id, *, task_id, command, executable,
                         sandbox_mode, network_requested, network_effective,
@@ -964,6 +1047,27 @@ class Store:
         return [dict(r) for r in rows]
 
     # ------------------------------------------------------ approvals ---
+    @staticmethod
+    def parse_instant(value):
+        """An ISO-8601 instant as an aware datetime, or None.
+
+        Timezone-aware throughout: comparing instants as TEXT made an offset
+        look later than it is, so an approval stamped in UTC+10 outlived its
+        own expiry by ten hours.
+        """
+        if value in (None, ""):
+            return None
+        try:
+            parsed = dt.datetime.fromisoformat(str(value))
+        except (TypeError, ValueError):
+            return None
+        if parsed.tzinfo is None:
+            # now() writes UTC, so a naive stamp is read as UTC rather than as
+            # local time -- guessing the operator's zone would reintroduce the
+            # bug this fixes.
+            return parsed.replace(tzinfo=dt.timezone.utc)
+        return parsed
+
     def grant_approval(self, *, subject, scope, granted_by, method,
                        expires_at=None, reason=None):
         """Record a human decision. Returns the approval id.
@@ -974,10 +1078,27 @@ class Store:
         if not granted_by or not method:
             raise MissionError(
                 "An approval must record who granted it and by what method")
+        if expires_at not in (None, "") and self.parse_instant(expires_at) is None:
+            # Refused HERE, while a person is watching, rather than silently
+            # meaning "never expires" for the life of the approval.
+            raise MissionError(
+                f"Cannot read {expires_at!r} as an expiry. Use an ISO-8601 "
+                "instant such as 2026-09-09T17:00:00Z; an expiry that cannot be "
+                "read would otherwise mean no expiry at all.")
         aid = "appr-" + uuid.uuid4().hex[:16]
         at = now()
         blob = scope.to_json() if hasattr(scope, "to_json") else json.dumps(scope, sort_keys=True)
         mission = subject.split(":", 1)[1] if subject.startswith("mission:") else "*"
+        if mission != "*":
+            # An approval for a mission that does not exist chained an event no
+            # reader could ever see: Store.events() checks the mission first, so
+            # the row was real, hashed, and invisible. A pre-plantable approval
+            # is worth refusing on its own.
+            self.get(mission)
+        # The digest of what was agreed, in the CHAINED event. The approvals
+        # table is mutable and unchained; this is what makes an edit to it, or a
+        # row inserted straight into it, detectable at the moment it is used.
+        scope_digest = hashlib.sha256(blob.encode("utf-8")).hexdigest()
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
             db.execute(
@@ -986,12 +1107,23 @@ class Store:
                 (aid, subject, blob, granted_by, method, at, expires_at, reason))
             row = self._append(db, mission=mission, event="approval-granted",
                                actor=ACTOR_USER, at=at,
-                               detail=f"{subject} by {granted_by} via {method}"
-                                      + (f"; expires {expires_at}" if expires_at else ""))
+                               detail=json.dumps({
+                                   "approval": aid, "subject": subject,
+                                   "granted_by": granted_by, "method": method,
+                                   "expires_at": expires_at,
+                                   "scope_sha256": scope_digest,
+                               }, sort_keys=True))
         self.mirror(row)
         return aid
 
     def revoke_approval(self, aid, *, reason=None):
+        """Withdraw an approval.
+
+        BEGIN IMMEDIATE, and require_approval re-reads under the same lock, so a
+        revoke either lands before the mission starts or after it -- never in
+        the window between the check and the start, which produced a log reading
+        granted, revoked, used, in that order.
+        """
         at = now()
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -1009,6 +1141,26 @@ class Store:
                                     actor=ACTOR_USER, at=at,
                                     detail=f"{subject}: {reason or 'no reason given'}")
         self.mirror(appended)
+
+    def approval_witness(self, approval_id):
+        """The chained grant event for an approval, or None.
+
+        None means nobody granted it through the engine -- the row exists and
+        the audit chain has never heard of it. That is the difference between a
+        decision a person made and a row somebody wrote.
+        """
+        with self.db() as db:
+            rows = db.execute(
+                "SELECT detail FROM events WHERE event='approval-granted' "
+                "ORDER BY seq").fetchall()
+        for row in rows:
+            try:
+                detail = json.loads(row["detail"])
+            except (ValueError, TypeError):
+                continue                    # a pre-fix event, unstructured
+            if isinstance(detail, dict) and detail.get("approval") == approval_id:
+                return detail
+        return None
 
     def approvals(self, subject=None):
         with self.db() as db:
@@ -1036,13 +1188,37 @@ class Store:
             if row["revoked_at"]:
                 problems.append(f"{row['id']} was revoked at {row['revoked_at']}")
                 continue
-            if row["expires_at"] and row["expires_at"] <= stamp:
-                problems.append(f"{row['id']} expired at {row['expires_at']}")
-                continue
+            if row["expires_at"]:
+                expiry = self.parse_instant(row["expires_at"])
+                if expiry is None:
+                    # Already in the database from before the grant-time check,
+                    # or edited since. Treated as EXPIRED: a limit nobody can
+                    # read is not a licence to run forever.
+                    problems.append(
+                        f"{row['id']} has an unreadable expiry "
+                        f"({row['expires_at']!r}) and is treated as expired")
+                    continue
+                if expiry <= self.parse_instant(stamp):
+                    problems.append(f"{row['id']} expired at {row['expires_at']}")
+                    continue
             try:
                 granted = sf_policy.Scope.from_json(row["scope"])
             except (ValueError, TypeError):
                 problems.append(f"{row['id']} has an unreadable scope")
+                continue
+            witness = self.approval_witness(row["id"])
+            if witness is None:
+                problems.append(
+                    f"{row['id']} has no approval-granted event in the audit chain; "
+                    "it was written straight into the table and no human granted it")
+                continue
+            actual = hashlib.sha256(row["scope"].encode("utf-8")).hexdigest()
+            if witness.get("scope_sha256") != actual:
+                problems.append(
+                    f"{row['id']} does not match what was granted: the chained "
+                    "record says the approved scope hashed to "
+                    f"{str(witness.get('scope_sha256'))[:16]}..., the stored scope "
+                    f"hashes to {actual[:16]}.... It was edited after it was granted")
                 continue
             covered, why = sf_policy.approval_covers(granted, required)
             if covered:
@@ -1314,6 +1490,19 @@ class Store:
                     f"seq {row['seq']}: follows {prev_seq}, so the chain was truncated "
                     "or renumbered")
                 report["ok"] = False
+            if not isinstance(row.get("detail"), (str, type(None))):
+                # SQLite will store bytes in a TEXT-affinity column, and
+                # canonical() then raised TypeError out of verify -- an operator
+                # got a traceback with no PROBLEM line and no head, and --json
+                # produced nothing parseable. Fail with a verdict, not a stack.
+                report["problems"].append(
+                    f"seq {row['seq']}: detail is {type(row['detail']).__name__}, not "
+                    "text, so this row cannot be hashed and was written by something "
+                    "other than the engine")
+                report["ok"] = False
+                report["chained"] += 1
+                prev_hash, prev_seq = row["hash"], row["seq"]
+                continue
             recomputed = event_hash(row.get("prev_hash"), row)
             if recomputed != row["hash"]:
                 report["problems"].append(
@@ -1345,14 +1534,21 @@ class Store:
             "last_mirror_error": local.get("last_error"),
             "verdict": None,
         }
+        # audit-mirror.json is owned by the same uid that wrote the events, so
+        # it is attacker-writable. It used to be tested FIRST, as the head of an
+        # elif chain, which made it a suppression switch: truncate the log, then
+        # write {"failures": 1}, and 'the database stops at 4' became 'the mirror
+        # has failed once' and ok=False became ok=True. Degradation is reported
+        # ALONGSIDE the journal comparison now; it can add a caveat and it can
+        # never remove a finding.
         if anchor["mirror_failures"]:
-            anchor["verdict"] = "degraded"
+            anchor["degraded"] = True
             report["problems"].append(
                 f"the audit mirror has failed {anchor['mirror_failures']} time(s); "
                 f"last error: {anchor['last_mirror_error']}. Events are still "
-                "recorded in the database, but truncation is not externally "
-                "detectable while this persists")
-        elif not external["available"]:
+                "recorded in the database, but events written while this persists "
+                "are not externally anchored")
+        if not external["available"]:
             anchor["verdict"] = "unverified"
         elif external["head_seq"] is None:
             anchor["verdict"] = "unverified"
@@ -1376,8 +1572,91 @@ class Store:
                 report["problems"].append(
                     "the journal and the database disagree about the hash of event "
                     f"{external['head_seq']}: the log was rewritten after it was mirrored")
+
+        # EVERY mirrored row, not only the head. A rewrite deep in the log used
+        # to be covered by one legitimate append: the heads matched again and
+        # the anchor said 'agrees' over a row the journal could still prove had
+        # been changed.
+        stored = {row["seq"]: row.get("hash") for row in rows}
+        rewritten = sorted(seq for seq, mirrored in (external.get("heads") or {}).items()
+                           if seq in stored and stored[seq] and mirrored != stored[seq])
+        anchor["rewritten_seqs"] = rewritten
+        if rewritten:
+            anchor["verdict"] = "conflict"
+            report["ok"] = False
+            report["problems"].append(
+                "the journal and the database disagree about the hash of event(s) "
+                + ", ".join(str(seq) for seq in rewritten[:10])
+                + ": those rows were rewritten after they were mirrored")
+        # Degradation shows in the verdict only where the comparison found
+        # NOTHING. 'truncated' and 'conflict' are findings and always win --
+        # that is the whole point: local bookkeeping may add a caveat and may
+        # never remove a finding. anchor["degraded"] stays separately readable
+        # either way, and the problem line is appended regardless of verdict.
+        if anchor.get("degraded") and anchor["verdict"] in ("agrees", "behind",
+                                                            "unverified"):
+            anchor["verdict"] = "degraded"
         report["anchor"] = anchor
+
+        # The chain verdict is about the LOG. Whether the mission rows agree
+        # with the log is a second question, and answering it took nothing new:
+        # replaying each mission's events through MISSION_TRANSITIONS shows a
+        # state SQL wrote and the engine never reached.
+        report["chain_ok"] = report["ok"]
+        report["states"] = self.verify_states(
+            rows, first_chained_seq=report["first_chained_seq"])
+        if report["states"]["problems"]:
+            report["problems"].extend(report["states"]["problems"])
+            report["ok"] = False
         return report
+
+    def verify_states(self, rows=None, *, first_chained_seq=None):
+        """Replay every mission's event trail through the transition table.
+
+        The hash chain proves no EVENT was altered. It says nothing about the
+        missions table, which is not chained -- so `UPDATE missions SET
+        state='completed'` was indistinguishable from work that ran, and the
+        engine would then narrate the forged state back into the log ('a human
+        changed their mind about accepted work') for a mission that never ran.
+        """
+        if rows is None:
+            with self.db() as db:
+                rows = [dict(r) for r in db.execute("SELECT * FROM events ORDER BY seq")]
+        with self.db() as db:
+            actual = {r["id"]: r["state"] for r in db.execute("SELECT id, state FROM missions")}
+        trail = {}
+        for row in rows:
+            target = STATE_EVENTS.get(row["event"])
+            if target is not None and row.get("mission"):
+                trail.setdefault(row["mission"], []).append((row["seq"], target))
+        result = {"missions": len(actual), "replayed": 0,
+                  "predates_chain": 0, "problems": []}
+        for mid, final in sorted(actual.items()):
+            events = trail.get(mid, [])
+            # A mission whose trail starts before the chain genesis has no
+            # verifiable trail: the migration preserved those rows without
+            # hashing them, and the missions table was never chained at all.
+            # Calling that forged would be a false accusation, which is the
+            # failure mode this whole surface exists to avoid.
+            if first_chained_seq is not None and (
+                    not events or events[0][0] < first_chained_seq):
+                result["predates_chain"] += 1
+                continue
+            state = None
+            for seq, target in events:
+                allowed, _event, _reason = transition_allowed(state, target)
+                if not allowed:
+                    result["problems"].append(
+                        f"mission {mid}: event {seq} records {state} -> {target}, which "
+                        "the transition table forbids; the row was changed outside the engine")
+                state = target
+            if state != final:
+                result["problems"].append(
+                    f"mission {mid}: the row says {final!r} but its events end at "
+                    f"{state!r}; that state was written without an event")
+            result["replayed"] += 1
+        result["verdict"] = "disagrees" if result["problems"] else "agrees"
+        return result
 
     def update(self, mid, **fields):
         """Change mission fields that are NOT the state.
@@ -1437,6 +1716,20 @@ class Store:
             allowed, event, reason = transition_allowed(current, target)
             if not allowed:
                 raise TransitionError(f"Refused {current} -> {target}: {reason}")
+            # The retry budget is a property of THIS EDGE, not of the verb that
+            # asked for it. It lived only in Store.retry(), so an in-process
+            # caller -- the worker, the desktop, any future orchestrator -- got
+            # a fourth attempt by calling transition() directly, which is the
+            # same defect this method was written to fix for state itself.
+            if event == "retry-queued":
+                attempt = fields.get("attempt")
+                if attempt is None:
+                    attempt = db.execute("SELECT attempt FROM missions WHERE id=?",
+                                         (mid,)).fetchone()["attempt"]
+                if (attempt or 0) >= MAX_ATTEMPTS:
+                    raise TransitionError(
+                        f"Refused {current} -> {target}: retry budget exhausted "
+                        f"({MAX_ATTEMPTS} attempts); create a new reviewed mission")
             assignments = dict(fields)
             assignments["state"] = target
             assignments["updated_at"] = at
@@ -1699,8 +1992,33 @@ class Store:
                                    detail="Cancelled before execution started")
         # A running mission is asked, not told: the flag is what Executor.check()
         # observes. The state moves only when execution actually stops.
-        self.update(mid, cancel_requested=1)
-        self.event(mid, "cancel-requested", "Running process is terminated; workspace checkpoint remains available")
+        #
+        # One transaction, and the state is re-read inside it. This used to read
+        # the state in get() and write the flag in a separate update(), so a
+        # mission that reached waiting-review in between got a cancel_requested
+        # flag on a terminal row and a 'cancel-requested' event appended AFTER
+        # its terminal event -- a log recording a decision that was not possible
+        # when it was written. transition() already does this correctly; cancel()
+        # was the verb that did not.
+        at = now()
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT state, cancel_requested FROM missions WHERE id=?",
+                             (mid,)).fetchone()
+            if row is None:
+                raise MissionError("Mission does not exist")
+            if row["state"] not in ACTIVE:
+                raise MissionError(
+                    f"This mission is {row['state']}, not running; it finished while "
+                    "you were looking at it")
+            if row["cancel_requested"]:
+                return self.get(mid)
+            db.execute("UPDATE missions SET cancel_requested=1,updated_at=? WHERE id=?",
+                       (at, mid))
+            appended = self._append(
+                db, mission=mid, event="cancel-requested", actor=ACTOR_USER, at=at,
+                detail="Running process is terminated; workspace checkpoint remains available")
+        self.mirror(appended)
         return self.get(mid)
 
     def retry(self, mid):
@@ -1708,7 +2026,9 @@ class Store:
             mission = self.get(mid)
             if mission["state"] not in ("failed", "cancelled"):
                 raise MissionError("Only failed or cancelled missions can be retried")
-            if mission["attempt"] >= 3:
+            if mission["attempt"] >= MAX_ATTEMPTS:
+                # transition() refuses this edge too. Kept here so the CLI's
+                # refusal stays a MissionError with the wording people know.
                 raise MissionError("Retry budget exhausted (three attempts); create a new reviewed mission")
             self.transition(mid, MissionState.QUEUED, actor=ACTOR_USER,
                             expect=mission["state"], error=None, cancel_requested=0,
@@ -2002,6 +2322,112 @@ ARTIFACT_KINDS = {".md": "report", ".json": "log", ".diff": "patch",
                   ".log": "log", ".txt": "report"}
 
 
+# Keys a provider MAY put on an event's data to describe a tool action. Every
+# one is optional: this is a vocabulary offered to providers, not a contract
+# imposed on them, and a provider that supplies none still produces a row saying
+# a tool ran and nothing more.
+TOOL_DATA_KEYS = ("tool", "action", "args", "exit_status", "result_digest",
+                  "bytes_changed", "files_changed", "started_at", "ended_at")
+
+
+def tool_records(events):
+    """Tool actions a provider REPORTED, in order.
+
+    Provider-neutral by construction: it matches on the AgentEvent vocabulary
+    and on data keys, never on a provider id, so a provider added tomorrow is
+    covered the day it declares one.
+
+    An event is a tool record if it says so -- data carries a "tool" key. That
+    is deliberately narrow. Guessing from a PROGRESS message's text would
+    manufacture structure out of prose, and a wrong ToolExecution row is worse
+    than a missing one because a reviewer believes it.
+    """
+    records = []
+    for event in events or ():
+        data = getattr(event, "data", None)
+        if not isinstance(data, dict):
+            continue
+        name = data.get("tool")
+        if not name or not isinstance(name, str):
+            continue
+        args = data.get("args")
+        records.append({
+            # tool and action are provider-controlled text going to the durable
+            # record a reviewer reads, exactly like args -- which was scrubbed
+            # while these two were stored verbatim, so a credential in a command
+            # name survived in the row next to the redacted copy of itself.
+            # Control characters go too: a NUL in a tool name reaches whatever
+            # terminal prints the row.
+            "tool": _safe_text(name, 200),
+            "requested_action": (_safe_text(str(data.get("action")), 500)
+                                 if data.get("action") is not None else None),
+            # Redacted before storage, and digested BEFORE redaction so the
+            # digest identifies what actually ran rather than its scrubbed form.
+            "args_digest": _tool_args_digest(args),
+            "args_redacted": _redact_tool_args(args),
+            "exit_status": (str(data.get("exit_status"))[:100]
+                            if data.get("exit_status") is not None else None),
+            "result_digest": (str(data.get("result_digest"))[:128]
+                              if data.get("result_digest") is not None else None),
+            "bytes_changed": _as_int(data.get("bytes_changed")),
+            "files_changed": _as_int(data.get("files_changed")),
+            "started_at": _as_text(data.get("started_at")),
+            "ended_at": _as_text(data.get("ended_at")),
+        })
+    return records
+
+
+def _tool_args_digest(args):
+    """A digest of arguments we did not design.
+
+    canonical() has no `default=` on purpose -- it hashes records whose shape
+    this code owns, and coercing an unexpected type there would let two
+    different records hash alike. Tool args arrive from a provider and can be
+    anything, so they get a serialiser that cannot raise. An argument that
+    still will not serialise yields no digest rather than failing the mission.
+    """
+    if args is None:
+        return None
+    try:
+        blob = json.dumps(args, sort_keys=True, separators=(",", ":"),
+                          ensure_ascii=False, default=repr).encode("utf-8")
+    except (TypeError, ValueError):
+        return None
+    return hashlib.sha256(blob).hexdigest()
+
+
+def _as_int(value):
+    """A provider's number, or None. Never a guess: a malformed value is an
+    unknown, and storing 0 for it would read as "nothing changed"."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
+def _as_text(value):
+    return str(value)[:64] if isinstance(value, (str, int, float)) else None
+
+
+def _safe_text(value, limit):
+    """Provider text on its way to a stored column: credentials struck, control
+    characters removed, truncated. clean() is the same redactor every other
+    retained string goes through."""
+    text = clean(str(value))
+    text = "".join(ch for ch in text if ch >= " " or ch in "\t\n")
+    return text[:limit]
+
+
+def _redact_tool_args(args):
+    """Arguments are provider-supplied and go to a record that outlives the run,
+    so they are scrubbed the same way every other retained text is."""
+    if args is None:
+        return None
+    try:
+        return json.loads(clean(json.dumps(args, default=str))[:4000])
+    except (ValueError, TypeError):
+        return {"unparseable": clean(str(args))[:1000]}
+
+
 def kill_tree(proc):
     if proc.poll() is not None:
         return
@@ -2045,8 +2471,7 @@ class Executor:
             capability = (self.mission.get("capability")
                           or LEGACY_KIND_CAPABILITY.get(self.mission["kind"]))
             runtime = config.get("runtime")
-            provider_id = (self.mission.get("provider_id") or config.get("provider_id")
-                           or (LEGACY_RUNTIME_PROVIDER.get(runtime, runtime) if runtime else None))
+            provider_id = mission_provider_id(self.mission)
             try:
                 self._provider = provider_for(capability, provider_id)
             except ProviderError as exc:
@@ -2306,6 +2731,11 @@ class Executor:
             request_path.unlink(missing_ok=True)
             raise MissionError(str(exc)) from exc
 
+        # What inference actually ran under. Recorded so the validation run can
+        # say whether it was stricter instead of asserting a constant.
+        if invocation.sandbox is not None:
+            self.inference_network = invocation.sandbox.firebreak_network
+
         secrets = self.credentials_for(provider)
         account_context = contextlib.nullcontext()
         if not secrets and invocation.sandbox and invocation.sandbox.account_mount:
@@ -2337,6 +2767,7 @@ class Executor:
             raise MissionError(
                 f"{provider.display_name} did not record a complete successful turn; "
                 "inspect the retained log")
+        self.record_tool_activity(events)
         answer = provider.final_message(events)
         if read_only and (not isinstance(answer, str) or not answer.strip()):
             raise MissionError(f"{provider.display_name} returned no final report message")
@@ -2348,6 +2779,26 @@ class Executor:
                                 "log": str(log), "reused": False})
         self.event("inference-finished", f"{provider.display_name} completed a turn")
         return answer
+
+    def record_tool_activity(self, events):
+        """Persist whatever tool activity the provider reported.
+
+        Never fatal. A malformed or duplicated tool record is a provider quirk,
+        and losing a completed mission over one would trade the work for its
+        description. Failures are recorded as an event instead.
+        """
+        if not self.session_id:
+            return 0
+        stored = 0
+        for index, record in enumerate(tool_records(events), 1):
+            try:
+                if self.store.record_tool_execution(
+                        self.session_id, seq=index, decision="observed", **record):
+                    stored += 1
+            except Exception as exc:                              # noqa: BLE001
+                self.event("tool-record-failed",
+                           f"sequence {index}: {clean(exc)[:200]}")
+        return stored
 
     def run_invocation(self, invocation, secrets=None):
         """Execute one provider Invocation, inside a recorded AgentSession.
@@ -2572,6 +3023,38 @@ class Executor:
         if added:
             raise MissionError("The agent added unreviewed test/validation files: " + ", ".join(map(escape_path, added[:5])) + ". Validation refused; inspect changes or Undo")
 
+    def validation_enforcement(self, requested):
+        """What the sandbox really applied to THIS validation run.
+
+        This was a constant dict. It said network_isolation: "enforced" for
+        every run, including one whose tests ran with the host network, where
+        bwrap enforces the on/off decision and no destination at all. A receipt
+        field that reads the same whatever happened records nothing.
+
+        Derived through sandbox_enforcement(), so this row cannot drift from the
+        row the UI and the session record show for the same posture.
+        """
+        spec = SandboxSpec(workspace_mode="workspace-write",
+                           network="none" if requested == "none" else "allowlist")
+        table = sandbox_enforcement(spec)
+        inference = getattr(self, "inference_network", None)
+        if inference is None:
+            stricter = "not_observed"      # no provider turn ran before validation
+        elif requested == inference:
+            stricter = "not_enforced"      # shares inference's posture, by construction
+        elif requested == "none":
+            stricter = "enforced"
+        else:
+            stricter = "weaker_than_inference"
+        return {"network_isolation": table["network"]["status"],
+                # With no route at all there is no destination to filter; with a
+                # route there is one and nothing filters it. Those are different
+                # facts and the old constant reported them identically.
+                "network_destination": ("not_applicable" if requested == "none"
+                                        else "not_enforced"),
+                "stricter_than_inference": stricter,
+                "inference_network": inference or "not_observed"}
+
     def code(self):
         config = self.mission["config"]
         validation_guard = self.validation_guard()
@@ -2592,9 +3075,7 @@ class Executor:
                 executable=str(config["test"][0]) if config["test"] else None,
                 sandbox_mode="firebreak", network_requested=requested,
                 network_effective=requested,
-                enforcement={"network_isolation": "enforced",
-                             "network_destination": "not_enforced",
-                             "stricter_than_inference": "not_implemented"},
+                enforcement=self.validation_enforcement(requested),
                 guard_state="intact", started_at=started, duration_ms=duration,
                 exit_code=code, log_path=log,
                 result="passed" if code == 0 else "failed")
@@ -2762,16 +3243,135 @@ class Executor:
             after = {}
             error = (error or "") + "; diff unavailable: " + clean(exc)
         records = [{"path": p, "sha256": digest(p), "bytes": Path(p).stat().st_size} for p in self.artifacts if Path(p).is_file()]
-        receipt = {"schema": 1, "mission": self.mid, "title": self.mission["title"], "kind": self.mission["kind"], "capability": self.mission.get("capability"), "provider_id": self.mission.get("provider_id"), "provider_version": getattr(getattr(self, "_provider", None), "version", None), "state": state, "workspace": str(self.ws), "checkpoint": self.store.get(self.mid)["checkpoint"], "started_at": self.mission["updated_at"], "finished_at": now(), "runtime": self.mission["config"]["runtime"], "network": self.mission["config"]["network"], "error": error, "artifacts": records, "tests": self.tests, "inferences": self.inferences, "diff": str(self.directory / "changes.diff"), "changes": str(self.directory / "changes.json"), "diff_truncated": bool(change and change.truncated), "review_required": state == "waiting-review", "recovery_index_preserved": self.preserve_recovery_index, "limits": {"timeout_seconds": self.mission["config"]["timeout"], "sandbox_rss_mb": 3072, "sandbox_address_space": "unlimited", "sandbox_processes": 96, "queue_concurrency": 1}, "recovery_scope": "Workspace files only; external network effects cannot be undone"}
+        # Schema 2. Every v1 key is kept and the new material is additive, so a
+        # v1 reader is not broken and a v2 reader can tell there is more.
+        sessions = self.store.sessions(self.mid)
+        unenforced = sorted({field for session in sessions
+                             for field, entry in (session.get("enforcement") or {}).items()
+                             if entry.get("status") in ("not_enforced", "not_representable")})
+        chain = self.store.verify_chain()
+        approval_id = self.store.get(self.mid).get("approval_id")
+        approval = None
+        if approval_id:
+            approval = next((dict(row) for row in self.store.approvals()
+                             if row["id"] == approval_id), None)
+            if approval:
+                # The SCOPE, the granter and the method. Never a credential
+                # value, and there has never been one in an approval row.
+                approval = {k: approval.get(k) for k in
+                            ("id", "subject", "scope", "granted_by", "method",
+                             "granted_at", "expires_at", "revoked_at")}
+        receipt = {"schema": 2, "mission": self.mid, "title": self.mission["title"], "kind": self.mission["kind"], "capability": self.mission.get("capability"), "provider_id": self.mission.get("provider_id"), "provider_version": getattr(getattr(self, "_provider", None), "version", None), "state": state, "workspace": str(self.ws), "checkpoint": self.store.get(self.mid)["checkpoint"], "started_at": self.mission["updated_at"], "finished_at": now(), "runtime": self.mission["config"]["runtime"], "network": self.mission["config"]["network"], "error": error, "artifacts": records, "tests": self.tests, "inferences": self.inferences, "diff": str(self.directory / "changes.diff"), "changes": str(self.directory / "changes.json"), "diff_truncated": bool(change and change.truncated), "review_required": state == "waiting-review", "recovery_index_preserved": self.preserve_recovery_index, "limits": {"timeout_seconds": self.mission["config"]["timeout"], "sandbox_rss_mb": 3072, "sandbox_address_space": "unlimited", "sandbox_processes": 96, "queue_concurrency": 1}, "recovery_scope": "Workspace files only; external network effects cannot be undone",
+                   "tasks": [{k: task[k] for k in ("id", "seq", "kind", "state",
+                                                   "started_at", "finished_at",
+                                                   "exit_code", "error")}
+                             for task in self.store.tasks(self.mid)],
+                   "sessions": [{k: session.get(k) for k in
+                                 ("id", "task_id", "provider_id", "provider_version",
+                                  "provider_trust", "attempt", "firebreak_session",
+                                  "executable", "executable_trust",
+                                  "requested_sandbox", "effective_sandbox",
+                                  "enforcement", "credentials_requested",
+                                  "credentials_granted", "read_grants",
+                                  "network_requested", "egress_requested",
+                                  "network_effective", "started_at", "ended_at",
+                                  "exit_code", "outcome", "usage")}
+                                for session in sessions],
+                   "tool_executions": self.store.tool_executions(mission_id=self.mid),
+                   "test_runs": self.store.test_runs(self.mid),
+                   "git_changes": self.store.git_changes(self.mid),
+                   "approval": approval,
+                   "approval_required": approval_id is not None,
+                   # The audit chain as it stood when this receipt was written.
+                   # A receipt that asserted its own trustworthiness without
+                   # this would be asking to be believed.
+                   "audit": {"ok": chain.get("ok"), "events": chain.get("events"),
+                             "chained": chain.get("chained"),
+                             "unchained": chain.get("unchained"),
+                             "head_seq": chain.get("head_seq"),
+                             "head": chain.get("head"),
+                             "anchor": (chain.get("anchor") or {}).get("verdict"),
+                             # The chain verifies EVENTS. Whether the mission
+                             # rows agree with the events they claim to record
+                             # is a separate question and gets a separate word.
+                             "chain_ok": chain.get("chain_ok"),
+                             "states": (chain.get("states") or {}).get("verdict")},
+                   # The gaps, in the artifact a person reads when deciding
+                   # whether to accept the work. Listing them anywhere else and
+                   # not here would be the omission that matters.
+                   "declared_but_not_enforced": unenforced,
+                   "enforcement_note": (
+                       "Fields listed in declared_but_not_enforced were declared and "
+                       "recorded but reach no mechanism. egress_allowlist and "
+                       "masked_paths are not filtered or masked by Firebreak; no "
+                       "syscall profile is applied. Do not read them as controls.")}
         path = self.directory / "receipt.json"
         atomic(path, json.dumps(receipt, indent=2) + "\n")
         self.store.update(self.mid, receipt=str(path), artifacts=json.dumps([r["path"] for r in records]))
+
+
+def stream_events(store, *, since=0, follow=True, limit=None, idle=None):
+    """Yield event rows from `since`, then block for new ones.
+
+    RESUMPTION IS BY SEQUENCE NUMBER, which is why seq is explicit rather than
+    left to AUTOINCREMENT: a client that disconnects reconnects with the last
+    seq it saw and receives exactly what it missed, once. No duplicates, because
+    the query is strictly greater-than; no gaps, because the chain refuses to
+    renumber.
+
+    BACKPRESSURE IS THE CONSUMER'S. This is a generator over a database, not a
+    queue: a slow client simply reads slowly, and the events wait in SQLite
+    where they already are. Nothing is buffered on their behalf and nothing is
+    dropped -- the failure mode of a bounded in-memory buffer is losing the
+    audit records a slow client most needs.
+    """
+    wake = Wakeup(store.root) if follow else None
+    sent = 0
+    try:
+        while True:
+            with store.db() as db:
+                rows = db.execute(
+                    "SELECT * FROM events WHERE seq > ? ORDER BY seq"
+                    + (" LIMIT ?" if limit else ""),
+                    ((since, limit) if limit else (since,))).fetchall()
+            for row in rows:
+                since = row["seq"]
+                sent += 1
+                yield dict(row)
+                if limit and sent >= limit:
+                    return
+            if not follow:
+                return
+            # A dropped client is just a generator nobody advances; the process
+            # exits and the watch costs nothing.
+            wake.wait(timeout=idle if idle is not None else wake.fallback)
+    finally:
+        if wake is not None:
+            wake.close()
 
 
 def policy_engine():
     """The engine's single PolicyEngine. A function rather than a module global
     so a test can substitute one without reaching into another module's state."""
     return sf_policy.PolicyEngine()
+
+
+def mission_provider_id(mission):
+    """Who will perform this mission. THE one resolution.
+
+    It used to exist twice -- once in the approval gate, once in the Executor --
+    with the Executor knowing one more fallback. A mission that named its
+    provider only through the legacy runtime string was therefore invisible to
+    the gate and perfectly visible to the executor, which is an unapproved run
+    with no approval event at all.
+
+    Two copies of a resolution rule is not a style problem. It is a security
+    boundary that one caller can be taught to see past.
+    """
+    config = mission.get("config") or {}
+    runtime = config.get("runtime")
+    return (mission.get("provider_id") or config.get("provider_id")
+            or (LEGACY_RUNTIME_PROVIDER.get(runtime, runtime) if runtime else None))
 
 
 def mission_decision(store, mission):
@@ -2784,9 +3384,17 @@ def mission_decision(store, mission):
     """
     capability = (mission.get("capability")
                   or LEGACY_KIND_CAPABILITY.get(mission["kind"]))
-    provider_id = mission.get("provider_id") or (mission["config"] or {}).get("provider_id")
+    provider_id = mission_provider_id(mission)
     if not capability or not provider_id:
-        return None, None
+        # NOT "no decision needed". A mission whose performer cannot be
+        # identified must not run, and returning None here meant
+        # require_approval had nothing to refuse -- the mission started with no
+        # approval and no event saying one was ever wanted.
+        return sf_policy.Decision(
+            sf_policy.DENY,
+            ("this mission does not identify a capability and a provider, so "
+             "there is nothing to decide about and nothing to approve",),
+            sf_policy.Scope(), {}, ()), None
     try:
         provider = provider_for(capability, provider_id)
     except ProviderError as exc:
@@ -2818,6 +3426,20 @@ def require_approval(store, mission):
     if decision.outcome != sf_policy.ESCALATE:
         return None
     row, why = store.find_approval(subject, decision.scope)
+    if row is not None:
+        # Re-read under the write lock the revoke path also takes. Without this
+        # the approval was consulted once and a revocation arriving a moment
+        # later was simply missed -- the mission ran on a withdrawn decision.
+        with store.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            fresh = db.execute(
+                "SELECT revoked_at, expires_at FROM approvals WHERE id=?",
+                (row["id"],)).fetchone()
+        if fresh is None or fresh["revoked_at"]:
+            row, why = None, (
+                f"{row['id']} was revoked at "
+                f"{fresh['revoked_at'] if fresh else 'an unknown time'} while this "
+                "mission was starting")
     if row is None:
         store.event(mission["id"], "approval-required", "; ".join(decision.reasons),
                     actor=ACTOR_ORCHESTRATOR)
@@ -2943,10 +3565,16 @@ def run_mission(store, mid):
         # before another can mutate it, preserving a meaningful Undo boundary.
         if any(m["id"] != mid and m["workspace"] == mission["workspace"] for m in store.list(states=("waiting-review",))):
             raise MissionError("Review the previous mission for this workspace before running another")
+        # The Executor is built BEFORE the state moves. Constructing it can
+        # fail -- a workspace that no longer resolves, a directory that cannot be
+        # created -- and doing that after the transition left the mission RUNNING
+        # with no owner and outside the try/finally that settles it. A refusal
+        # must change nothing.
+        executor = Executor(store, mission)
         store.transition(mid, MissionState.RUNNING, actor=ACTOR_WORKER,
                          expect=MissionState.QUEUED,
                          attempt=mission["attempt"] + 1, error=None)
-        executor = Executor(store, store.get(mid))
+        executor.mission = store.get(mid)
         state, error = "waiting-review", None
         try:
             executor.execute()
@@ -3201,7 +3829,7 @@ def capabilities():
     else:
         summary = "No agent providers are installed."
 
-    return {"version": VERSION, "workspace_root": str(workspace_root()), "runtimes": runtimes, "providers": described, "capabilities": list(CAPABILITIES), "capability_kinds": dict(CAPABILITY_LEGACY_KIND), "summary": summary, "provider_errors": list(reg.errors), "schema_version": SCHEMA_VERSION, "tools": {name: bool(shutil.which(name)) for name in ("bwrap", "ffmpeg", "ffprobe", "shadowfetch-firebreak")}, "kinds": ["code", "report", "media"], "states": ["queued", "running", "waiting-review", "completed", "failed", "cancelled", "undone"], "max_attempts": 3, "max_parallel": 1, "local_ai": "deferred", "grok_bot": "Launch the official desktop cloud teammate separately; it has no supported mission CLI adapter"}
+    return {"version": VERSION, "workspace_root": str(workspace_root()), "runtimes": runtimes, "providers": described, "capabilities": list(CAPABILITIES), "capability_kinds": dict(CAPABILITY_LEGACY_KIND), "summary": summary, "provider_errors": list(reg.errors), "schema_version": SCHEMA_VERSION, "tools": {name: bool(shutil.which(name)) for name in ("bwrap", "ffmpeg", "ffprobe", "shadowfetch-firebreak")}, "kinds": ["code", "report", "media"], "states": ["queued", "running", "waiting-review", "completed", "failed", "cancelled", "undone"], "max_attempts": MAX_ATTEMPTS, "max_parallel": 1, "local_ai": "deferred", "grok_bot": "Launch the official desktop cloud teammate separately; it has no supported mission CLI adapter"}
 
 
 def worker(store, once=False):
@@ -3319,6 +3947,14 @@ def main(argv=None):
     policy_show = policy_sub.add_parser("show")
     policy_show.add_argument("id")
     policy_sub.add_parser("matrix")
+    watch = sub.add_parser("watch")
+    watch.add_argument("--since", type=int, default=0,
+                       help="Resume after this event sequence number")
+    watch.add_argument("--limit", type=int, default=None)
+    watch.add_argument("--no-follow", action="store_true",
+                       help="Print what exists and exit rather than blocking")
+    records = sub.add_parser("records")
+    records.add_argument("id")
     audit = sub.add_parser("audit")
     audit_sub = audit.add_subparsers(dest="audit_command", required=True)
     audit_sub.add_parser("verify")
@@ -3326,6 +3962,32 @@ def main(argv=None):
     try:
         if args.command == "capabilities":
             result = capabilities()
+        elif args.command == "watch":
+            store = Store()
+            # Written as it arrives and flushed per event: a stream a consumer
+            # only sees in 4 KB blocks is not a stream.
+            for row in stream_events(store, since=args.since,
+                                     follow=not args.no_follow, limit=args.limit):
+                sys.stdout.write(json.dumps(row, sort_keys=True) + "\n")
+                sys.stdout.flush()
+            return 0
+        elif args.command == "records":
+            store = Store()
+            # Everything the engine knows about one mission that `show` does
+            # not return. Without this the desktop had to infer a task state
+            # machine from event names, which is the duplication Phase 3 exists
+            # to remove.
+            result = {
+                "mission": store.get(args.id),
+                "tasks": store.tasks(args.id),
+                "sessions": store.sessions(args.id),
+                "tool_executions": store.tool_executions(mission_id=args.id),
+                "test_runs": store.test_runs(args.id),
+                "git_changes": store.git_changes(args.id),
+                "reviews": store.reviews(args.id),
+                "artifacts": store.artifacts(args.id),
+                "approvals": store.approvals("mission:" + args.id),
+            }
         elif args.command == "approve":
             store = Store()
             mission = store.get(args.id)
@@ -3373,7 +4035,10 @@ def main(argv=None):
                 print(f"  unchained       {result['unchained']} "
                       "(written before the chain existed; pinned by the genesis "
                       "digest, not individually verifiable)")
-                print(f"chain             {'intact' if result['ok'] else 'BROKEN'}")
+                print(f"chain             {'intact' if result.get('chain_ok', result['ok']) else 'BROKEN'}")
+                states = result.get("states") or {}
+                print(f"mission states    {states.get('verdict', 'unchecked')} "
+                      f"({states.get('replayed', 0)} replayed against the transition table)")
                 print(f"head              seq {result['head_seq']} "
                       f"{(result['head'] or '')[:16]}")
                 print(f"external anchor   {anchor.get('verdict')} "

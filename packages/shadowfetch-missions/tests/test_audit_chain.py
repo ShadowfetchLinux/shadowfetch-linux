@@ -81,8 +81,12 @@ class DegradedAudit(MigrationHarness):
         self.assertEqual(report["anchor"]["verdict"], "degraded")
         self.assertGreaterEqual(report["anchor"]["mirror_failures"], 1)
         self.assertIn("simulated outage", report["anchor"]["last_mirror_error"])
-        self.assertTrue(any("not externally detectable" in p
+        self.assertTrue(any("not externally anchored" in p
                             for p in report["problems"]))
+        # The degraded branch used to be the HEAD of an elif chain, which made
+        # a file this uid owns able to suppress the journal comparison. It
+        # reports alongside that comparison now.
+        self.assertIn("journal_head_seq", report["anchor"])
 
     def test_a_degraded_mirror_does_not_claim_the_chain_is_broken(self):
         """Two different facts. The chain is fine; the anchor is not."""
