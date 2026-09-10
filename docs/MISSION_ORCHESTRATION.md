@@ -32,9 +32,12 @@ Every command output below was run on the build host against a throwaway store
   work stealing.
 - It is **not a resumption engine.** No provider here supports resuming a turn, and
   reconciliation deliberately does not try (§8).
-- It is **not an enforcement layer.** Policy decides, Firebreak enforces some of what was
-  decided, and the session record says per field which is which. A field in
-  `declared_but_not_enforced` reached no mechanism. See `docs/AGENT_ARCHITECTURE.md` and
+- It is **not an enforcement layer.** Policy decides, Firebreak enforces, and the session
+  record says per field which is which. A field in `declared_but_not_enforced` reached no
+  mechanism — **as of 4.1.0 that array is empty**, because every declarable field now
+  reaches one. The key is still emitted: an absent key and an empty one are different
+  claims, and only one of them is checkable. What remains are residuals on enforced
+  fields, not unenforced fields. See `docs/AGENT_ARCHITECTURE.md` and
   `sf_policy.POLICY_MEDIATION` for the matrix.
 
 ---
@@ -694,13 +697,17 @@ otherwise assume works.
    `network_effective` are separate columns and `enforcement` carries
    `stricter_than_inference: not_implemented`, so the gap appears in every receipt rather
    than in a document nobody opens at review time. It is not closed.
-6. **Egress allowlists and masked paths reach no mechanism.** They are recorded as
-   *requested* and reported in `declared_but_not_enforced`. Firebreak has two network
-   postures, `none` and `allow`; an allowlist collapses to `allow`. Firebreak **does** accept
-   `--mask-path`, but it is record-only — it reaches no bwrap argument — and Mission Control
-   never passes it, so a declared mask does not even appear in the session record. The
-   conclusion is the same either way; the reason matters because "there is no flag" implied
-   the fix was to add one that already exists.
+6. **Egress allowlists and masked paths reached no mechanism. CLOSED in 4.1.0.** Both are
+   enforced now: the allowlist as an nftables ruleset with default DROP in the sandbox's
+   own network namespace, installed by a helper that owns that namespace before bwrap
+   runs; masked paths as real mounts, an empty tmpfs over a directory and `/dev/null`
+   over a file. The residuals are narrower than the old gap and are not the same claim:
+   `--net allow` with NO declared destination installs no ruleset and reaches the LAN,
+   DNS still leaves through the NAT's forwarder, and masking is by PATH so a hardlink to
+   the same inode under an unmasked name is still readable. A syscall filter was added at
+   the same time, applied to every sandbox and deliberately not declarable. The old text
+   is worth keeping in view: it said `--mask-path` was "record-only — it reaches no bwrap
+   argument", which was exactly right, and is what got fixed.
 7. **Tool actions inside a provider turn are `not_observable`.** A `tool_executions` row
    exists only because the provider reported it, with `decision: "observed"` — nothing
    intercepted it and nothing could have refused it.

@@ -629,14 +629,21 @@ Three gaps this document originally recorded were closed in response to it, and
 are described here as history rather than as current state — see the commit
 "close the findings from the documentation review".
 
-1. **`masked_paths` and `egress_allowlist` are declared but not enforced at the
-   sandbox boundary.** §6.6. Both are schema-bounded, narrowable and checked by
-   `verify_invocation()`; neither reaches Firebreak, because Firebreak has no
-   masking or egress-filtering flag to receive them. They are audit records and
-   future enforcement points, and should not be described to users as controls.
-   **`cpu_seconds` was in this list and no longer is:** `run_process()` now passes
-   `min(spec.cpu_seconds, mission timeout)`, so a provider's declared ceiling is
-   the one that applies when it is the tighter of the two.
+1. **`masked_paths` and `egress_allowlist` were declared but not enforced at the
+   sandbox boundary.** §6.6. **Both were closed in 4.1.0** and this entry is now
+   history. `masked_paths` is real mounts — an empty tmpfs over a directory,
+   `/dev/null` over a file — inside the sandbox's own mount namespace, with no
+   cooperation from the payload; the residual is that masking is by PATH, so a
+   hardlink to the same inode under an unmasked name is still readable.
+   `egress_allowlist` is an nftables ruleset with default DROP in the sandbox's
+   own network namespace, installed by a helper that owns that namespace before
+   bwrap runs; the residual is that `--net allow` with NO declared destination
+   installs no ruleset at all, and that DNS still leaves through the NAT's
+   forwarder. A syscall filter was also added, always applied and deliberately
+   not declarable. **`cpu_seconds` was in this list and no longer is:**
+   `run_process()` now passes `min(spec.cpu_seconds, mission timeout)`, so a
+   provider's declared ceiling is the one that applies when it is the tighter of
+   the two.
 2. **The registry is cached for the process lifetime** with no invalidation, so a
    newly installed provider needs a worker restart. This is the first thing a
    provider author will hit.

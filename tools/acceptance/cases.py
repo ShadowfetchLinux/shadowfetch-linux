@@ -2263,11 +2263,13 @@ CASES: dict[str, Case] = {
             summary="Upgrade an installed previous release, preserving user data",
             manifest_case="UPGRADE-01",
             manifest_gap=(
-                "UPGRADE-01 is \"Existing 4.0 installed system upgrades with "
-                "preserved user data AND WORKING RECOVERY\". This case proves the "
-                "upgrade and the data preservation; it does not restore a Phoenix "
-                "Point on the upgraded system, which the required case also asks "
-                "for."
+                "UPGRADE-01 is \"Existing 3.5 (published APT suite) and 4.0 "
+                "(published ISO) systems upgrade with preserved user data AND "
+                "WORKING RECOVERY\". This case proves ONE source version's "
+                "upgrade and its data preservation; it does not restore a "
+                "Phoenix Point on the upgraded system, and it does not prove "
+                "the other source version. 3.5.0-1 is the one the published "
+                "APT suite actually serves, so it is not the optional half."
             ),
             consumes_artifact=False,
             minutes=45,

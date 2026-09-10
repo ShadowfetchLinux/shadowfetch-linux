@@ -26,20 +26,49 @@ granted it), REQUESTED (this run asks for it), EFFECTIVE (the value that reached
 the sandbox), ENFORCED (a mechanism outside Shadowfetch's own code applies it and
 an attempt to exceed it fails) and OBSERVED (recorded, applied by nothing).
 
-ENFORCED today: the workspace bind (`--ro-bind` for a read-only mission, so a write
-returns `EROFS`), read grants, the network on/off decision (`--unshare-net` for
-`none`), credential identities (`--clearenv` and one `--setenv` per granted name),
-the dedicated account mount, memory (`MemoryMax` with `MemorySwapMax=0`) and the
-process count (`TasksMax`). `cpu_seconds` is enforced per process by `RLIMIT_CPU`,
-so a task that forks gets a fresh budget for each child.
+ENFORCED today, every one of the ten declarable fields: the workspace bind
+(`--ro-bind` for a read-only mission, so a write returns `EROFS`), read grants,
+the network on/off decision (`--unshare-net` for `none`, where `connect()` fails
+with `ENETUNREACH`), the **egress allowlist** (nftables in the sandbox's own
+network namespace, default DROP, permitting only the addresses the declared names
+resolved to plus the NAT itself), **masked paths** (bwrap mounts over each
+declared path — an empty tmpfs over a directory, `/dev/null` over a file — with
+no cooperation from the payload), credential identities (`--clearenv` and one
+`--setenv` per granted name), the dedicated account mount, memory (`MemoryMax`
+with `MemorySwapMax=0`) and the process count (`TasksMax`). `cpu_seconds` is
+enforced per process by `RLIMIT_CPU`, so a task that forks gets a fresh budget
+for each child.
 
-NOT ENFORCED today, and not to be treated as controls: the egress allowlist —
-Firebreak has two network postures, `none` and `allow`, and no destination filter,
-so a session that is not `none` reaches the host's whole network, its loopback
-services and its abstract sockets; masked paths — there is no masking flag; and any
-syscall profile — no seccomp policy is applied or expressible. The agent also runs
-as the invoking user's own uid. These are recorded with the session and reach no
-mechanism; a refusal on one of them is a verdict written afterwards, not a block.
+Also applied, and deliberately NOT declarable: a **syscall filter**. Firebreak
+assembles a classic-BPF program in its own source, seals it in a memfd and passes
+`bwrap --seccomp <fd>`; 46 syscalls answer `EPERM`. A self-test loads the real
+program and makes one denied and one permitted call under it before any argv
+exists, and refuses the run rather than degrading if either answer is wrong. No
+provider can ask for a different profile, because a manifest property here would
+be a provider choosing its own syscall surface — the thing a sandbox boundary
+exists in order not to depend on.
+
+WHAT IS STILL NOT A CONTROL, stated because an allowlist that is enforced in one
+posture and absent in another is worth more confusion than it saves:
+
+* **`--net allow` with no declared destination is not filtered at all.** It
+  attaches a NAT and installs no ruleset, so it reaches the LAN. The declarable
+  value `allowlist` collapses to `allow` unless destinations are declared; it is
+  the declared destinations that produce the ruleset. The session record reports
+  `network_destination` as `observable_only` for this case and the network row is
+  downgraded to `partial`, so no surface presents it as a control.
+* **DNS leaves a sandbox whose filter is working.** The sandbox resolves through
+  the NAT's forwarder, which the ruleset must permit or nothing routes at all. An
+  allowlist narrows where bytes may be SENT; it is not a claim that nothing can be
+  signalled out in a query name.
+* **Masking is BY PATH.** A hardlink to the same inode under an unmasked name is
+  still readable.
+* **A granted credential's VALUE is in the sandbox environment.** It arrives by
+  `--setenv`, so anything the agent starts can read it; what is enforced is that
+  an undeclared identity is not there at all, and that a value never travels in an
+  argv or into any record.
+* **The agent runs as the invoking user's own uid.** User-namespace root inside
+  the sandbox is not a different principal outside it.
 
 `docs/PROVIDER_TRUST.md` section 7 and the machine-readable table in
 `packages/shadowfetch-missions/tests/test_sandbox_spec_audit.py` are the authority

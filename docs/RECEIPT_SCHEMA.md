@@ -77,11 +77,22 @@ so truncation remains undetectable.
 ## The gaps, in the same file
 
 ```json
-"declared_but_not_enforced": ["egress_allowlist", "masked_paths", "syscall_profile"],
+"declared_but_not_enforced": [],
 "enforcement_note": "Fields listed in declared_but_not_enforced were declared and recorded but reach no mechanism. …Do not read them as controls."
 ```
 
-Listing these anywhere else and not here would be the omission that matters.
+**As of 4.1.0 this array is empty**, and the example above used to read
+`["egress_allowlist", "masked_paths", "syscall_profile"]`. All three now reach a
+mechanism. The key is still emitted rather than dropped: a reader who branches on
+its presence must be able to tell "nothing unenforced" from "this receipt does
+not say", and only the empty array makes that difference checkable.
+
+What replaced it is not nothing. Enforced fields carry RESIDUALS —
+`--net allow` with no declared destination installs no ruleset, DNS leaves
+through the NAT's forwarder, masking is by path so a hardlink under an unmasked
+name is still readable, `cpu_seconds` is per-process — and those are reported as
+`partial` in the enforcement map rather than as absent controls. Listing these
+anywhere else and not here would be the omission that matters.
 
 ## Enforcement vocabulary
 

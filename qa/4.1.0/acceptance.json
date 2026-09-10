@@ -82,7 +82,7 @@
       "id": "UPGRADE-01",
       "phase": "prepublish",
       "area": "upgrade",
-      "title": "Existing 4.0 installed system upgrades with preserved user data and working recovery",
+      "title": "Existing 3.5 (published APT suite) and 4.0 (published ISO) systems upgrade with preserved user data and working recovery",
       "required": true,
       "status": "pending",
       "evidence": [],

@@ -58,7 +58,8 @@ historical = false
 # Unchanged from 4.0.0, and that is a checked statement rather than a copy:
 # packages/ still holds the same 16 source directories, and shadowfetch-meta's
 # debian/control still builds exactly shadowfetch-desktop, -creative-base and
-# -nvidia. No package was added or retired between v4.0.0 and this tree.
+# -nvidia. No PUBLISHED package was added or retired between v4.0.0 and this
+# tree -- but one image-only package was; see image_only below.
 shadowfetch_binaries = [
     "shadowfetch-branding",
     "shadowfetch-control-center",
@@ -78,6 +79,24 @@ shadowfetch_binaries = [
     "shadowfetch-themes",
     "shadowfetch-welcome",
 ]
+
+# Packages that are IN the image but are NOT published to APT. The counterpart
+# of image_excluded, which says the opposite.
+#
+# shadowfetch-archive-keyring is assembled by `make iso` into
+# live-build/config/archives/ and installed into the chroot before live-build's
+# first apt-get update. That ordering is the point of W-19: the apt source
+# entries name the repository key by path (signed-by=) instead of trusting the
+# transport, so the key has to be present before the first update. Publishing it
+# through the repository it authenticates would be circular, so it is not in
+# shadowfetch_binaries and there is no .deb for it in build/ or repo/pool.
+#
+# Its version is the BARE release version, not <version>-<revision>: the
+# Makefile stamps its control file with $(VERSION). 4.1.0 is the first image to
+# contain it -- the shipped 4.0.0 Makefile (commit e1293bfa) has no such
+# package -- which is why the ISO gate reported it as `extra` the first time it
+# ever saw an image built from this source.
+image_only = ["shadowfetch-archive-keyring"]
 
 # Source packages in the signed Sources index. shadowfetch-meta builds the two
 # metapackages plus shadowfetch-nvidia, so it appears here but not above.
@@ -217,7 +236,11 @@ installer_slideshow = [
 # line, so the source line does not move with the version.
 os_release_name = "Shadowfetch Linux"
 os_release_id = "shadowfetch"
-apt_source_line = "deb https://www.shadowfetch.com/linux/apt umbra main"
+# W-19: apt names the repository key BY PATH instead of trusting the
+# transport, so the shipped line carries signed-by=. 4.0.0 shipped the bare
+# form and versions/4.0.0.toml still declares it, correctly -- this is the
+# first image built from the hardened source.
+apt_source_line = "deb [signed-by=/usr/share/keyrings/shadowfetch.gpg] https://www.shadowfetch.com/linux/apt umbra main"
 
 [workbench]
 # Element Workbench profile allowlist. Adding a profile is a release decision.

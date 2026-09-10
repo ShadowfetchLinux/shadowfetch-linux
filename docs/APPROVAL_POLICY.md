@@ -284,12 +284,12 @@ $ shadowfetch-missions --json policy matrix
 | `network_destination` | **observable_only** | Firebreak has two postures, none and allow. An allowlist collapses to allow, so declared hosts are recorded and nothing filters packets. Phase 4 |
 | `credential_identity` | fully_mediated | bwrap `--clearenv` then one `--setenv` per declared identity; an undeclared name is not in the environment |
 | `credential_value` | fully_mediated | values are resolved outside the sandbox and injected at the boundary; no provider code sees the resolution |
-| `path_masking` | **observable_only** | Firebreak's `--mask-path` is record-only and reaches no bwrap argument, and Mission Control does not pass it; declared masks reach nothing. Phase 4 |
+| `path_masking` | fully_mediated | each declared path is mounted over inside the sandbox's own mount namespace — an empty tmpfs over a directory, `/dev/null` over a file. Residual: masking is by PATH, so a hardlink to the same inode under an unmasked name is still readable |
 | `memory` | fully_mediated | systemd `MemoryMax` with `MemorySwapMax=0` |
 | `processes` | fully_mediated | systemd `TasksMax` |
 | `cpu_time` | partially_mediated | `RLIMIT_CPU`, which is per-process: a provider that forks gets a fresh budget for each child |
 | `executable_identity` | fully_mediated | the program is classified from filesystem ownership and refused unless the manifest declared it |
-| `syscalls` | **not_observable** | no seccomp profile is applied and none is expressible |
+| `syscalls` | fully_mediated | a classic-BPF seccomp filter applied to every sandbox, 46 syscalls denied `EPERM`, self-tested against the real program before any argv exists. Not declarable, deliberately: the profile is not a provider's to choose |
 | `tool_actions_inside_a_turn` | **not_observable** | a provider's internal tool calls are visible only if it reports them on its own stream; nothing intercepts them |
 
 The four levels mean:
@@ -605,9 +605,9 @@ It is picked up by `make test`, which runs
 | workspace-write does not escalate | a mission may modify your workspace without an approval |
 | approval is checked once, at start | revoking mid-run does not stop a running mission; Stop does |
 | no tool-level approval | actions inside a provider turn are recorded if reported, and never gated |
-| `path_masking` is `observable_only` | a declared mask reaches no mechanism; the decision, the enforcement map and the session record all say so (§7.4) |
-| `network_destination` is `observable_only` | an egress allowlist is recorded and filters nothing |
-| `syscalls` is `not_observable` | no seccomp profile is applied and none is expressible |
+| `network_destination` is `partially_mediated` | with declared hosts it is an nftables ruleset; `--net allow` with NO declared destination installs no ruleset and reaches the LAN, and reports itself `observable_only` for that mission |
+| a credential's VALUE is in the sandbox environment | `--setenv` passes it, so anything the agent starts can read it; what is enforced is that an undeclared identity is absent |
+| masking is by PATH | a hardlink to the same inode under an unmasked name is still readable |
 | `"unknown"` is a known trust class | a provider with no recorded trust runs rather than being denied |
 | row-versus-chain checks run at **use** time | a tampered approval row is refused when a mission tries to use it, not at the moment it is written (§7.6) |
 

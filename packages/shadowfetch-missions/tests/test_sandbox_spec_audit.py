@@ -340,8 +340,10 @@ AUDIT = (
     },
 )
 
-# Not a SandboxSpec field, recorded so the absence is a tested fact rather than
-# an assumption: there is no syscall-filter profile anywhere in this stack.
+# Not a SandboxSpec field, recorded so its shape is a tested fact rather than an
+# assumption. This comment used to read "there is no syscall-filter profile
+# anywhere in this stack", which was true when it was written and was left
+# standing directly above the row that now says ALWAYS APPLIED.
 SECCOMP_PROFILE = {
     "field": "seccomp_profile",
     # STILL NOT DECLARABLE, and now ENFORCED anyway. Those two are not in

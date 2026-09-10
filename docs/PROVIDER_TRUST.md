@@ -241,19 +241,26 @@ compromised**. Nothing reduces to "the provider behaved."
 
 ## 7. Declared and NOT enforced
 
-These are recorded in the manifest, bounded by the schema, refused on widening
-by `narrow()` and `verify_invocation()` — and reach no enforcement mechanism.
-**They must not be described to users as controls.**
+**This table is empty as of 4.1.0.** Every declarable field reaches a mechanism.
+What remains are RESIDUALS on fields that are enforced — recorded below, because
+a control with an unstated limit is the same problem in a better disguise.
 
-| field | why not | owner |
-|---|---|---|
-| `egress_allowlist` | Firebreak has two network postures, `none` (`--unshare-net`) and `allow` (the host network, unfiltered). `allowlist` collapses to `allow`. A real allowlist needs a filtering proxy or netfilter rules. | Phase 4 |
-| `masked_paths` | Firebreak has no masking flag. | Phase 4 |
-| *syscall profile* | Not representable at all: no schema property, and no `bwrap --seccomp` anywhere. | unscheduled |
+| field | residual |
+|---|---|
+| `egress_allowlist` | Enforced by nftables in the sandbox's own network namespace, default DROP, **only where hosts are declared.** `--net allow` with no declared destination attaches a NAT and installs no ruleset, so it reaches the LAN; the decision reports `network_destination` as `observable_only` for that case. Names are resolved ON THE HOST at launch, IPv4 only, and a host that resolves to nothing refuses the run rather than starting it unfiltered. DNS still leaves: the sandbox resolves through the NAT's forwarder, which the ruleset must permit or nothing routes. |
+| `masked_paths` | Enforced by real mounts — an empty tmpfs over a directory, `/dev/null` over a file — with no cooperation from the payload. Masking is BY PATH, so a hardlink to the same inode under an unmasked name is still readable. |
+| *syscall profile* | Applied to every sandbox and **not declarable**, deliberately: a manifest property here would be a provider choosing its own syscall surface. Firebreak seals a classic-BPF program in a memfd and passes `bwrap --seccomp <fd>`; 46 syscalls answer `EPERM`, self-tested before any argv exists, refusing the run rather than degrading. |
+| `cpu_seconds` | `RLIMIT_CPU` is per-process, so a provider that forks gets a fresh budget for each child. A whole-session budget needs a cgroup, not an rlimit. |
+| *credential values* | A granted identity's VALUE arrives by `--setenv`, so anything the agent starts can read it. What is enforced is that an undeclared identity is absent, and that a value never travels in an argv or into any record. |
 
-`cpu_seconds` has a residual: `RLIMIT_CPU` is per-process, so a provider that
-forks gets a fresh budget for each child. A whole-session budget needs a cgroup,
-not an rlimit.
+> **Historical note.** Until 4.1.0 the first three rows above were in a table
+> headed "reach no enforcement mechanism — they must not be described to users
+> as controls". `egress_allowlist` read "Firebreak has two network postures,
+> `none` and `allow`… `allowlist` collapses to `allow`"; `masked_paths` read
+> "Firebreak has no masking flag"; the syscall profile read "no `bwrap
+> --seccomp` anywhere". All three shipped in 4.1.0. The wording is kept here
+> because a reader who acted on the old text needs to know it changed, not to
+> discover the change by its absence.
 
 `test_sandbox_spec_audit.py` holds this list as a machine-readable table and
 fails a build if any field's status drifts from what is actually enforced — in

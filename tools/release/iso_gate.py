@@ -85,13 +85,29 @@ def image_packages(release: gate.ReleaseData) -> dict[str, str]:
     Not every published package is installed: the NVIDIA setup package is a
     post-install helper, so it is listed under packages.image_excluded and the
     installed allowlist must not expect it.
+
+    And not every installed package is published. packages.image_only names the
+    other direction -- shadowfetch-archive-keyring is built by `make iso` and
+    installed into the chroot before live-build's first apt-get update, because
+    it carries the key the apt sources name by path. It cannot be published
+    through the repository it authenticates. Its version is the bare release
+    version: the Makefile stamps its control file with $(VERSION), not with
+    <version>-<revision>.
     """
-    excluded = set(release.section("packages").get("image_excluded", ()))
-    return {
+    section = release.section("packages")
+    excluded = set(section.get("image_excluded", ()))
+    packages = {
         name: version
         for name, version in release.binary_versions.items()
         if name not in excluded
     }
+    for name in section.get("image_only", ()):
+        if name in packages:
+            raise RuntimeError(
+                f"{name} is in both packages.image_only and the published set; "
+                "it is one or the other")
+        packages[name] = release.version
+    return packages
 
 
 REQUIRED_IMAGE_FILES = {
