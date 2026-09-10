@@ -605,7 +605,7 @@ It is picked up by `make test`, which runs
 | workspace-write does not escalate | a mission may modify your workspace without an approval |
 | approval is checked once, at start | revoking mid-run does not stop a running mission; Stop does |
 | no tool-level approval | actions inside a provider turn are recorded if reported, and never gated |
-| `network_destination` is `partially_mediated` | with declared hosts it is an nftables ruleset; `--net allow` with NO declared destination installs no ruleset and reaches the LAN, and reports itself `observable_only` for that mission |
+| `network_destination` is `partially_mediated` | with declared hosts it is an nftables ruleset; `--net allow` with NO declared destination installs no ruleset and reaches anything the host can reach, and reports itself `observable_only` for that mission |
 | a credential's VALUE is in the sandbox environment | `--setenv` passes it, so anything the agent starts can read it; what is enforced is that an undeclared identity is absent |
 | masking is by PATH | a hardlink to the same inode under an unmasked name is still readable |
 | `"unknown"` is a known trust class | a provider with no recorded trust runs rather than being denied |

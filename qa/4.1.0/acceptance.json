@@ -10,12 +10,14 @@
   "evidence_root": "work/qa-4.1.0/evidence",
   "artifact": {
     "iso_path": "shadowfetch-4.1.0-amd64.iso",
-    "iso_sha256": null,
-    "iso_size_bytes": null,
+    "iso_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e",
+    "iso_size_bytes": 3980675072,
     "signature_path": "shadowfetch-4.1.0-amd64.iso.asc",
     "signing_fingerprint": "8F13CE1535EE1F4A2916A1F73C5C900B7BE80CA1",
     "evidence_bundle_path": "evidence-bundle-4.1.0.tar.gz",
-    "evidence_bundle_sha256": null
+    "evidence_bundle_sha256": null,
+    "source_commit": "d5f39aa116106ecb044af1f18b6b2cb3e8ad8041",
+    "source_tree": "8f503cfbaae25fd45754a4a165465dbee209e9e1"
   },
   "cases": [
     {
@@ -24,9 +26,16 @@
       "area": "src",
       "title": "Source, behavioral tests, linters and secret scans",
       "required": true,
-      "status": "pending",
-      "evidence": [],
-      "notes": ""
+      "status": "pass",
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "gates/source-gate.log",
+          "sha256": "2fa2a1be6d455ee5b16647fe529a08d3f8d34021284ccc34757a846109aefd07",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        }
+      ],
+      "notes": "source_gate PASSED (exit 0) against candidate 86875a8e9d456fe9 on 2026-09-10T01:39:24-04:00. Log is the gate's own stdout, unedited."
     },
     {
       "id": "PKG-01",
@@ -34,9 +43,16 @@
       "area": "pkg",
       "title": "Exact binary and corresponding-source package inventory, signed APT and clean installation",
       "required": true,
-      "status": "pending",
-      "evidence": [],
-      "notes": ""
+      "status": "pass",
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "gates/package-gate.log",
+          "sha256": "f5d4ac9cce99f0feda572f234e89076d0221b1c9195298741a58871acf7d30b3",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        }
+      ],
+      "notes": "package_gate PASSED (exit 0) against candidate 86875a8e9d456fe9 on 2026-09-10T01:41:25-04:00. Log is the gate's own stdout, unedited."
     },
     {
       "id": "ISO-01",
@@ -44,9 +60,16 @@
       "area": "iso",
       "title": "Fresh signed BIOS/UEFI ISO, exact embedded 4.1 packages and no credentials",
       "required": true,
-      "status": "pending",
-      "evidence": [],
-      "notes": ""
+      "status": "pass",
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "gates/iso-gate.log",
+          "sha256": "eb4039a3e68f02635dff0c0922bee99a84955fbfdd729d1434ed31865c0b849c",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        }
+      ],
+      "notes": "iso_gate PASSED (exit 0) against candidate 86875a8e9d456fe9 on 2026-09-10T01:41:39-04:00. Log is the gate's own stdout, unedited."
     },
     {
       "id": "FIRE-01",
@@ -74,9 +97,76 @@
       "area": "install",
       "title": "Fresh BIOS and UEFI Calamares installs boot from disk",
       "required": true,
-      "status": "pending",
-      "evidence": [],
-      "notes": ""
+      "status": "pass",
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "vm-acceptance/install-both-firmwares-20260910T061103Z-86875a8e9d45/install-both-provenance.json",
+          "sha256": "a65aa7289c113b220cb3f19fb71f6e6f2af1936112a7cf5b9e48d876578e87a9",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/install-both-firmwares-20260910T061103Z-86875a8e9d45/install-both-bios-base.json",
+          "sha256": "3ca62f343c82b0f0609e5937786aa398027c6983b80e86d46bdf1778246dd040",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/install-both-firmwares-20260910T061103Z-86875a8e9d45/install-both-bios-installed-report.json",
+          "sha256": "73fb1bc24281adc2a8714b4be8cd9bc8b68078677f3fce9ba1a20fa13df69f07",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "screenshot",
+          "path": "vm-acceptance/install-both-firmwares-20260910T061103Z-86875a8e9d45/install-both-bios.png",
+          "sha256": "457028e8cc7cf1482b0c1c008a73c65369df45e7a8977f0f77b445e957eb36ad",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/install-both-firmwares-20260910T061103Z-86875a8e9d45/install-both-bios-qemu.log",
+          "sha256": "e2638b1da0f2638e3a177e57b061cdfab0208de583c1e4666faa55412e5623b1",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/install-both-firmwares-20260910T061103Z-86875a8e9d45/install-both-uefi-base.json",
+          "sha256": "dbb87732171ec3a6f402c9e73d7b5149b8a19deb7fad87291911f142b9034fff",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/install-both-firmwares-20260910T061103Z-86875a8e9d45/install-both-uefi-installed-report.json",
+          "sha256": "d76cc94fe741d6fe74c8119346626506ccb8f3554663e3dcc847f3efec91e6da",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "screenshot",
+          "path": "vm-acceptance/install-both-firmwares-20260910T061103Z-86875a8e9d45/install-both-uefi.png",
+          "sha256": "5f11346bbe764c723d6cb49cd819bf260185a6eab64ccec7aed8a102b7290123",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/install-both-firmwares-20260910T061103Z-86875a8e9d45/install-both-uefi-serial.log",
+          "sha256": "eb0d009974d15758629cf181d8f99c99c34025a389bb97ec7b474710719ac112",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/install-both-firmwares-20260910T061103Z-86875a8e9d45/install-both-uefi-qemu.log",
+          "sha256": "916368c22a70a39399fe4bb20701c9f922fd13b61c5951e6a89d093c4e9eb1a2",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/install-both-firmwares-20260910T061103Z-86875a8e9d45/install-both-firmwares-transcript.log",
+          "sha256": "7c262d6111c2d416173e4b8d435e446d79f9d42ee417499b0d611fd02b7f68ea",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        }
+      ],
+      "notes": "Recorded by tools/acceptance/vm_acceptance.py run --case install-both-firmwares (run install-both-firmwares-20260910T061103Z-86875a8e9d45, receipt d588595ab58d332c, harness d73733406d86b435) against shadowfetch-4.1.0-amd64.iso sha256 86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e. 16 checks evaluated against the running machine."
     },
     {
       "id": "UPGRADE-01",
@@ -154,9 +244,82 @@
       "area": "recovery",
       "title": "Project diff/undo and supported system rollback verified after injected failures",
       "required": true,
-      "status": "pending",
-      "evidence": [],
-      "notes": ""
+      "status": "pass",
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260910T073158Z-86875a8e9d45/project-base-provenance.json",
+          "sha256": "3ca62f343c82b0f0609e5937786aa398027c6983b80e86d46bdf1778246dd040",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260910T073158Z-86875a8e9d45/project-system-report.json",
+          "sha256": "d37ef50cb2cd33f5c6698220cb43a221eaacef0d256bbe6ebfd0d4790f51e82b",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260910T073158Z-86875a8e9d45/project-implementation.json",
+          "sha256": "cd3c7d1d706211457bbea7d3ee701b04dea1c72f7e238bd3294ff03bb4c023d6",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260910T073158Z-86875a8e9d45/project-workspace-before.txt",
+          "sha256": "2394def88a1a0e99b65a1b934187549109ecf85f3ad2c078bd26dc636b46493f",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260910T073158Z-86875a8e9d45/project-checkpoint.log",
+          "sha256": "ea6ef31c6150a400d1f220b73124549938f3409e6fb57bf565166efed51ca13c",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260910T073158Z-86875a8e9d45/project-workspace-damaged.txt",
+          "sha256": "825fc76fb6a6360256120f146ad0d8fb86d4fb2bfb8b54a798749d6cade45045",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260910T073158Z-86875a8e9d45/project-diff.log",
+          "sha256": "c552e71f430cfdd73a2a562b8b8bebbd5ddcbd651dbd518698736c7775477f26",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260910T073158Z-86875a8e9d45/project-undo.log",
+          "sha256": "1b773ecf1bd3aa88f8f46c6c70812c680daa0faaa14de7cc4f229db07014c2ad",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260910T073158Z-86875a8e9d45/project-workspace-after.txt",
+          "sha256": "2394def88a1a0e99b65a1b934187549109ecf85f3ad2c078bd26dc636b46493f",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "screenshot",
+          "path": "vm-acceptance/recovery-project-20260910T073158Z-86875a8e9d45/project-desktop.png",
+          "sha256": "4e25463be5132834e3cf7246fe853edca3e01d193405bd18eb23d5d120cc4a65",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260910T073158Z-86875a8e9d45/project-qemu.log",
+          "sha256": "22d9755eaf23e7df0c4705738aa4a7b12256f0fb0b6d396da80a980107f8f186",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260910T073158Z-86875a8e9d45/recovery-project-transcript.log",
+          "sha256": "89824a4a3278462a6bd8f2ab7a495a14925afeb2306b03ce34a38612875f2363",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        }
+      ],
+      "notes": "Recorded by tools/acceptance/vm_acceptance.py run --case recovery-project (run recovery-project-20260910T073158Z-86875a8e9d45, receipt 5d60b06d7b266ba7, harness d73733406d86b435) against shadowfetch-4.1.0-amd64.iso sha256 86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e. 10 checks evaluated against the running machine."
     },
     {
       "id": "STRESS-01",
@@ -199,5 +362,5 @@
       "notes": ""
     }
   ],
-  "candidate_note": "No candidate yet. Every case is pending and the artifact block carries no digest, because no 4.1.0 image has been built: these are the only honest values for a release whose artifact does not exist. The case list is carried over from 4.0.0 -- what a release must prove does not change because the version did -- and every RESULT was dropped rather than copied. Three TITLES did have to change, and carrying them verbatim had already got them wrong: ISO-01 asked for \"exact embedded 4.0 packages\", PUB-01 for \"the same verified 4.0 release\", and UPGRADE-01 for an upgrade from 3.5, whose base image this host no longer has. A title is the requirement, so those three asked this release to prove the last one. verify refuses this manifest today, and should."
+  "candidate_note": "Candidate built 2026-09-10 from a quiesced tree at d5f39aa11610 (tree 8f503cfbaae2): `git status --porcelain` was empty before the build and after it, so the commit and tree above describe the source that produced these exact bytes rather than approximately describing it. The digest was re-measured from the file and checked against the .sha256 sidecar; the detached signature verifies against 8F13CE1535EE1F4A2916A1F73C5C900B7BE80CA1. source_gate, package_gate and iso_gate all PASSED against this candidate. Every case below is still `pending` and evidence_bundle_sha256 is still null, because neither has been produced yet: `verify` refuses this manifest today, and should. The case list is carried over from 4.0.0 -- what a release must prove does not change because the version did -- and every RESULT was dropped rather than copied. Three TITLES did have to change, and carrying them verbatim had already got them wrong: ISO-01 asked for \"exact embedded 4.0 packages\", PUB-01 for \"the same verified 4.0 release\", and UPGRADE-01 for an upgrade from 3.5 alone -- which is the suite the published APT tree actually serves, so it is not the optional half, but 4.0 installed from the published ISO is a real source version too and both are now named."
 }

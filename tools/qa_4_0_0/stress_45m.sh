@@ -10,7 +10,13 @@ qa_home="$(getent passwd "$qa_user" | cut -d: -f6)"
 [[ $EUID -eq 0 && $qa_uid -ne 0 && $duration =~ ^[0-9]+$ && $duration -ge 10 ]] || { echo "Run as root in the QA VM, with a non-root QA_USER and duration >=10" >&2; exit 2; }
 systemd-detect-virt --quiet --vm || { echo "Refusing stress outside a VM" >&2; exit 2; }
 release="$(cat /usr/share/shadowfetch/version)"
-[[ $release == 4.0.0 || ${QA_DEVELOPMENT_SMOKE:-0} == 1 ]] || { echo "Exact installed 4.0.0 required" >&2; exit 2; }
+# QA_RELEASE is the version the OPERATOR says they are stressing. It is
+# required and has no default, deliberately: deriving it from the guest would
+# compare the installed system against itself and accept any image. This check
+# exists to catch stressing the wrong one.
+[[ -n ${QA_RELEASE:-} ]] || { echo "Set QA_RELEASE to the release under test (e.g. QA_RELEASE=4.1.0). It is not derived from the guest on purpose: that would make this check compare the image against itself." >&2; exit 2; }
+[[ $QA_RELEASE =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "QA_RELEASE must be MAJOR.MINOR.PATCH" >&2; exit 2; }
+[[ $release == "$QA_RELEASE" || ${QA_DEVELOPMENT_SMOKE:-0} == 1 ]] || { echo "Exact installed $QA_RELEASE required; this guest reports $release" >&2; exit 2; }
 [[ $duration -ge 2700 || ${QA_DEVELOPMENT_SMOKE:-0} == 1 ]] || { echo "Short runs require QA_DEVELOPMENT_SMOKE=1 and cannot produce release PASS" >&2; exit 2; }
 for tool in stress-ng podman shadowfetch-missions shadowfetch-grok-bot ffmpeg ffprobe timeout; do
     command -v "$tool" >/dev/null || { echo "Missing QA tool: $tool" >&2; exit 2; }
@@ -23,7 +29,7 @@ stress_pid=0
 container_pid=0
 probe_pid=0
 mission_pid=0
-out="${1:-/var/tmp/shadowfetch-qa-4.0.0-$run_id}"
+out="${1:-/var/tmp/shadowfetch-qa-$release-$run_id}"
 [[ ! -e "$out/result.json" && ! -e "$out/timing.txt" ]] || { echo "Refusing to overwrite earlier QA evidence" >&2; exit 2; }
 image="docker.io/library/alpine:3.22"
 expected_image_id="b66e0ce64844f5c6435b0c4bfd965558199ab0f53270846861c979cb1ac29365"
@@ -189,7 +195,7 @@ done
 
 cat > "$out/result.json" <<EOF
 {
-  "release": "4.0.0",
+  "release": "$release",
   "qa_profile": "production-default900s-v2",
   "boot_id": "$boot_id",
   "start": "$start_iso",

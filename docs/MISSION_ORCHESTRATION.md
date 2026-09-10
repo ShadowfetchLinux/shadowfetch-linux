@@ -702,7 +702,7 @@ otherwise assume works.
    own network namespace, installed by a helper that owns that namespace before bwrap
    runs; masked paths as real mounts, an empty tmpfs over a directory and `/dev/null`
    over a file. The residuals are narrower than the old gap and are not the same claim:
-   `--net allow` with NO declared destination installs no ruleset and reaches the LAN,
+   `--net allow` with NO declared destination installs no ruleset and reaches anything the host can reach,
    DNS still leaves through the NAT's forwarder, and masking is by PATH so a hardlink to
    the same inode under an unmasked name is still readable. A syscall filter was added at
    the same time, applied to every sandbox and deliberately not declarable. The old text

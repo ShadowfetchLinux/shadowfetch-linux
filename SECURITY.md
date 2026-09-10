@@ -52,7 +52,8 @@ WHAT IS STILL NOT A CONTROL, stated because an allowlist that is enforced in one
 posture and absent in another is worth more confusion than it saves:
 
 * **`--net allow` with no declared destination is not filtered at all.** It
-  attaches a NAT and installs no ruleset, so it reaches the LAN. The declarable
+  attaches a NAT and installs no ruleset, so it reaches anything the host can reach — not merely
+  the LAN. The declarable
   value `allowlist` collapses to `allow` unless destinations are declared; it is
   the declared destinations that produce the ruleset. The session record reports
   `network_destination` as `observable_only` for this case and the network row is

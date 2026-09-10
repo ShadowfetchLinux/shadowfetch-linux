@@ -10,8 +10,12 @@ qa_user=${QA_USER:-sfqa}
 [[ $(systemd-detect-virt) == kvm || $(systemd-detect-virt) == qemu ]]
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 [[ $(< /etc/shadowfetch/element) == "$element" ]] || fail 'wrong edition'
-[[ $(< /usr/share/shadowfetch/version) == 4.0.0 ]] || fail 'wrong release marker'
-rg -q '^VERSION_ID="4.0.0"$' /etc/os-release || fail 'wrong os-release version'
+# See stress_45m.sh: QA_RELEASE is the operator's claim about which release is
+# under test, required and never derived from the guest.
+[[ -n ${QA_RELEASE:-} ]] || fail 'set QA_RELEASE to the release under test; it is not derived from the guest, because this check exists to catch auditing the wrong image'
+[[ $QA_RELEASE =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'QA_RELEASE must be MAJOR.MINOR.PATCH'
+[[ $(< /usr/share/shadowfetch/version) == "$QA_RELEASE" ]] || fail 'wrong release marker'
+rg -q "^VERSION_ID=\"$QA_RELEASE\"\$" /etc/os-release || fail 'wrong os-release version'
 rg -q '^VERSION_CODENAME=umbra$' /etc/os-release || fail 'wrong codename'
 ! rg -q 'boot=live|findiso=' /proc/cmdline || fail 'still running live media'
 [[ $(findmnt -no FSTYPE /) == btrfs ]] || fail 'root is not Btrfs'
@@ -31,7 +35,7 @@ for command in hwclock lvm ffmpeg ffprobe bwrap shadowfetch-missions shadowfetch
 done
 mapfile -t packages < <(dpkg-query -W -f='${Package}\t${Version}\t${db:Status-Abbrev}\n' 'shadowfetch-*' | awk -F '\t' '$3 == "ii " { print $1 "\t" $2 }' | sort)
 [[ ${#packages[@]} -eq 16 ]] || fail "expected 16 installed Shadowfetch packages, got ${#packages[@]}"
-printf '%s\n' "${packages[@]}" | awk -F '\t' '$2 != "4.0.0-1" { exit 1 }' || fail 'mixed package release versions'
+printf '%s\n' "${packages[@]}" | awk -F '\t' -v want="$QA_RELEASE-1" '$2 != want { exit 1 }' || fail 'mixed package release versions'
 [[ -z $(dpkg --audit) ]] || fail 'incomplete package transaction'
 [[ $(dpkg-query -W -f='${Version}' drkonqi) == 6.6.5-3 ]] || fail 'unexpected DrKonqi protocol version'
 [[ -z $(dpkg --verify drkonqi) ]] || fail 'upstream DrKonqi package was modified'
@@ -56,7 +60,7 @@ pickup_exec=$("${user_env[@]}" systemctl --user show drkonqi-coredump-pickup.ser
 "${user_env[@]}" systemctl --user show drkonqi-coredump-pickup.service -p FragmentPath -p DropInPaths -p ActiveState -p SubState -p Result -p ExecStart
 "${user_env[@]}" shadowfetch-missions --json list
 "${user_env[@]}" shadowfetch-missions --json capabilities
-[[ ! -e /usr/bin/shadowfetch-model-check && ! -e /usr/bin/shadowfetch-buzz && ! -e /usr/lib/systemd/user/shadowfetch-buzz.service ]] || fail 'deferred local-AI integration remains'
+[[ ! -e /usr/bin/shadowfetch-model-check && ! -e /usr/bin/shadowfetch-buzz && ! -e /usr/lib/systemd/user/shadowfetch-buzz.service ]] || fail 'the retired Buzz relay integration is still present: it is the stack whose Redis AOF fsync stalls produced every recorded STRESS-01 fault, and a candidate carrying it cannot be stressed for a clean result'
 "${user_env[@]}" shadowfetch-grok-bot status --json
 printf 'HOSTNAME=%s\nELEMENT=%s\nFIRMWARE=%s\nKERNEL=%s\nBOOT_ID=%s\n' "$(hostname)" "$element" "$firmware" "$(uname -r)" "$(< /proc/sys/kernel/random/boot_id)"
 printf 'ROOT=%s\nHOME=%s\nBOOT=%s\n' "$(findmnt -no SOURCE,FSTYPE,OPTIONS /)" "$(findmnt -no SOURCE,FSTYPE /home)" "$(findmnt -no SOURCE,FSTYPE /boot)"
