@@ -2263,7 +2263,7 @@ CASES: dict[str, Case] = {
             summary="Upgrade an installed previous release, preserving user data",
             manifest_case="UPGRADE-01",
             manifest_gap=(
-                "UPGRADE-01 is \"Existing 3.5 installed system upgrades with "
+                "UPGRADE-01 is \"Existing 4.0 installed system upgrades with "
                 "preserved user data AND WORKING RECOVERY\". This case proves the "
                 "upgrade and the data preservation; it does not restore a Phoenix "
                 "Point on the upgraded system, which the required case also asks "

@@ -23,7 +23,7 @@ signing_fingerprint = "8F13CE1535EE1F4A2916A1F73C5C900B7BE80CA1"
 # with --version, but see ReleaseData.historical: re-running today's gate over
 # old data re-gates that release with today's logic, it does not reproduce the
 # gate that shipped it.
-historical = false
+historical = true
 
 [packages]
 # Every Shadowfetch binary package the release publishes. Versions are derived

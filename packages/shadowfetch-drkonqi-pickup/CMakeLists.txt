@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(shadowfetch-drkonqi-pickup VERSION 4.0.0 LANGUAGES CXX)
+project(shadowfetch-drkonqi-pickup VERSION 4.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
 option(ENABLE_BEHAVIOR_TESTS "Build original comparator and private journal test fixture" OFF)

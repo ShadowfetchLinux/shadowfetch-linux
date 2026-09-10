@@ -25,18 +25,57 @@ MANIFEST = DEFAULTS / "data/usr/share/shadowfetch/workbench/profiles.json"
 CATALOG = WELCOME / "data/usr/share/shadowfetch/welcome/catalog"
 
 
+def release_version() -> str:
+    """The version the release data declares, which is what the gates read.
+
+    Read here rather than written down, because a test that restates the
+    version is a version site, and this file was one: the 4.1.0 stamp moved
+    every site it knew about and left two assertions here pinned to 4.0.0.
+    """
+    import tomllib
+    versions = ROOT / "tools/release/versions"
+    live = []
+    for path in sorted(versions.glob("*.toml")):
+        with path.open("rb") as handle:
+            data = tomllib.load(handle)
+        if not data.get("release", {}).get("historical", False):
+            live.append(data["release"]["version"])
+    assert len(live) == 1, f"expected exactly one live release data file, got {live}"
+    return live[0]
+
+
 class Workbench350Tests(unittest.TestCase):
-    def test_release_is_4_0_0_and_every_custom_package_matches(self):
+    def test_the_release_version_is_one_number_and_every_package_matches_it(self):
+        """The PROPERTY here is real and worth keeping: every shipped package
+        carries the release's version, so an upgrade delivers all of them.
+
+        The test asserted that number as the literal 4.0.0, which made itself a
+        version site -- one that no census, no gate and no stamper knew about,
+        so the 4.1.0 stamp moved the Makefile and left this asserting the old
+        value. It reads the number from the release data now, which is the
+        authority the gates read, so the property is checked and the number is
+        not restated.
+        """
+        release = release_version()
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-        self.assertRegex(makefile, r"(?m)^VERSION\s+\?= 4\.0\.0$")
+        self.assertRegex(makefile,
+                         r"(?m)^VERSION\s+\?= " + re.escape(release) + r"$")
+        expected = f"({release}-1)"
         for changelog in (ROOT / "packages").glob("shadowfetch-*/debian/changelog"):
-            self.assertIn("(4.0.0-1)", changelog.read_text().splitlines()[0], changelog)
+            first = changelog.read_text(encoding="utf-8").splitlines()[0]
+            # grub-btrfs is packaged from upstream and keeps upstream's version;
+            # it is the one package that must NOT move with the release.
+            if first.startswith("grub-btrfs "):
+                continue
+            self.assertIn(expected, first, changelog)
 
     def test_element_and_firebreak_versions_are_stamped_and_home_is_optional(self):
         makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+        release = release_version()
         self.assertIn('tools/stamp_version.py "$(VERSION)"', makefile)
-        self.assertIn("4.0.0", ELEMENT.read_text(encoding="utf-8"))
-        self.assertIn('VERSION = "4.0.0"', FIREBREAK.read_text(encoding="utf-8"))
+        self.assertIn(release, ELEMENT.read_text(encoding="utf-8"))
+        self.assertIn(f'VERSION = "{release}"',
+                      FIREBREAK.read_text(encoding="utf-8"))
 
         env = dict(os.environ, SHADOWFETCH_ELEMENT="ice")
         env.pop("HOME", None)
@@ -54,8 +93,12 @@ class Workbench350Tests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(0, proc.returncode, proc.stderr)
+        # The RUNNING program's own answer, against the same authority the
+        # file check above used -- so this asserts that what was stamped is
+        # what the binary reports, rather than restating the number a third
+        # time in the same test.
         self.assertEqual(
-            "shadowfetch-firebreak (Shadowfetch Linux) 4.0.0",
+            f"shadowfetch-firebreak (Shadowfetch Linux) {release}",
             proc.stdout.strip(),
         )
 

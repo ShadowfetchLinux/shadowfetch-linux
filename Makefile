@@ -10,7 +10,7 @@
 #   make distclean  Wipe everything regenerable
 
 SHELL := /bin/bash
-VERSION  ?= 4.0.0
+VERSION  ?= 4.1.0
 CODENAME ?= umbra
 ISO_NAME := shadowfetch-$(VERSION)-amd64.iso
 VERSION_TOKEN := $(subst .,_,$(VERSION))
@@ -142,6 +142,7 @@ test:
 	python3 -m unittest discover -s packages/shadowfetch-phoenix/tests -v
 	python3 packages/shadowfetch-fireline/tests/test_fireline_mcp.py
 	python3 packages/shadowfetch-fireline/tests/test_checkpoint_roundtrip.py
+	python3 packages/shadowfetch-fireline/tests/test_checkpoint_hardening.py
 	python3 packages/shadowfetch-fireline/tests/test_firebreak_4.py
 	python3 packages/shadowfetch-fireline/tests/test_fireline_privilege.py
 	python3 -m unittest discover -s packages/shadowfetch-fireline/tests \
@@ -252,7 +253,7 @@ packages: $(PACKAGES_STAMP)
 # was itself stale. A single source of truth that a human maintains is the same
 # bug with one fewer copy, so the build stamps it now.
 stamp-version:
-	python3 tools/stamp_version.py "$(VERSION)"
+	python3 tools/stamp_version.py "$(VERSION)" --outstanding-ok
 
 $(PACKAGES_STAMP): stamp-version
 	@mkdir -p $(BUILD_DIR)
@@ -516,7 +517,7 @@ deploy-worker:
 	@exit 1
 
 ship: publish
-	@echo ">>> Accepted artifacts published. Complete public byte verification, GitHub release, and canonical Linux website deployment per RELEASE-4.0.0.md."
+	@echo ">>> Accepted artifacts published. Complete public byte verification, GitHub release, and canonical Linux website deployment per RELEASE-$(VERSION).md."
 
 clean:
 	-cd $(LB_DIR) && sudo lb clean

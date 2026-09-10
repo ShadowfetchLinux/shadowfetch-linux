@@ -1,3 +1,16 @@
+shadowfetch-branding (4.1.0-1) umbra; urgency=medium
+
+  * Report 4.1.0 in os-release and /usr/share/shadowfetch/version.
+  * Declare the UmbraEmblem and UmbraVault wallpaper sets unshipped. They
+    have been in this data tree since 2.1.4, have never been in the install
+    file, and nothing in the tree references either id -- not the
+    look-and-feel defaults, not Welcome, not the element themes -- so
+    shipping them now would add 2.6 MB of unreferenced payload to an image
+    already close to the 4 GiB squashfs ceiling. Declaring them lets
+    dh_missing and the ship-list check see the decision rather than silence.
+
+ -- Shadowfetch Project <signing@shadowfetch.com>  Wed, 09 Sep 2026 18:28:58 -0400
+
 shadowfetch-branding (4.0.0-1) umbra; urgency=medium
 
   * Shadowfetch Linux 4.0 Mission Control release.

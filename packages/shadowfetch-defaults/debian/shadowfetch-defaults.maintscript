@@ -5,4 +5,4 @@ rm_conffile /etc/systemd/system/shadowfetch-regdomain.service 2.1.4-1~
 rm_conffile /etc/udev/rules.d/60-shadowfetch-ioschedulers.rules 2.1.4-1~
 rm_conffile /etc/apt/apt.conf.d/80shadowfetch-snapshot 2.1.4-1~
 rm_conffile /etc/systemd/system/ollama.service.d/10-localhost.conf 2.1.4-1~
-rm_conffile /etc/apt/apt.conf.d/52shadowfetch-unattended.conf 4.0.0-1~
+rm_conffile /etc/apt/apt.conf.d/52shadowfetch-unattended.conf 4.1.0-1~

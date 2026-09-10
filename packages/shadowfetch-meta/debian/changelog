@@ -1,3 +1,18 @@
+shadowfetch-meta (4.1.0-1) umbra; urgency=medium
+
+  * shadowfetch-desktop now depends on shadowfetch-control-center,
+    shadowfetch-ember, shadowfetch-firewatchd, shadowfetch-fireproof,
+    shadowfetch-hwscan, shadowfetch-menus and shadowfetch-phoenix. They were
+    supplied only by a live-build package list, which is a build-time seed
+    and not a dependency: the ISO had Mission Control, Ember, Firewatch,
+    Phoenix, Fireproof, hwscan and the launcher because the chroot was told
+    to install them by name, while `apt install shadowfetch-desktop`
+    anywhere else produced a Plasma desktop with none of them and no error.
+    Upgrading will pull in any of the seven not already installed.
+  * Name those pillars in the package description.
+
+ -- Shadowfetch Project <signing@shadowfetch.com>  Wed, 09 Sep 2026 18:28:58 -0400
+
 shadowfetch-meta (4.0.0-1) umbra; urgency=medium
 
   * Shadowfetch Linux 4.0 Mission Control release.

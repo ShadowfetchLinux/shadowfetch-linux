@@ -1,3 +1,66 @@
+shadowfetch-control-center (4.1.0-1) umbra; urgency=medium
+
+  * The Updates card offers ONE button. There were two -- "Review and update
+    (Fireproof)" and "Check for updates (Safe Update)" -- from when there
+    really were two updaters with two simulations, two change-set hashes and
+    two ideas of which snapshot to roll back to. shadowfetch-update is a
+    shim over Fireproof now, so offering both taught a difference that no
+    longer exists and invited a person to pick the weaker one. The shim
+    keeps its own button only where Fireproof is absent.
+  * The sidebar, the pages behind it and every accepted route word come from
+    one registry. app.py held the registry as TWO lists joined by nothing
+    but list index, plus a third alias structure whose values had to name a
+    key in the first: a page added to one and not the other silently showed
+    the wrong screen, and a key removed from the section list turned two
+    lookups into an uncaught StopIteration.
+  * A page now answers for its own sidebar badge and supplies its own
+    sentence explaining why the window must not close, instead of app.py
+    hard-coding `if key == "software"` and testing one duck-typed attribute
+    name.
+  * The Fireproof updates page loads through a declared plugin contract with
+    a PAGE_API check and containment, replacing an inline try block that
+    executed another package's 667-line application script inside this
+    process.
+  * The desktop helpers -- launchers and privileged argv builders -- move to
+    the one shared library in shadowfetch-defaults. The busutil spellings
+    keep working as names for that module rather than copies of it.
+  * Use the shared secret redactor from shadowfetch-missions rather than
+    growing a second implementation. Everything the mission transport shows
+    a person is text a subprocess produced, and a failing command quotes its
+    own stderr.
+  * Every "Install" button on the Bundles tab was dead: the catalog id was
+    passed where the helper dispatches on a verb, so it printed usage and
+    exited 2 -- after the user had typed their administrator password. Every
+    timed Ember profile failed the same way, on a --duration flag
+    ember-duration rejects as an unrecognised argument.
+  * A helper failing for its own reasons is no longer reported as
+    "Authorisation was cancelled": 126 means polkit refused or the prompt
+    was dismissed, 127 means the helper could not be executed, anything else
+    is the helper's own failure.
+  * Privileged buttons no longer run through a login shell. terminal_command
+    ran every text-mode tool as `bash -lc`, which sources /etc/profile and
+    then a user-writable ~/.bash_profile, ~/.bash_login or ~/.profile -- so
+    a click in a trusted system application could source a file that
+    prepends a PATH entry or defines a function of the same name, and the
+    user was then shown a password prompt for what they believed was the
+    packaged tool. The shell is non-login and non-interactive with a fixed
+    system PATH, and BASH_ENV, ENV, SHELLOPTS, LD_PRELOAD, LD_LIBRARY_PATH,
+    PYTHONPATH and PYTHONSTARTUP are removed from its environment.
+  * mission_client no longer takes the command to execute from
+    SHADOWFETCH_MISSIONS_COMMAND or SHADOWFETCH_GROK_BOT_COMMAND, which let
+    anything able to set a variable in the session choose the binary the
+    Control Center ran on the user's behalf. Nothing in the tree read them.
+  * The mission dialog reads which providers perform the selected kind,
+    their display names, their readiness and whether they need network
+    approval from the capabilities document, replacing a hard-coded "offline
+    for media, codex otherwise" rule that meant a third provider could be
+    installed, validated and registered and never be offered. A chooser
+    appears only when more than one provider can do the job, so today looks
+    as it did.
+  * AgentsPage becomes WorkspacesPage.
+
+ -- Shadowfetch Project <signing@shadowfetch.com>  Wed, 09 Sep 2026 18:28:58 -0400
+
 shadowfetch-control-center (4.0.0-1) umbra; urgency=medium
 
   * Replace Local AI with Workspaces; keep Codex code/report and offline media workflows without local-model controls.

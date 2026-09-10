@@ -23,6 +23,8 @@ import json
 import os
 import pwd
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -571,26 +573,269 @@ class RecordTests(unittest.TestCase):
         binary = (Path(__file__).resolve().parents[1]
                   / "data/usr/bin/shadowfetch-firebreak")
         first = binary.read_text(encoding="utf-8").splitlines()[0]
-        self.assertEqual(first, "#!/usr/bin/python3")
+        # `-IS` is part of the answer to WHICH interpreter, not decoration:
+        # without -S, `site` imports sitecustomize and usercustomize before
+        # this program's first instruction, and no in-body guard can run
+        # earlier than that. Linux hands the whole tail of a shebang line to
+        # the interpreter as one argument, and `python3 -IS` is measured on
+        # this kernel to give sys.flags.isolated=1 and no_site=1.
+        self.assertEqual(first, "#!/usr/bin/python3 -IS")
         self.assertIsNotNone(source)
 
-    def test_the_launcher_re_execs_itself_isolated_when_the_environment_is_hostile(self):
+    # ---------------- the isolation guard, measured rather than read -------- #
+
+    ATTACKER = (
+        "import atexit, os, sys\n"
+        "_line = 'pid=%d isolated=%d no_site=%d' % (\n"
+        "    os.getpid(), sys.flags.isolated, sys.flags.no_site)\n"
+        "_log = os.environ['FIREBREAK_ATTACK_LOG']\n"
+        "open(_log, 'a').write('IMPORTED ' + _line + chr(10))\n"
+        "atexit.register(\n"
+        "    lambda: open(_log, 'a').write('RESIDENT ' + _line + chr(10)))\n"
+    )
+
+    def attack(self, **environment):
+        """Run the real binary with a sitecustomize.py planted on PYTHONPATH.
+
+        Returns the lines the injected module wrote. A launcher that re-execs
+        never reaches its atexit hooks, so an IMPORTED with no matching
+        RESIDENT is an interpreter the attacker entered and was carried out of.
+        A RESIDENT line is an interpreter that ran to completion with the
+        attacker inside it -- which, for this program, is the process that
+        decides containment.
+        """
+        binary = (Path(__file__).resolve().parents[1]
+                  / "data/usr/bin/shadowfetch-firebreak")
+        with tempfile.TemporaryDirectory() as directory:
+            plant = Path(directory)
+            (plant / "sitecustomize.py").write_text(self.ATTACKER,
+                                                    encoding="utf-8")
+            log = plant / "attack.log"
+            env = dict(os.environ)
+            env.pop("SHADOWFETCH_FIREBREAK_ISOLATED", None)
+            env["PYTHONPATH"] = str(plant)
+            env["FIREBREAK_ATTACK_LOG"] = str(log)
+            env.update(environment)
+            done = subprocess.run([str(binary), "--version"], env=env,
+                                  capture_output=True, text=True, timeout=120)
+            lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+        return done, lines
+
+    def control_loads(self, attacker=None):
+        """The same planted module, loaded by a PLAIN interpreter.
+
+        This is what keeps the assertions below from passing because the
+        attack was broken rather than because it was refused. It is measured
+        against /usr/bin/python3 doing nothing, so a change to Firebreak can
+        never make this control agree with it.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            plant = Path(directory)
+            (plant / "sitecustomize.py").write_text(attacker or self.ATTACKER,
+                                                    encoding="utf-8")
+            log = plant / "attack.log"
+            env = dict(os.environ)
+            env["PYTHONPATH"] = str(plant)
+            env["FIREBREAK_ATTACK_LOG"] = str(log)
+            subprocess.run(["/usr/bin/python3", "-c", "pass"], env=env,
+                           capture_output=True, text=True, timeout=120)
+            lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+        return lines
+
+    def test_the_hostile_environment_never_reaches_the_deciding_interpreter(self):
         """A sitecustomize.py runs at interpreter start, BEFORE this module's
         body -- so it can monkeypatch any function in the program that decides
         containment while the record goes on saying enforced. Nothing can
         defend against someone who replaces this file; this removes the cheaper
-        version, where they only influence its environment. Measured: with the
-        attack in place exactly ONE interpreter runs the attacker's code -- the
-        pre-exec launcher, which does nothing but exec -- and the helper, bwrap
-        and the payload are all clean."""
+        version, where they only influence its environment.
+
+        This test RUNS the attack. Its predecessor searched the source for the
+        string `_ISOLATION_MARKER` and for `-I", "-S`, and its docstring
+        reported a measurement it did not take -- which is why it stayed green
+        through the hole below.
+        """
+        control = self.control_loads()
+        self.assertTrue(any(l.startswith("IMPORTED") for l in control),
+                        "the planted module does not load even in a plain "
+                        "interpreter; this test proves nothing until it does")
+        self.assertTrue(any(l.startswith("RESIDENT") for l in control),
+                        "the plant's own atexit hook does not fire in a plain "
+                        "interpreter, so its absence below would mean nothing")
+        done, lines = self.attack()
+        self.assertEqual(0, done.returncode, done.stderr)
+        self.assertIn(fb.VERSION, done.stdout)
+        self.assertEqual([], [l for l in lines if l.startswith("RESIDENT")],
+                         "the injected module was still in the process that "
+                         "decides containment when it exited")
+        # Stronger than it needs to be, and worth saying: with -IS in the
+        # shebang the module is not merely exec'd away from, it never loads.
+        self.assertEqual([], lines,
+                         "the injected module ran at all; -IS in the shebang "
+                         "is supposed to mean `site` never imports it")
+
+    def test_the_guard_has_no_environment_variable_off_switch(self):
+        """THE REGRESSION. The guard used to skip itself when it saw
+        SHADOWFETCH_FIREBREAK_ISOLATED already set -- a name the same attacker
+        who sets PYTHONPATH can set. Measured before the fix, with both set:
+        `RESIDENT ... isolated=0 no_site=0`, in the deciding process.
+
+        Every plausible spelling of the old token is tried, because the defect
+        was not the value -- it was consulting the environment at all to decide
+        whether to defend.
+        """
+        for value in ("1", "0", "", "true", "yes"):
+            with self.subTest(SHADOWFETCH_FIREBREAK_ISOLATED=value):
+                done, lines = self.attack(
+                    SHADOWFETCH_FIREBREAK_ISOLATED=value)
+                self.assertEqual(0, done.returncode, done.stderr)
+                self.assertEqual(
+                    [], [l for l in lines if l.startswith("RESIDENT")],
+                    "setting the old marker disabled the guard again")
+
+    def test_a_hostile_name_the_old_list_did_not_enumerate_is_still_stripped(self):
+        """The first guard enumerated ten names. PYTHONPLATLIBDIR redirects the
+        platform stdlib directory and was not one of them, so a list is the
+        wrong shape for this: the guard matches LD_, GLIBC_ and PYTHON by
+        prefix instead."""
+        done, lines = self.attack(PYTHONWARNINGS="error",
+                                  LD_BIND_NOW="1")
+        self.assertEqual(0, done.returncode, done.stderr)
+        self.assertEqual([], [l for l in lines if l.startswith("RESIDENT")])
+
+    def test_the_user_site_directory_cannot_inject_without_any_variable(self):
+        """LEG 1. `usercustomize.py` under ~/.local/lib/pythonX.Y/site-packages
+        is imported at interpreter start with NOTHING set in the environment,
+        and that directory is writable by anything running unprivileged in the
+        desktop session. Mission Control forwards HOME. A guard triggered by a
+        LIST OF VARIABLE NAMES is blind to it by construction, which is why the
+        loop guard is interpreter state and the shebang carries -IS."""
+        binary = (Path(__file__).resolve().parents[1]
+                  / "data/usr/bin/shadowfetch-firebreak")
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            site = (home / ".local/lib"
+                    / f"python{sys.version_info.major}.{sys.version_info.minor}"
+                    / "site-packages")
+            site.mkdir(parents=True)
+            log = home / "attack.log"
+            (site / "usercustomize.py").write_text(self.ATTACKER, encoding="utf-8")
+            env = dict(os.environ)
+            for name in [k for k in env if k.startswith(("LD_", "GLIBC_", "PYTHON"))]:
+                env.pop(name)
+            env["HOME"] = str(home)
+            env["FIREBREAK_ATTACK_LOG"] = str(log)
+            done = subprocess.run([str(binary), "--version"], env=env,
+                                  capture_output=True, text=True, timeout=120)
+            lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+        self.assertEqual(0, done.returncode, done.stderr)
+        self.assertEqual([], [l for l in lines if l.startswith("RESIDENT")],
+                         "user-site injection reached the deciding process "
+                         "with no environment variable set at all")
+
+    def test_an_execve_that_returns_is_treated_as_the_attacker(self):
+        """LEG 2. The injected module runs BEFORE the guard, so it can rebind
+        os.execve to a no-op; the call then returns and execution used to fall
+        through into the module body and run to completion with the attacker
+        resident (measured: `RESIDENT AT EXIT isolated=0 no_site=0`). execve
+        does not return, so a return is not an error to log and continue past.
+        """
+        binary = (Path(__file__).resolve().parents[1]
+                  / "data/usr/bin/shadowfetch-firebreak")
+        neutralise = (
+            "import os, sys\n"
+            "def _noop(*a, **k):\n"
+            "    open(os.environ['FIREBREAK_ATTACK_LOG'], 'a').write('NEUTRALISED' + chr(10))\n"
+            "os.execve = _noop\n"
+        ) + self.ATTACKER
+        with tempfile.TemporaryDirectory() as directory:
+            plant = Path(directory)
+            (plant / "sitecustomize.py").write_text(neutralise, encoding="utf-8")
+            log = plant / "attack.log"
+            env = dict(os.environ)
+            env["PYTHONPATH"] = str(plant)
+            env["FIREBREAK_ATTACK_LOG"] = str(log)
+            # Bypass the shebang deliberately: this is the invocation where the
+            # in-body guard is the ONLY defence, and the leg it has to hold.
+            done = subprocess.run(["/usr/bin/python3", str(binary), "--version"],
+                                  env=env, capture_output=True, text=True,
+                                  timeout=120)
+            lines = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+        self.assertIn("NEUTRALISED", lines,
+                      "the attack did not land; this test proves nothing")
+        self.assertNotEqual(0, done.returncode,
+                            "Firebreak ran to completion in an interpreter "
+                            "whose execve it could not trust")
+        self.assertNotIn(fb.VERSION, done.stdout,
+                         "the program carried on and answered normally")
+        self.assertIn("execve returned", done.stderr)
+
+    def test_the_guard_does_not_loop(self):
+        """A re-exec loop in the program that contains agents would be its own
+        denial of service. Termination is by construction -- after the execve
+        the flags are 1/1 and the built environment holds no hostile name --
+        and this is the check that says so out loud.
+
+        At most ONE import: zero on the shebang path, where -IS means `site`
+        never runs, and one on the `python3 <path>` path, where the launcher
+        loads it and then execs away. Two would be a loop.
+        """
+        done, lines = self.attack()
+        imported = [l for l in lines if l.startswith("IMPORTED")]
+        self.assertLessEqual(len(imported), 1, "\n".join(lines))
+        self.assertEqual(0, done.returncode, done.stderr)
+
+        bypass = (Path(__file__).resolve().parents[1]
+                  / "data/usr/bin/shadowfetch-firebreak")
+        with tempfile.TemporaryDirectory() as directory:
+            plant = Path(directory)
+            (plant / "sitecustomize.py").write_text(self.ATTACKER, encoding="utf-8")
+            log = plant / "attack.log"
+            env = dict(os.environ)
+            env["PYTHONPATH"] = str(plant)
+            env["FIREBREAK_ATTACK_LOG"] = str(log)
+            run = subprocess.run(["/usr/bin/python3", str(bypass), "--version"],
+                                 env=env, capture_output=True, text=True,
+                                 timeout=120)
+            through = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+        # The shebang-bypassing path: exactly one launcher loads it, and that
+        # launcher execs away rather than looping or running the program.
+        self.assertEqual(1, len([l for l in through if l.startswith("IMPORTED")]),
+                         "\n".join(through))
+        self.assertEqual([], [l for l in through if l.startswith("RESIDENT")],
+                         "\n".join(through))
+        self.assertEqual(0, run.returncode, run.stderr)
+
+    def test_the_loop_guard_is_interpreter_state_not_an_environment_token(self):
+        """Structural companion to the three tests above: the property they
+        measure has exactly one implementation that can hold, and this names
+        it. sys.flags is set by the interpreter's own argv; nothing a caller
+        puts in the environment can forge it."""
         binary = (Path(__file__).resolve().parents[1]
                   / "data/usr/bin/shadowfetch-firebreak")
         text = binary.read_text(encoding="utf-8")
-        guard = text.index("_ISOLATION_MARKER")
-        self.assertLess(guard, text.index('VERSION = "4.0.0"'),
+        guard = text.index("_HOSTILE_PREFIXES")
+        # The first top-level definition, NOT the version string. Using
+        # `VERSION = "4.0.0"` as the positional marker made this test a version
+        # site: the 4.1.0 stamp moved the constant and this went red for a
+        # reason that had nothing to do with what it checks. The property is
+        # "the guard runs before this module defines anything", and the first
+        # `def` is where defining anything begins.
+        first_definition = text.index("\ndef ")
+        self.assertLess(guard, first_definition,
                         "the guard runs after the program has already started")
         self.assertIn('os.execve("/usr/bin/python3"', text)
         self.assertIn('"-I", "-S"', text)
+        self.assertIn("sys.flags.isolated and sys.flags.no_site", text)
+        # Comments are allowed to NAME the old token -- the comment above the
+        # guard explains the hole, and deleting that explanation is how a
+        # closed hole gets reopened by someone who never knew it existed.
+        # What must not come back is a line of CODE that reads it.
+        code = "\n".join(line for line in text.splitlines()
+                         if not line.lstrip().startswith("#"))
+        self.assertNotIn("SHADOWFETCH_FIREBREAK_ISOLATED", code,
+                         "the environment token is back in executable code; "
+                         "it is an off switch for the attacker this guard "
+                         "names")
 
     def test_a_refusal_before_the_sandbox_starts_is_still_recorded(self):
         """The audit directory has to show that somebody asked.

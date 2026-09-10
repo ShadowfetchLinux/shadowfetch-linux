@@ -17,7 +17,7 @@
 # The element steers more than color: Welcome's setup profiles, the Control
 # Center accent, and shadowfetch-firebreak's network default all read it.
 set -uo pipefail
-VERSION="4.0.0"
+VERSION="4.1.0"
 
 home_dir="${HOME:-}"
 if [ -z "$home_dir" ]; then

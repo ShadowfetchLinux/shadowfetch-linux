@@ -35,7 +35,25 @@ from acceptance.ledger import (  # noqa: E402
 )
 from acceptance.vm import ppm_to_png  # noqa: E402
 
-RELEASE = release_link.load_release()
+# PINNED, DELIBERATELY, AND ONLY UNTIL 4.1.0 LANDS.
+#
+# load_release(None) resolves to the sole non-historical data file, and there
+# are two now that versions/4.1.0.toml exists. That ambiguity is refused rather
+# than guessed -- test_release_gate.py names exactly that behaviour -- so this
+# module has to say which release its fixtures are about, and they are about
+# 4.0.0: the ISO it drives, the qa/4.0.0/acceptance.json it reads, and the
+# work/qa-4.0.0 evidence root all exist for 4.0.0 and do not exist for 4.1.0.
+#
+# THAT BUMP HAS LANDED. versions/4.0.0.toml is historical, 4.1.0 is the sole
+# live file and qa/4.1.0/acceptance.json exists, so this takes no argument
+# again -- which is the point: a harness that names its release is a harness
+# that keeps testing the last one. It still has no ARTIFACT, and that is
+# correct: none of the cases below run a VM, they exercise the recorder's
+# refusals, and a refusal proven against the live manifest is the refusal that
+# will actually be met. SHADOWFETCH_RELEASE_VERSION remains an override for
+# re-running this suite against a historical manifest on purpose.
+_pin = os.environ.get("SHADOWFETCH_RELEASE_VERSION")
+RELEASE = release_link.load_release(_pin) if _pin else release_link.load_release(None)
 
 
 def make_png(path: Path, width: int, height: int) -> None:
@@ -579,6 +597,36 @@ class NoPathToAnUnearnedPassTests(unittest.TestCase):
 
 
 class CaseRegistryTests(unittest.TestCase):
+    def test_every_coverage_gap_quotes_the_title_it_explains(self) -> None:
+        """A manifest_gap opens by QUOTING the required case's title, so it is
+        a second copy of the requirement. Retitling UPGRADE-01 for 4.1.0 --
+        it asked for an upgrade from 3.5, whose base image this host no longer
+        has -- made that copy disagree with the manifest instantly, and nothing
+        noticed. Compared case-insensitively: these messages SHOUT the half the
+        case fails to cover, and that emphasis is the message.
+        """
+        titles = {row["id"]: row["title"]
+                  for row in json.loads(
+                      RELEASE.acceptance_manifest().read_text(encoding="utf-8")
+                  )["cases"]}
+        quoted = 0
+        for case in CASES.values():
+            if not case.manifest_gap or not case.manifest_case:
+                continue
+            opening = f'{case.manifest_case} is "'
+            if not case.manifest_gap.startswith(opening):
+                continue
+            rest = case.manifest_gap[len(opening):]
+            claim = rest[:rest.index('"')]
+            quoted += 1
+            with self.subTest(case=case.name):
+                self.assertIn(case.manifest_case, titles,
+                              "the gap explains a case the manifest does not have")
+                self.assertEqual(titles[case.manifest_case].lower(), claim.lower())
+        self.assertGreater(quoted, 0,
+                           "no gap message quotes a title any more; this test "
+                           "no longer checks anything")
+
     def test_the_assigned_cases_exist(self) -> None:
         for name in ("live-boot", "install", "upgrade", "recovery",
                      "recovery-interrupted"):

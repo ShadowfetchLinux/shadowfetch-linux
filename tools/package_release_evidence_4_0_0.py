@@ -36,7 +36,10 @@ acceptance = importlib.util.module_from_spec(_ACCEPTANCE_SPEC)
 _ACCEPTANCE_SPEC.loader.exec_module(acceptance)
 
 
-VERSION = "4.0.0"
+# Same authority as the publisher, reached through the acceptance module this
+# file already loads: a bundle built for one release out of another release's
+# manifest is evidence for neither.
+VERSION = acceptance.gate.load_release(None).version
 PREFIX = f"shadowfetch-{VERSION}-evidence"
 BUNDLE = f"evidence-bundle-{VERSION}.tar.gz"
 CONTENTS = f"evidence-bundle-{VERSION}.contents"
@@ -52,7 +55,7 @@ QA_SOURCES = (
     "tools/release/source_gate.py",
     "tools/release/package_gate.py",
     "tools/release/acceptance.py",
-    "tools/release/versions/4.0.0.toml",
+    f"tools/release/versions/{VERSION}.toml",
     "tools/release/trusted-programs.toml",
     "tools/drkonqi_pickup_contract.py",
     "tools/package_release_evidence_4_0_0.py",
@@ -231,7 +234,7 @@ def package(root: Path, output_dir: str, approved_path: str) -> dict:
     for name in (BUNDLE, CONTENTS):
         if (output / name).exists() or (output / name).is_symlink():
             raise ValueError(f"Preserve the prior snapshot before rebuilding: {output / name}")
-    manifest_path = checked_path(root, "qa/4.0.0/acceptance.json")
+    manifest_path = checked_path(root, f"qa/{VERSION}/acceptance.json")
     if manifest_path.stat().st_size > 8 * 1024**2:
         raise ValueError("Acceptance manifest exceeds 8 MiB")
     manifest_bytes = manifest_path.read_bytes()
@@ -279,7 +282,7 @@ def package(root: Path, output_dir: str, approved_path: str) -> dict:
                     raise ValueError(f"Approved screenshot below 1280x720: {name}")
             snapshot.add_file("evidence/" + name, source, digest)
         # Generated release document hashes are a closed set, not a glob.
-        release_dir = "work/release-4.0.0"
+        release_dir = f"work/release-{VERSION}"
         checksum_file = checked_path(root, release_dir + "/" + CHECKSUMS)
         checksums = {}
         for line in checksum_file.read_text().splitlines():
@@ -347,7 +350,7 @@ def package(root: Path, output_dir: str, approved_path: str) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
-    parser.add_argument("--output-dir", default="work/release-4.0.0", help="Existing repository-relative output directory")
+    parser.add_argument("--output-dir", default=f"work/release-{VERSION}", help="Existing repository-relative output directory")
     parser.add_argument("--approved-inputs", required=True, help="Repository-relative explicit screenshot/document approval JSON")
     args = parser.parse_args()
     try:

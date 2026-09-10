@@ -1,3 +1,47 @@
+shadowfetch-phoenix (4.1.0-1) umbra; urgency=medium
+
+  * BREAKING: phoenix-recovery-report reduces its argument to a basename
+    inside the intended directory, so `phoenix-recovery-report
+    /abs/path.tar.gz` now writes $OUTDIR/path.tar.gz. The help text says so.
+    '', '.', '..', a leading '-' and a symlink target are refused.
+  * The recovery report was world-readable and leaked identifiers. It
+    bundles raw dmesg and smartctl output and was created 0644 with no
+    confinement on its output path, so every local account could read
+    another user's kernel log and drive serials. umask 077 is set before
+    anything is created, the directory is 0700 and the archive 0600, and MAC
+    addresses, ATA/SCSI serials, psk/password/passphrase/cryptkey, smartctl
+    serial_number, wwn, logical_unit_id, eui64 and nguid, and this machine's
+    own lsblk and DMI identifiers are redacted. The kernel command line,
+    BTRFS and subsystem errors, failed units, SMART health and temperature,
+    lsblk topology, apt history and the Point list all survive redaction.
+  * An interrupted restore no longer leaves root and /boot from different
+    generations. The trap was `trap cleanup EXIT INT TERM` and cleanup only
+    synced and unmounted; a POSIX sh trap that does not exit RESUMES the
+    script, so an interrupt could unmount the working mount and then
+    continue into /boot mutation, leaving the machine less recoverable after
+    a failed restore than before it. The boot rollback now fires exactly
+    once whether reached from an error branch or the trap, INT and TERM are
+    blocked across the exchange itself, a second Ctrl-C cannot truncate a
+    rollback in progress, and the handlers exit 130/143.
+  * Write an intent journal before every mutation, to two durable locations
+    -- the volume top level, which survives the exchange, and the
+    still-booting root -- so a power-loss interruption can be diagnosed.
+  * Add --dry-run to phoenix-restore: mounts read-only and prints the
+    device, the Point, the exchange, the archive name, the pinned GRUB entry
+    and every file that would move.
+  * Add a testable recovery core -- Layout, RestoreTransaction, an intent
+    journal and bounded GC -- with 91 new tests, 21 against a real loopback
+    btrfs including two SIGKILL power-cut scenarios. Phoenix had no suite
+    running in `make test` at all, despite being the package you depend on
+    when the machine is already broken.
+  * Add phoenix-check-layout, a read-only check run as ExecStartPost so a
+    broken Btrfs layout surfaces in `systemctl --failed` and in the recovery
+    report instead of waiting to be discovered during a restore.
+  * Add phoenix-apt-snapshot and phoenix-recover, and a polkit action for
+    the recovery path.
+
+ -- Shadowfetch Project <signing@shadowfetch.com>  Wed, 09 Sep 2026 18:28:58 -0400
+
 shadowfetch-phoenix (4.0.0-1) umbra; urgency=medium
 
   * Shadowfetch Linux 4.0 Mission Control release.

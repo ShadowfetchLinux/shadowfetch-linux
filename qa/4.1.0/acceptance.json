@@ -1,0 +1,203 @@
+{
+  "schema_version": 1,
+  "revision": 1,
+  "release": {
+    "version": "4.1.0",
+    "edition": "Fire and Ice",
+    "codename": "Umbra",
+    "subtitle": "Egress and Syscall Filters"
+  },
+  "evidence_root": "work/qa-4.1.0/evidence",
+  "artifact": {
+    "iso_path": "shadowfetch-4.1.0-amd64.iso",
+    "iso_sha256": null,
+    "iso_size_bytes": null,
+    "signature_path": "shadowfetch-4.1.0-amd64.iso.asc",
+    "signing_fingerprint": "8F13CE1535EE1F4A2916A1F73C5C900B7BE80CA1",
+    "evidence_bundle_path": "evidence-bundle-4.1.0.tar.gz",
+    "evidence_bundle_sha256": null
+  },
+  "cases": [
+    {
+      "id": "SRC-01",
+      "phase": "prepublish",
+      "area": "src",
+      "title": "Source, behavioral tests, linters and secret scans",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "PKG-01",
+      "phase": "prepublish",
+      "area": "pkg",
+      "title": "Exact binary and corresponding-source package inventory, signed APT and clean installation",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "ISO-01",
+      "phase": "prepublish",
+      "area": "iso",
+      "title": "Fresh signed BIOS/UEFI ISO, exact embedded 4.1 packages and no credentials",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "FIRE-01",
+      "phase": "prepublish",
+      "area": "fire",
+      "title": "Fire live desktop and Mission Control render and work",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "ICE-01",
+      "phase": "prepublish",
+      "area": "ice",
+      "title": "Ice desktop, task network isolation and offline media/workspaces",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "INSTALL-01",
+      "phase": "prepublish",
+      "area": "install",
+      "title": "Fresh BIOS and UEFI Calamares installs boot from disk",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "UPGRADE-01",
+      "phase": "prepublish",
+      "area": "upgrade",
+      "title": "Existing 4.0 installed system upgrades with preserved user data and working recovery",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "MISSION-01",
+      "phase": "prepublish",
+      "area": "mission",
+      "title": "Real code, cited document and media missions complete with validated artifacts",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "DURABLE-01",
+      "phase": "prepublish",
+      "area": "durable",
+      "title": "Cancellation, retry, interrupted service recovery and no duplicated side effects",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "SCOPE-01",
+      "phase": "prepublish",
+      "area": "scope",
+      "title": "Private home, file/network scope, credential separation and required checkpoint failure behavior",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "GROK-01",
+      "phase": "prepublish",
+      "area": "grok",
+      "title": "Official Grok Bot package integrity, installation, native launch, callback registration and observed account boundary",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "GROK-VISUAL-01",
+      "phase": "prepublish",
+      "area": "grok",
+      "title": "Prominent actual Grok Bot screenshot plus featured installer and desktop entry",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "RESOURCE-01",
+      "phase": "prepublish",
+      "area": "resource",
+      "title": "Resource admission limits and desktop responsiveness during mission/media workloads",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "RECOVERY-01",
+      "phase": "prepublish",
+      "area": "recovery",
+      "title": "Project diff/undo and supported system rollback verified after injected failures",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "STRESS-01",
+      "phase": "prepublish",
+      "area": "stress",
+      "title": "At least 45 minutes concurrent CPU/memory/storage/container/mission/UI stress with clean audits",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "VISUAL-01",
+      "phase": "prepublish",
+      "area": "visual",
+      "title": "Fire/Ice, Welcome, Mission Control, Grok Bot, installer and under-load screenshots at both resolutions",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "EVIDENCE-01",
+      "phase": "prepublish",
+      "area": "evidence",
+      "title": "Exact ISO checksum/signature, SBOM, manifests, QA bundle and reviewer letter",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    },
+    {
+      "id": "PUB-01",
+      "phase": "postpublish",
+      "area": "pub",
+      "title": "GitHub, website, signed downloads/APT and screenshots expose the same verified 4.1 release",
+      "required": true,
+      "status": "pending",
+      "evidence": [],
+      "notes": ""
+    }
+  ],
+  "candidate_note": "No candidate yet. Every case is pending and the artifact block carries no digest, because no 4.1.0 image has been built: these are the only honest values for a release whose artifact does not exist. The case list is carried over from 4.0.0 -- what a release must prove does not change because the version did -- and every RESULT was dropped rather than copied. Three TITLES did have to change, and carrying them verbatim had already got them wrong: ISO-01 asked for \"exact embedded 4.0 packages\", PUB-01 for \"the same verified 4.0 release\", and UPGRADE-01 for an upgrade from 3.5, whose base image this host no longer has. A title is the requirement, so those three asked this release to prove the last one. verify refuses this manifest today, and should."
+}

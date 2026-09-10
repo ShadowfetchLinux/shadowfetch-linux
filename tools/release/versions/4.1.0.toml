@@ -1,0 +1,247 @@
+# Shadowfetch Linux 4.1.0 -- release gate DATA.
+#
+# Stage Q: this file is the whole per-release input to the gates. Cutting a
+# release means adding one of these, not copying source_gate/package_gate/
+# iso_gate/verify_acceptance and editing version strings inside each copy.
+#
+# Only put things here that vary BECAUSE THE VERSION CHANGED. Structural facts
+# about the product -- which payload paths must exist, which contracts a script
+# must contain -- belong in the single live gate module, where they get
+# reviewed once rather than diverging across copies.
+#
+# WHY THE MIDDLE DIGIT MOVED. 4.1.0 is not a patch. It changes behaviour that
+# a working 4.0.0 setup depends on: a mission created without --provider now
+# FAILS, because three providers serve code_change and the engine refuses to
+# choose; an approval stored before this release stops covering a mission that
+# names destinations, because Scope gained egress_hosts; `--net allow` no
+# longer reaches the host's loopback; a seccomp-BPF filter denies 46 syscalls
+# inside a sandbox; and shadowfetch-update is a shim over fireproof with no
+# replacement for `flatpak update --user`. None of that is representable as a
+# key here. It is written down because the next reader of this file will want
+# to know why a minor bump exists at all, and the answer is not in the keys.
+
+[release]
+version = "4.1.0"
+edition = "Fire and Ice"
+# PROVISIONAL -- the one value in this file that is a decision rather than a
+# fact read out of the tree. Nothing in the tree names 4.1.0 yet, so no
+# subtitle was inherited. This one states what the release actually adds -- an
+# nftables egress filter and a seccomp-BPF syscall filter -- rather than
+# claiming the sandbox as a whole is now enforced, which would be untrue: the
+# credential broker and the blast-radius classifier are built and wired to
+# nothing. tools/drift_gate.py compares this against qa/4.1.0/acceptance.json
+# and the README fact table, so all three have to be settled together.
+subtitle = "Egress and Syscall Filters"
+# APT suite name, lower case. Appears in dists/<codename>/ and sources.list.
+# Permanent for this line: umbra does not move with the version.
+codename = "umbra"
+# Codename as written in os-release PRETTY_NAME and the acceptance manifest.
+display_codename = "Umbra"
+package_revision = "1"
+signing_fingerprint = "8F13CE1535EE1F4A2916A1F73C5C900B7BE80CA1"
+# Set true once a newer release ships. A historical file may still be loaded
+# with --version, but see ReleaseData.historical: re-running today's gate over
+# old data re-gates that release with today's logic, it does not reproduce the
+# gate that shipped it.
+#
+# versions/4.0.0.toml flipped to historical = true in the same change that
+# added this file: two non-historical files is an ambiguity that both
+# gate.load_release(None) and tools/drift_gate.py's load_truth() REFUSE rather
+# than guess, and test_release_gate now proves every earlier file says so.
+historical = false
+
+[packages]
+# Every Shadowfetch binary package the release publishes. Versions are derived
+# as <release.version>-<release.package_revision>, so a version bump needs no
+# edit here -- the copied gates each carried 17 hand-edited "3.5.0-1" strings.
+#
+# Unchanged from 4.0.0, and that is a checked statement rather than a copy:
+# packages/ still holds the same 16 source directories, and shadowfetch-meta's
+# debian/control still builds exactly shadowfetch-desktop, -creative-base and
+# -nvidia. No package was added or retired between v4.0.0 and this tree.
+shadowfetch_binaries = [
+    "shadowfetch-branding",
+    "shadowfetch-control-center",
+    "shadowfetch-creative-base",
+    "shadowfetch-defaults",
+    "shadowfetch-desktop",
+    "shadowfetch-drkonqi-pickup",
+    "shadowfetch-ember",
+    "shadowfetch-fireproof",
+    "shadowfetch-fireline",
+    "shadowfetch-firewatchd",
+    "shadowfetch-hwscan",
+    "shadowfetch-menus",
+    "shadowfetch-missions",
+    "shadowfetch-nvidia",
+    "shadowfetch-phoenix",
+    "shadowfetch-themes",
+    "shadowfetch-welcome",
+]
+
+# Source packages in the signed Sources index. shadowfetch-meta builds the two
+# metapackages plus shadowfetch-nvidia, so it appears here but not above.
+sources = [
+    "grub-btrfs",
+    "shadowfetch-branding",
+    "shadowfetch-control-center",
+    "shadowfetch-defaults",
+    "shadowfetch-drkonqi-pickup",
+    "shadowfetch-ember",
+    "shadowfetch-fireproof",
+    "shadowfetch-fireline",
+    "shadowfetch-firewatchd",
+    "shadowfetch-hwscan",
+    "shadowfetch-menus",
+    "shadowfetch-meta",
+    "shadowfetch-missions",
+    "shadowfetch-phoenix",
+    "shadowfetch-themes",
+    "shadowfetch-welcome",
+]
+
+# Installed for real in the disposable Debian 13 container, in this order.
+#
+# Still the right set for 4.1.0. Two inter-package relations were declared for
+# the first time this release -- shadowfetch-defaults now Depends on
+# shadowfetch-welcome (= ${binary:Version}), and shadowfetch-fireproof Depends
+# on shadowfetch-phoenix because /usr/lib/shadowfetch/sfupdate imports
+# phoenix.trusted -- and both targets were already in this list, so a newly
+# declared dependency cannot be satisfied here by something the image would
+# not have.
+smoke_install = [
+    "grub-btrfs",
+    "shadowfetch-branding",
+    "shadowfetch-control-center",
+    "shadowfetch-defaults",
+    "shadowfetch-drkonqi-pickup",
+    "shadowfetch-ember",
+    "shadowfetch-fireproof",
+    "shadowfetch-fireline",
+    "shadowfetch-firewatchd",
+    "shadowfetch-hwscan",
+    "shadowfetch-menus",
+    "shadowfetch-phoenix",
+    "shadowfetch-missions",
+    "shadowfetch-welcome",
+]
+
+# Published in the APT repository but deliberately NOT installed into the
+# image: the NVIDIA setup package is a post-install helper, so the ISO gate's
+# installed-package allowlist must not expect it. Still true --
+# live-build/config/package-lists/shadowfetch-desktop-kde.list.chroot names
+# every other Shadowfetch package and carries the line saying nvidia moved to
+# the first-boot hook.
+image_excluded = ["shadowfetch-nvidia"]
+
+# Packages built from a vendored third-party source: pinned independently of
+# the Shadowfetch version. packages/grub-btrfs/debian/changelog still says
+# 4.14-2.
+[packages.third_party]
+grub-btrfs = "4.14-2"
+
+# Commands run inside the container after the smoke install. A release that
+# retires a command changes this list rather than a copied shell heredoc.
+[packages.container_smoke]
+present = [
+    "/usr/bin/shadowfetch-missions --json capabilities",
+    "/usr/bin/shadowfetch-codex --help",
+    "/usr/bin/shadowfetch-gpu --help",
+    "/usr/bin/shadowfetch-update --help",
+    # NEW in 4.1.0, and it is a REPLACEMENT for what the line above used to
+    # prove. shadowfetch-update was a 342-line second updater; it is now
+    # eleven lines that exec /usr/bin/fireproof. Its --help prints its own
+    # usage and exits before it ever looks at FIREPROOF, so the shim answers 0
+    # on a machine where the real update command is missing or broken. Without
+    # this line the smoke set would have quietly stopped covering updates at
+    # the moment updates moved. fireproof's own --help returns 0 before it
+    # imports dbus, so this needs nothing running.
+    "/usr/bin/fireproof --help",
+    # NEW in 4.1.0: shadowfetch-doctor is the one command added to /usr/bin
+    # since v4.0.0 (shadowfetch-defaults, which is in smoke_install above).
+    # argparse, stdlib-only imports, so --help exits 0 in a bare container.
+    "/usr/bin/shadowfetch-doctor --help",
+    "/usr/libexec/shadowfetch-drkonqi-pickup --help",
+]
+# Paths that must NOT exist. Proving the absence is the point, so these are
+# asserted rather than assumed: every one of them is something a PREVIOUS
+# release shipped, which means a stale build directory or a forgotten .install
+# line can put it back without anybody noticing.
+absent = [
+    # The retired local-inference stack, carried forward from 4.0.0. Neither
+    # path exists anywhere under packages/ in this tree.
+    "/usr/bin/shadowfetch-buzz",
+    "/usr/bin/shadowfetch-model-check",
+    # NEW in 4.1.0. v4.0.0 SHIPPED this polkit action: allow_active=yes with
+    # exec.path=/usr/bin/shadowfetch-firebreak, and pkexec passes the caller's
+    # whole argv to a binary whose `run` subcommand executes nargs=REMAINDER.
+    # Any active local user could take root with it (SEC-PKX-01, P0; deleted
+    # in W-04). A file that grants local root is exactly the kind of absence
+    # that has to be checked rather than trusted to a deleted .install line.
+    "/usr/share/polkit-1/actions/org.shadowfetch.fireline.policy",
+    # NEW in 4.1.0. This conffile enabled unattended-upgrades, which is a
+    # SECOND thing deciding when this machine mutates itself, next to
+    # Fireproof. It is gone from shadowfetch-defaults' .install and removed on
+    # upgrade by rm_conffile in debian/shadowfetch-defaults.maintscript. On a
+    # fresh container install rm_conffile does nothing, so this line proves
+    # the only thing the container CAN prove: that the package no longer
+    # ships it. It does not prove the upgrade path removes it -- that is
+    # packages/shadowfetch-fireproof/tests/test_single_update_authority.py
+    # and the VM upgrade case, not this gate.
+    "/etc/apt/apt.conf.d/52shadowfetch-unattended.conf",
+]
+
+[stamps]
+# Version-stamped literals that must appear inside a shipped payload. Written
+# with {version}/{edition} placeholders: a copied gate is exactly how a stale
+# 'VERSION = "3.5.0"' assertion once survived a release bump.
+mcp_server = ['SERVER_VERSION = "{version}"']
+# Every literal below except the version line is present in
+# live-build/config/includes.chroot/etc/calamares/branding/debian/show.qml as
+# it stands today. The version line follows {version}, so the slideshow has to
+# be restamped to 4.1.0 with the rest of the tree -- tools/stamp_version.py
+# does NOT touch show.qml, it is one of the hand-maintained sites.
+installer_slideshow = [
+    "Shadowfetch Linux {version}",
+    "Element Workbench",
+    "Mission Control brings plans, scoped work and results together",
+    "Meet Grok Bot after installation",
+    "Choose its verified native installation",
+    "Built to come back",
+    'source: "slide-fire.jpg"',
+    'source: "slide-ice.jpg"',
+]
+
+[identity]
+# The installed image's identity surfaces. The suite is umbra for this whole
+# line, so the source line does not move with the version.
+os_release_name = "Shadowfetch Linux"
+os_release_id = "shadowfetch"
+apt_source_line = "deb https://www.shadowfetch.com/linux/apt umbra main"
+
+[workbench]
+# Element Workbench profile allowlist. Adding a profile is a release decision.
+# packages/shadowfetch-defaults/data/usr/share/shadowfetch/workbench/
+# profiles.json still declares exactly these four.
+profiles = ["software-studio", "ai-lab", "production-ops", "creative-ai"]
+
+[pinned_artifacts]
+# Third-party binaries the packages download at USER runtime. Each is pinned by
+# version and SHA-256 inside the setup script; the package gate asserts the
+# pins are present so a release cannot silently float them. Neither setup
+# script changed between v4.0.0 and this tree, so every token below is still
+# the literal that is in it.
+codex = [
+    'CODEX_VERSION="0.150.1"',
+    'INSTALLER_SHA256="ba92dd27e5c06f0d3bbc58bfa4b9cfb6599cd2742fbb1f92a2765e6c07dedb5a"',
+    'BIN_DIR="${CODEX_INSTALL_DIR:-$HOME/.local/bin}"',
+]
+code_agent = [
+    'VERSION="2.1.227"',
+    'VERSION="1.0.5"',
+    'VERSION="2026.08.11-e8db854"',
+    'ARTIFACT_SHA256="6832dc3f1797b890b71116e5f2dbbf9a83fd3d0498c235b4b0f9cd0e6e499ad6"',
+    'ARTIFACT_SHA256="9ba87444e1819e8f6104adbbf4676a870c204380aa5c3e1c38a926c4ea677238"',
+    'ARTIFACT_SHA256="bfff4bf6f4e9dd30c1d0ef0a70b6077b074015dd2948e4c50685d53afdcfce5a"',
+    'BIN_DIR="${SHADOWFETCH_CODE_AGENT_BIN_DIR:-$HOME/.local/bin}"',
+]

@@ -1,3 +1,45 @@
+shadowfetch-fireproof (4.1.0-1) umbra; urgency=medium
+
+  * BREAKING: fireproofd's Verify() requires authorization. It was exported
+    with neither sender_keyword nor an auth check, while running the dpkg
+    audit and an apt dependency simulation as root and returning a detailed
+    report of the machine's package state, and the bus policy allowed
+    context="default" to send to the destination -- so any local process
+    could drive that root work in a loop and read the result. It now takes
+    the caller's bus name, goes through the authorization check, and holds a
+    non-blocking lock so a second battery is refused with Busy.
+  * BREAKING: the fireproofd bus policy is default-deny plus an explicit
+    per-member allowlist. A method added without an auth check is now
+    unreachable until someone lists it deliberately.
+  * Add Inspect(), a read-only companion that returns the last recorded
+    battery result and executes nothing. It carries no authorization
+    requirement, preserving the unprivileged read path Verify was providing
+    by accident, without the root execution.
+  * Fireproof is the single update authority. The shared sfupdate modules --
+    snapshots, state, trusted executables and the update vocabulary -- ship
+    here, and shadowfetch-bundle-install stops deciding its own Phoenix
+    Point. Measured on the shipped code with a previous Fireproof update
+    recorded at Point 41, a bundle install printed SF-POINT 43 while
+    fireproof-state.json was byte-for-byte unchanged, so the one rollback
+    button still answered 41: two programs, two different answers, differing
+    by two Points.
+  * Ship /etc/apt/apt.conf.d/85fireproof as the only APT::Periodic
+    declaration in the product. Package lists refresh daily so the badge and
+    the analyze screen stay honest; nothing is downloaded or installed
+    unattended.
+  * Bound the work an unauthenticated Analyze() can start. It is
+    unauthenticated on purpose -- the tray badge needs the update count
+    without a password -- but it spawned a new apt-cache-opening thread
+    inside a root daemon on every call, so any local process could start an
+    unbounded number of them. A recent result is served from cache and
+    callers arriving mid-run coalesce onto it: worst case is one analysis
+    per 30 seconds regardless of caller count.
+  * The Fireproof window is mounted inside the Control Center, so its error
+    red is the Control Center's. It was a paler, oranger red, so one failure
+    message changed hue depending on which frame you were looking at.
+
+ -- Shadowfetch Project <signing@shadowfetch.com>  Wed, 09 Sep 2026 18:28:58 -0400
+
 shadowfetch-fireproof (4.0.0-1) umbra; urgency=medium
 
   * Shadowfetch Linux 4.0 Mission Control release.

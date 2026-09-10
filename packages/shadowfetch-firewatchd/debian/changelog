@@ -1,3 +1,24 @@
+shadowfetch-firewatchd (4.1.0-1) umbra; urgency=medium
+
+  * Bound four caches -- unit display names, desktop entries, unit
+    descriptions and the pid/cgroup map -- that were plain dicts which only
+    ever grew inside a long-running root daemon. An LRU caps them at
+    512/512/512/8192, keeping the per-sweep prune's exact semantics and
+    adding a hard ceiling for the case where a sweep never completes. Driven
+    side by side, the old cache reaches 3,000 entries where the new one
+    holds at 512.
+  * Stop mutating PID 1's state while observing it. Manager.LoadUnit is not
+    a lookup: it makes systemd load the named unit into its table, so a
+    read-only telemetry daemon was growing init's unit table as a side
+    effect of reading it. Manager.GetUnit is the non-mutating equivalent.
+    Output is unchanged, proven by comparing the 65 JSON leaf keys the
+    pre-fix and patched daemons each produce.
+  * DeviceAllow gave a daemon that only reads SMART data write access to
+    every block device. Block devices are read-only now; char-nvme and
+    char-nvidia* stay read-write for NVML.
+
+ -- Shadowfetch Project <signing@shadowfetch.com>  Wed, 09 Sep 2026 18:28:58 -0400
+
 shadowfetch-firewatchd (4.0.0-1) umbra; urgency=medium
 
   * Stop polling model services; retain local system telemetry and empty model compatibility fields.

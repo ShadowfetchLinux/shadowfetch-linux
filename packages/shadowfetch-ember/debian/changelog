@@ -1,3 +1,9 @@
+shadowfetch-ember (4.1.0-1) umbra; urgency=medium
+
+  * Rebuild for the 4.1.0 release; no changes to this package.
+
+ -- Shadowfetch Project <signing@shadowfetch.com>  Wed, 09 Sep 2026 18:28:58 -0400
+
 shadowfetch-ember (4.0.0-1) umbra; urgency=medium
 
   * Shadowfetch Linux 4.0 Mission Control release.

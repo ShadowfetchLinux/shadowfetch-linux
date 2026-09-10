@@ -394,9 +394,19 @@ class TestNoConflictingAutomaticUpdates(unittest.TestCase):
              "52shadowfetch-unattended.conf").exists())
         maintscript = (DEFAULTS
                        / "debian/shadowfetch-defaults.maintscript").read_text()
+        # WITH the prior-version. Asserting the substring alone let the
+        # trigger sit at 4.0.0-1~ -- a value dpkg reads as "only upgrades from
+        # below 4.0.0-1", i.e. not the installed base this removal is for.
+        # The expected value is derived: the line must name the release that
+        # ships it, suffixed with ~, which is what maintscript-helper wants.
+        release = (DEFAULTS.parents[1] / "packages/shadowfetch-branding/data"
+                   / "usr/share/shadowfetch/version").read_text().strip()
         self.assertIn(
-            "rm_conffile /etc/apt/apt.conf.d/52shadowfetch-unattended.conf",
-            maintscript)
+            "rm_conffile /etc/apt/apt.conf.d/52shadowfetch-unattended.conf "
+            f"{release}-1~",
+            maintscript,
+            "the removal fires only for upgrades from below its prior-version, "
+            "so a stale one silently skips the machines it is meant for")
         install = (DEFAULTS
                    / "debian/shadowfetch-defaults.install").read_text()
         self.assertNotIn("52shadowfetch-unattended.conf", install)

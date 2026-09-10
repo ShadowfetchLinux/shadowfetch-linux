@@ -477,9 +477,12 @@ class GateCatchesTheDuplicationComingBack(_GateSandbox, unittest.TestCase):
 
         found = sorted((finding.site.split(":")[0].rsplit("/", 1)[-1], kind(finding))
                        for finding in blocked)
+        # Welcome's loader left this list by being FIXED -- the remedy this
+        # file reported was applied to the real front-end, so the gate has
+        # nothing to report about it any more. An entry leaves here only that
+        # way, which is what makes the snapshot worth having.
         self.assertEqual(
             [("busutil.py", "net"),
-             ("shadowfetch-welcome", "loader"),
              ("workbench_page.py", "argv"),
              ("workbench_page.py", "argv")],
             found,
@@ -501,9 +504,14 @@ class GateCatchesTheDuplicationComingBack(_GateSandbox, unittest.TestCase):
         # The name still appears -- both front-ends print it in the
         # ImportError they raise without the library -- and the module bound
         # to it is something else entirely.
+        # The gate reads library_resolution(): an import of the module name,
+        # or a call to a FILE LOADER. Welcome loads by file now, so a fixture
+        # that only rebinds the name leaves the load plainly visible and proves
+        # nothing -- it has to remove the mechanism the gate reads.
         self.edit(fake / self.WELCOME_REL,
-                  "            import sf_desktop",
-                  "            import json as sf_desktop")
+                  '            spec = importlib.util.spec_from_file_location("sf_desktop", path)',
+                  '            import json as sf_desktop\n'
+                  '            return sf_desktop')
         found = self.drifts()
         self.assertTrue(any("does not load the shared desktop library" in f.detail
                             for f in found), found)
@@ -775,8 +783,10 @@ class GateCatchesADeadBranchImport(_GateSandbox, unittest.TestCase):
     def test_an_unreachable_import_does_not_prove_the_library_is_loaded(self):
         fake = self.sandbox()
         target = fake / self.WELCOME_REL
-        self.edit(target, "            import sf_desktop",
-                  "            import json as sf_desktop")
+        self.edit(target,
+                  '            spec = importlib.util.spec_from_file_location("sf_desktop", path)',
+                  '            import json as sf_desktop\n'
+                  '            return sf_desktop')
         self.edit(target, "def _load_desktop():",
                   "if False:\n    import sf_desktop\n\n\ndef _load_desktop():")
         found = self.drifts()
@@ -827,15 +837,23 @@ WELCOME_IMPORT_ANCHOR = "import json\nimport os\n"
 WELCOME_IMPORT_REPLACEMENT = "import importlib.util\nimport json\nimport os\n"
 
 
-class TheRemedyForWelcomesLoaderIsExact(unittest.TestCase):
-    """ATTACK B in the front-end this stage may not edit.
+class WelcomesLoaderExecutesTheFileItChecked(unittest.TestCase):
+    """ATTACK B, in the front-end -- now fixed there.
 
-    Welcome's `_load_desktop()` has the same defect the Control Center's
-    loader had: it checks that the file exists, puts its directory on
-    sys.path, and then resolves the module BY NAME. The gate reports it
-    BLOCKED. These tests apply the reported replacement to a COPY and run it,
-    so the report carries a fix that has been executed and an anchor that
-    cannot rot without a test going red.
+    Welcome's `_load_desktop()` had the same defect the Control Center's did:
+    it checked that the file exists, put its directory on sys.path, and then
+    resolved the module BY NAME -- and `import` consults sys.modules before
+    sys.path, so the existence check it had just performed decided nothing. A
+    planted module was accepted with PKEXEC back to the bare word and the
+    install argv resolved through $PATH again.
+
+    This class used to apply the reported remedy to a COPY and run it, because
+    Welcome belonged to another package: a remedy nobody has run is a guess.
+    The remedy was applied to the real front-end, so the copy is gone and these
+    run against the shipped file. What they assert is unchanged -- the loader
+    refuses a poisoned sys.modules and still loads the real library -- and it
+    is now a statement about what ships rather than about what would happen if
+    somebody applied a patch.
     """
 
     POISON = r'''
@@ -856,11 +874,13 @@ print(module.desktop.PKEXEC)
     LIBRARY_REL = drift_gate.DESKTOP_LIBRARY
 
     def remedy_tree(self, tmp):
-        """A copy of the tree with the reported replacement applied to Welcome.
+        """A copy of the tree, shaped like the repo.
 
-        Shaped like the repo, because Welcome's own loader walks
-        Path(__file__).resolve().parents looking for the library: a patched
-        copy in a bare temp directory cannot find it and proves nothing.
+        Still a copy, and still repo-shaped, because Welcome's loader walks
+        Path(__file__).resolve().parents looking for the library and a file in
+        a bare temp directory cannot find it. What changed is that nothing is
+        patched on the way in: the shipped Welcome is copied verbatim, so these
+        tests measure the front-end that ships.
         """
         fake = Path(tmp)
         for rel in GATE_FILES:
@@ -868,16 +888,14 @@ print(module.desktop.PKEXEC)
             copy.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / rel, copy)
         source = welcome_source()
-        for anchor in (WELCOME_LOADER_ANCHOR, WELCOME_IMPORT_ANCHOR):
-            self.assertEqual(1, source.count(anchor),
-                             "the reported anchor no longer matches Welcome "
-                             "exactly once; re-derive the remedy:\n" + anchor)
-        source = source.replace(WELCOME_LOADER_ANCHOR, WELCOME_LOADER_REPLACEMENT)
-        source = source.replace(WELCOME_IMPORT_ANCHOR, WELCOME_IMPORT_REPLACEMENT)
+        # The fix is IN the shipped file, and these two are what it is.
+        self.assertIn("spec_from_file_location", source,
+                      "Welcome resolves the library by name again")
+        self.assertIn("import importlib.util", source)
         (fake / self.WELCOME_REL).write_text(source, encoding="utf-8")
         return fake
 
-    def test_the_remedy_makes_the_gate_stop_reporting_the_loader(self):
+    def test_the_gate_reports_no_loader_finding_against_the_shipped_welcome(self):
         with tempfile.TemporaryDirectory() as tmp:
             fake = self.remedy_tree(tmp)
             saved = drift_gate.ROOT
@@ -892,7 +910,7 @@ print(module.desktop.PKEXEC)
                          "the remedy introduced drift: "
                          + str([str(f) for f in findings if f.kind == "DRIFT"]))
 
-    def test_the_patched_welcome_refuses_a_poisoned_sys_modules(self):
+    def test_the_shipped_welcome_refuses_a_poisoned_sys_modules(self):
         """And it still loads the real library: the fix has to keep working,
         not just stop the finding."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -905,7 +923,7 @@ print(module.desktop.PKEXEC)
             self.assertEqual(0, done.returncode, done.stderr[-3000:])
             loaded, pkexec = done.stdout.split()
             self.assertEqual(str(fake / self.LIBRARY_REL), loaded,
-                             "the patched loader accepted a module it never "
+                             "the shipped loader accepted a module it never "
                              "checked")
         self.assertEqual("/usr/bin/pkexec", pkexec)
 

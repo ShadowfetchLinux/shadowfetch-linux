@@ -159,7 +159,39 @@ VERSION_SITES: list[tuple[str, str, str]] = [
      r'(?m)^VERSION\s*=\s*"([^"]+)"', "sf_missions VERSION"),
     ("packages/shadowfetch-drkonqi-pickup/CMakeLists.txt",
      r"project\([^)]*VERSION\s+([0-9.]+)", "drkonqi-pickup CMake project version"),
+    # The conffile-removal trigger. dpkg-maintscript-helper fires rm_conffile
+    # only for upgrades FROM BELOW this version, so a stale value is not a
+    # cosmetic mismatch -- at 4.0.0-1~ the removal would have skipped every
+    # machine running 4.0.0-1, which is the whole installed base. Only the
+    # line this release adds is anchored; the 2.1.4-1~ lines above it are
+    # history and must not move.
+    ("packages/shadowfetch-defaults/debian/shadowfetch-defaults.maintscript",
+     r"rm_conffile /etc/apt/apt\.conf\.d/52shadowfetch-unattended\.conf ([0-9.]+)-\d+~",
+     "unattended-upgrades conffile removal trigger"),
+    # The pickup contract's binary version. No gate imports it -- its only
+    # reader is its own test -- and that test compared it against release data
+    # it loaded BY NAME, so both sides went stale together and stayed green.
+    ("tools/drkonqi_pickup_contract.py",
+     r'(?m)^VERSION = "([0-9.]+)-\d+"', "drkonqi pickup contract VERSION"),
+    # A Shadowfetch package that floors a Shadowfetch SIBLING must floor it at
+    # this release. shadowfetch-missions went to 4.1.0 still asking apt for
+    # `shadowfetch-fireline (>= 4.0.0)`, which the RELEASED 4.0.0 firebreak
+    # satisfies -- and that firebreak (shipped commit e1293bfa) contains none
+    # of --egress-host, --seccomp or --credential-broker, the flags the 4.1.0
+    # engine passes it. A partial upgrade paired the new engine with a sandbox
+    # that rejects its argv. Being on this list also means the stamper rewrites
+    # it, so the floor now moves with the release instead of being remembered.
+    ("packages/shadowfetch-missions/debian/control",
+     r"shadowfetch-fireline \(>= ([0-9.]+)\)", "missions -> fireline floor"),
     ("README.md", r"(?m)^\| Version / codename \| (\S+) /", "README fact table"),
+    # The build section names the ISO and the Makefile default in prose. It was
+    # not on this list, so the stamper (which imports it) left both at 4.0.0
+    # while the Makefile beside them moved -- a README telling a reader to
+    # expect an artifact the build does not produce.
+    ("README.md", r"`make iso` produces `shadowfetch-([0-9.]+)-amd64\.iso`",
+     "README build section ISO name"),
+    ("README.md", r"`VERSION \?= ([0-9.]+)` and `CODENAME",
+     "README build section Makefile default"),
 ]
 
 

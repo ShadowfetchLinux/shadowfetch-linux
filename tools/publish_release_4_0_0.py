@@ -25,11 +25,29 @@ import subprocess
 import sys
 import tempfile
 
-VERSION = "4.0.0"
 BUCKET = "shadowfetch-linux"
 PUBLISHER = Path("/home/rtx5060ti/projects/shadowfetch-4.0.0")
 ROOT = Path(__file__).resolve().parents[1]
 FINGERPRINT = "8F13CE1535EE1F4A2916A1F73C5C900B7BE80CA1"
+# WHICH RELEASE THIS IS, is not written down here. A publisher carrying its own
+# copy of that is how a stamped 4.1.0 tree comes to upload a pointer naming
+# 4.0.0 as live: measured on this tree, `make publish` after the 4.1.0 stamp
+# still verified qa/4.0.0/acceptance.json, still looked in work/release-4.0.0,
+# and would still have written releases/CURRENT.json saying 4.0.0 -- past a
+# preflight that passed, because everything it checked was 4.0.0 too.
+#
+# tools/release/versions/<v>.toml is the one authority. load_release(None)
+# selects the single non-historical file and REFUSES rather than guesses when
+# there are two, which is the same refusal the drift gate makes.
+#
+# The `_4_0_0` in this file's NAME is now a legacy label and decides nothing.
+# It is not renamed because ARCHITECTURE_AUDIT.md, ARCHITECTURE_DECISIONS.md,
+# STAGE_VERIFICATION_CORRECTIONS.md, tools/truth/release.json and the artifact
+# worker's README each name this exact path as the thing they examined;
+# renaming it would silently falsify all five.
+sys.path.insert(0, str(ROOT / "tools/release"))
+import gate  # noqa: E402
+VERSION = gate.load_release(None).version
 # The pointer's schema, its validation and its key live with the worker that
 # READS it. Importing that module rather than restating the document here is
 # the whole point: a writer with its own idea of the schema is how a reader
@@ -64,12 +82,12 @@ def object_for(path, key, mutable=False):
     return Object(path, key, digest(path), path.stat().st_size, mutable)
 
 def publication_plan(root):
-    manifest = json.loads((root / "qa/4.0.0/acceptance.json").read_text())
+    manifest = json.loads((root / f"qa/{VERSION}/acceptance.json").read_text())
     artifact = manifest.get("artifact", {})
     iso = object_for(root / ISO, "releases/" + ISO)
     if iso.sha256 != artifact.get("iso_sha256") or iso.size != artifact.get("iso_size_bytes"):
         raise ValueError("ISO differs from the accepted artifact")
-    release = root / "work/release-4.0.0"
+    release = root / f"work/release-{VERSION}"
     objects = [iso]
     objects.extend(object_for(root / name, "releases/" + name) for name in (ISO + ".sha256", ISO + ".asc"))
     objects.extend(object_for(release / name, "releases/" + name) for name in EVIDENCE)
@@ -112,7 +130,7 @@ def pointer_object(root, iso, published=None):
     document = release_pointer.build(
         VERSION, root / ISO, published=stamp,
         fingerprint=FINGERPRINT, sha256=iso.sha256)
-    path = root / "work/release-4.0.0/CURRENT.json"
+    path = root / f"work/release-{VERSION}/CURRENT.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n",
                     encoding="utf-8")
@@ -221,7 +239,7 @@ def main():
     args = parser.parse_args()
     subprocess.run(
         [sys.executable, str(ROOT / "tools/release/acceptance.py"),
-         "--version", "4.0.0", "verify"],
+         "--version", VERSION, "verify"],
         check=True,
     )
     subprocess.run([str(ROOT / "tools/pre_release_check.sh")], check=True, env=dict(os.environ, ROOT=str(ROOT), REPO_MIN_VALID_FOR_SECONDS=str(7 * 86400)))

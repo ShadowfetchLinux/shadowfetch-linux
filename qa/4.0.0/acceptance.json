@@ -102,17 +102,73 @@
       "evidence": [
         {
           "kind": "log",
-          "path": "candidate12-fire/identity.txt",
-          "sha256": "1f23efefd28829018eb3c7be1bf4b5c46f1e50a4c21ce52cdf1e3e7c0833264a"
+          "path": "vm-acceptance/install-both-firmwares-20260909T220730Z-137c1f29e206/install-both-provenance.json",
+          "sha256": "142ff8b7c043984e05651156cfe3733a531ca8dd9387a9724992310ef61ff888",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
         },
         {
           "kind": "log",
-          "path": "candidate12-ice/identity.txt",
-          "sha256": "ebb81b1ae62c73716bb68c420bad63ae9f3a2ee430fcbd06db349c28e27c0bcf"
+          "path": "vm-acceptance/install-both-firmwares-20260909T220730Z-137c1f29e206/install-both-bios-base.json",
+          "sha256": "521a83b7c35f9f3f18dfccdc661b27ba6015cd5c40ae614fe69a04c8c903339a",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/install-both-firmwares-20260909T220730Z-137c1f29e206/install-both-bios-installed-report.json",
+          "sha256": "201cc9e4fa5858ef55af0f6590d5f331055dc5ec9c60910ac2674c742f6038e8",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "screenshot",
+          "path": "vm-acceptance/install-both-firmwares-20260909T220730Z-137c1f29e206/install-both-bios.png",
+          "sha256": "225dc064f1edebfe37fdc6b956a3a8f00e39fb52d49606f72e17eb7b32fd986e",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/install-both-firmwares-20260909T220730Z-137c1f29e206/install-both-bios-qemu.log",
+          "sha256": "1450048b7f3a5af450614741c53fb3d59e1f0fc0e9b0c2c5890962b2f1ba7846",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/install-both-firmwares-20260909T220730Z-137c1f29e206/install-both-uefi-base.json",
+          "sha256": "09b1c3e3fe51999619346562e58054da656645642685bda952cbacccae265677",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/install-both-firmwares-20260909T220730Z-137c1f29e206/install-both-uefi-installed-report.json",
+          "sha256": "82b5d86ed40f8b9dce6648fad2a39b89d7acbb9bdf03e24f380e3b83a01d54bf",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "screenshot",
+          "path": "vm-acceptance/install-both-firmwares-20260909T220730Z-137c1f29e206/install-both-uefi.png",
+          "sha256": "8f1758fd8ac8861af3e80bd9a86bbe283fa809ed0ed7d1d777a898b65a88a312",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/install-both-firmwares-20260909T220730Z-137c1f29e206/install-both-uefi-serial.log",
+          "sha256": "eb0d009974d15758629cf181d8f99c99c34025a389bb97ec7b474710719ac112",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/install-both-firmwares-20260909T220730Z-137c1f29e206/install-both-uefi-qemu.log",
+          "sha256": "d554508e9fabdd29bcda8e4edfbee8fb05dfe4b7e2ca354c56015f5766555766",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/install-both-firmwares-20260909T220730Z-137c1f29e206/install-both-firmwares-transcript.log",
+          "sha256": "5d19092e6bbc9c32777eed71428f17de97811dc3f7bd835c53f31364990293a5",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
         }
       ],
       "acceptance_scope": "Fresh native Calamares BIOS Fire and UEFI Ice installations from the exact final ISO boot from disk with normal PAM login, distinct machine and boot identities, correct installed payloads, desktop rendering and working crash pickup. Record actual VM resources and offline installation conditions.",
-      "notes": "Fresh BIOS Fire and UEFI Ice Calamares installs from SHA-256 137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc booted from disk (order=c). Both 4.0.0 Umbra, user sfqa, ignition-done."
+      "notes": "Recorded by tools/acceptance/vm_acceptance.py run --case install-both-firmwares (run install-both-firmwares-20260909T220730Z-137c1f29e206, receipt f4e21ec8a41cf27e, harness 59ac32f96b7176f4) against shadowfetch-4.0.0-amd64.iso sha256 137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc. 16 checks evaluated against the running machine."
     },
     {
       "id": "UPGRADE-01",
@@ -201,10 +257,84 @@
       "phase": "prepublish",
       "area": "recovery",
       "required": true,
-      "status": "pending",
+      "status": "pass",
       "title": "Project diff/undo and supported system rollback verified after injected failures",
-      "evidence": [],
-      "acceptance_scope": "Final-package upgrade, real Phoenix rollback and re-upgrade preserve user data. Verify actual project diff/Undo and failed/interrupted mission recovery. Authenticated inference and full stress remain separate."
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260909T220901Z-137c1f29e206/project-base-provenance.json",
+          "sha256": "b52b1573fb706152eae856444caac7019dba40b8dda6e05ecc0be06a5be491e7",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260909T220901Z-137c1f29e206/project-system-report.json",
+          "sha256": "138105d2751b3e39560a01f79f4a502a7f70d4608b32b1ab85834bc790f511fe",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260909T220901Z-137c1f29e206/project-implementation.json",
+          "sha256": "9760376e279f8436c5381df0160b725bbf92517d2e3eda579df0c5c1d4016660",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260909T220901Z-137c1f29e206/project-workspace-before.txt",
+          "sha256": "2394def88a1a0e99b65a1b934187549109ecf85f3ad2c078bd26dc636b46493f",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260909T220901Z-137c1f29e206/project-checkpoint.log",
+          "sha256": "64dbbc7173ebae396eb2d4b3a5c3a6110583f283431949e99943af3eeeea9804",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260909T220901Z-137c1f29e206/project-workspace-damaged.txt",
+          "sha256": "825fc76fb6a6360256120f146ad0d8fb86d4fb2bfb8b54a798749d6cade45045",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260909T220901Z-137c1f29e206/project-diff.log",
+          "sha256": "982064b5d4f94914204d2c8e7c84ee742e7b2ab4eb1a372305c8b7981ba15f4d",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260909T220901Z-137c1f29e206/project-undo.log",
+          "sha256": "29c75d3b36c49b3cec06da967e88191bd51f2c8906c7ec3c011a1cfea5eabbff",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260909T220901Z-137c1f29e206/project-workspace-after.txt",
+          "sha256": "2394def88a1a0e99b65a1b934187549109ecf85f3ad2c078bd26dc636b46493f",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "screenshot",
+          "path": "vm-acceptance/recovery-project-20260909T220901Z-137c1f29e206/project-desktop.png",
+          "sha256": "12106f1dc32ab6db756cb706e187835b5ec4c37791d56e45111e44d037c6be60",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260909T220901Z-137c1f29e206/project-qemu.log",
+          "sha256": "a77d798ad0e5fcddb655f832094f888f4766aeca753d50db1543eb4511e589c9",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        },
+        {
+          "kind": "log",
+          "path": "vm-acceptance/recovery-project-20260909T220901Z-137c1f29e206/recovery-project-transcript.log",
+          "sha256": "99b239348d5b5d6ebbbb7df4bba8e96c21d22c4654a91d78c9ee45238638d9e1",
+          "artifact_sha256": "137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc"
+        }
+      ],
+      "acceptance_scope": "Final-package upgrade, real Phoenix rollback and re-upgrade preserve user data. Verify actual project diff/Undo and failed/interrupted mission recovery. Authenticated inference and full stress remain separate.",
+      "notes": "Recorded by tools/acceptance/vm_acceptance.py run --case recovery-project (run recovery-project-20260909T220901Z-137c1f29e206, receipt 7bc2b086d0c56156, harness 59ac32f96b7176f4) against shadowfetch-4.0.0-amd64.iso sha256 137c1f29e206c0d0e26e524c8c34a7dfe43b24c1d1df29f85d6b15283bab67fc. 10 checks evaluated against the running machine."
     },
     {
       "id": "STRESS-01",

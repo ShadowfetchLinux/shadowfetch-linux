@@ -4,7 +4,15 @@ import hashlib
 from pathlib import PurePosixPath
 
 PACKAGE = "shadowfetch-drkonqi-pickup"
-VERSION = "4.0.0-1"
+# Cross-checked against the release data's DERIVED binary version by
+# tools/tests/test_drkonqi_pickup_contract.py, and kept honest by
+# VERSION_SITES in tools/drift_gate.py -- which also means the stamper
+# rewrites it. It is a literal rather than an import because gate.py
+# imports this module, so reaching back into gate from here would be a
+# cycle. Two independently-maintained copies that a gate compares is the
+# point; two that nothing compares is how this one reached 4.1.0 saying
+# 4.0.0-1.
+VERSION = "4.1.0-1"
 UPSTREAM_VERSION = "6.6.5-3"
 HELPER = "usr/libexec/shadowfetch-drkonqi-pickup"
 DROPIN = "usr/lib/systemd/user/drkonqi-coredump-pickup.service.d/10-shadowfetch-pickup.conf"

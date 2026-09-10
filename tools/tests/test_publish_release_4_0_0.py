@@ -11,6 +11,13 @@ publisher = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = publisher
 spec.loader.exec_module(publisher)
 
+# The version the PUBLISHER derived, not one written down here. These
+# fixtures used to be built at a hard-coded qa/{V}, which was silently
+# correct only while the tool carried the same literal; the day the tool
+# started reading tools/release/versions/, that made the tests version
+# sites that had been hiding behind the defect they should have caught.
+V = publisher.VERSION
+
 class PublisherTests(unittest.TestCase):
     def test_different_immutable_object_is_never_overwritten(self):
         item = publisher.Object(Path("candidate"), "apt/pool/existing.deb", "a" * 64, 100)
@@ -33,8 +40,8 @@ class PublisherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / publisher.ISO).write_bytes(b"different image")
-            (root / "qa/4.0.0").mkdir(parents=True)
-            (root / "qa/4.0.0/acceptance.json").write_text(json.dumps({"artifact": {"iso_sha256": "0" * 64, "iso_size_bytes": 15}}))
+            (root / f"qa/{V}").mkdir(parents=True)
+            (root / f"qa/{V}/acceptance.json").write_text(json.dumps({"artifact": {"iso_sha256": "0" * 64, "iso_size_bytes": 15}}))
             with self.assertRaisesRegex(ValueError, "ISO differs"):
                 publisher.publication_plan(root)
 
@@ -42,14 +49,14 @@ class PublisherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             paths = [publisher.ISO, publisher.ISO + ".asc", publisher.ISO + ".sha256", "repo/shadowfetch.gpg.asc", "repo/pool/main/test.deb", "repo/dists/umbra/main/binary-amd64/Packages", "repo/dists/umbra/Release.gpg", "repo/dists/umbra/Release", "repo/dists/umbra/InRelease"]
-            paths += ["work/release-4.0.0/" + name for name in publisher.EVIDENCE]
+            paths += [f"work/release-{V}/" + name for name in publisher.EVIDENCE]
             for name in paths:
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(name.encode())
-            (root / "qa/4.0.0").mkdir(parents=True)
-            artifact = {"iso_sha256": publisher.digest(root / publisher.ISO), "iso_size_bytes": (root / publisher.ISO).stat().st_size, "evidence_bundle_sha256": publisher.digest(root / "work/release-4.0.0/evidence-bundle-4.0.0.tar.gz")}
-            (root / "qa/4.0.0/acceptance.json").write_text(json.dumps({"artifact": artifact}))
+            (root / f"qa/{V}").mkdir(parents=True)
+            artifact = {"iso_sha256": publisher.digest(root / publisher.ISO), "iso_size_bytes": (root / publisher.ISO).stat().st_size, "evidence_bundle_sha256": publisher.digest(root / f"work/release-{V}/evidence-bundle-{V}.tar.gz")}
+            (root / f"qa/{V}/acceptance.json").write_text(json.dumps({"artifact": artifact}))
             plan = publisher.publication_plan(root)
             self.assertEqual("apt/dists/umbra/InRelease", plan[-1].key)
             self.assertTrue(all(not item.mutable for item in plan if item.key.startswith(("releases/", "apt/pool/"))))

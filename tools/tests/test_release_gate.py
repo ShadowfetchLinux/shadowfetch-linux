@@ -214,32 +214,65 @@ class ReleaseDataTests(unittest.TestCase):
     """Cutting a release must need one data file, not a copied module."""
 
     def setUp(self) -> None:
-        self.release = gate.load_release("4.0.0")
+        # The LIVE release, selected the way every gate selects it. Naming a
+        # version here made this class one more site a bump has to edit, and
+        # a bump that missed it left the class asserting that the PREVIOUS
+        # release was still current -- which it did, and which passed.
+        self.release = gate.load_release(None)
+        self.version = self.release.version
 
     def test_the_live_version_data_file_exists_and_is_not_historical(self) -> None:
-        self.assertEqual("4.0.0", self.release.version)
+        self.assertRegex(self.version, r"^\d+\.\d+\.\d+$")
         self.assertFalse(self.release.historical)
+        self.assertTrue((gate.VERSIONS_DIR / f"{self.version}.toml").is_file())
 
     def test_binary_versions_are_derived_not_transcribed(self) -> None:
+        """Checked against the CHANGELOGS, not against the same formula.
+
+        binary_versions is literally f"{version}-{revision}", so asserting
+        that shape back at it proves only that Python interpolates -- which is
+        what replacing the old hard-coded "4.0.0-1" with a derived string did
+        to this test. debian/changelog is the independent source: it is what
+        dpkg-buildpackage actually stamps on the .deb, and a release whose
+        derived versions disagree with it publishes a manifest for packages
+        that do not exist.
+        """
+        import re
+
         versions = self.release.binary_versions
-        self.assertEqual("4.0.0-1", versions["shadowfetch-missions"])
-        self.assertEqual("4.0.0-1", versions["shadowfetch-welcome"])
+        checked = 0
+        for name, declared in versions.items():
+            changelog = gate.ROOT / "packages" / name / "debian" / "changelog"
+            if not changelog.is_file():
+                continue  # third-party, or built from another source tree
+            first = changelog.read_text(encoding="utf-8").splitlines()[0]
+            match = re.match(rf"{re.escape(name)} \(([^)]+)\)", first)
+            with self.subTest(package=name):
+                self.assertIsNotNone(match, first)
+                self.assertEqual(match.group(1), declared)
+            checked += 1
+        self.assertGreaterEqual(checked, 10,
+                                "almost no package changelogs were compared")
         # A third-party package keeps its own pin rather than the release version.
         self.assertEqual("4.14-2", versions["grub-btrfs"])
+        self.assertNotIn(self.version, versions["grub-btrfs"])
 
     def test_stamped_tokens_follow_the_version(self) -> None:
         self.assertEqual(
-            ('SERVER_VERSION = "4.0.0"',), self.release.stamped_tokens("mcp_server")
+            (f'SERVER_VERSION = "{self.version}"',),
+            self.release.stamped_tokens("mcp_server"),
         )
         self.assertIn(
-            "Shadowfetch Linux 4.0.0",
+            f"Shadowfetch Linux {self.version}",
             self.release.stamped_tokens("installer_slideshow"),
         )
 
     def test_iso_name_and_acceptance_manifest_follow_the_version(self) -> None:
-        self.assertEqual("shadowfetch-4.0.0-amd64.iso", self.release.iso_name)
         self.assertEqual(
-            gate.ROOT / "qa" / "4.0.0" / "acceptance.json",
+            f"shadowfetch-{self.version}-amd64.iso", self.release.iso_name
+        )
+        self.assertEqual(
+            gate.ROOT / "qa" / self.version / "acceptance.json",
             self.release.acceptance_manifest(),
         )
 
@@ -248,11 +281,29 @@ class ReleaseDataTests(unittest.TestCase):
             set(self.release.smoke_install).issubset(set(self.release.binary_versions))
         )
 
+    def test_a_shipped_release_stays_loadable_and_declares_itself_historical(
+        self,
+    ) -> None:
+        """History is data, not a deleted file. Every earlier release's own
+        gate data must still load -- and must say it is historical, because
+        two live files is the ambiguity load_release(None) refuses."""
+        earlier = sorted(
+            path.stem
+            for path in gate.VERSIONS_DIR.glob("*.toml")
+            if path.stem != self.version
+        )
+        self.assertTrue(earlier, "a bump left no earlier release data behind")
+        for version in earlier:
+            with self.subTest(version=version):
+                shipped = gate.load_release(version)
+                self.assertEqual(version, shipped.version)
+                self.assertTrue(shipped.historical)
+
     def test_an_unknown_version_names_what_is_available(self) -> None:
         with self.assertRaises(gate.MissingReleaseData) as caught:
             gate.load_release("9.9.9")
         self.assertIn("no release data for 9.9.9", str(caught.exception))
-        self.assertIn("4.0.0", str(caught.exception))
+        self.assertIn(self.version, str(caught.exception))
 
 
 class ReleaseDataFileConsistencyTests(unittest.TestCase):

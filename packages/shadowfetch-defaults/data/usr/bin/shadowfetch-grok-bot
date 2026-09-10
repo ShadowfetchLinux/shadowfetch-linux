@@ -275,7 +275,7 @@ def setup(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Install, verify and open the official Grok Bot native cloud agent app.", epilog="The vendor app requires its own account sign-in. xAI API keys are not used by this helper.")
-    parser.add_argument("--version", action="version", version=f"shadowfetch-grok-bot 4.0.0; official native Grok Bot {VERSION}")
+    parser.add_argument("--version", action="version", version=f"shadowfetch-grok-bot 4.1.0; official native Grok Bot {VERSION}")
     commands = parser.add_subparsers(dest="command", required=True)
     installer = commands.add_parser("setup", help="Review terms and install the pinned official native package")
     installer.add_argument("--yes", action="store_true", help="Confirm the displayed download and installation choice")

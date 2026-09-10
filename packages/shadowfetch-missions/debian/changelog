@@ -1,3 +1,76 @@
+shadowfetch-missions (4.1.0-1) umbra; urgency=medium
+
+  * BREAKING: a mission must name its provider when more than one installed
+    provider can serve the capability. Where only one can, the choice is
+    still made for you.
+  * BREAKING: an approval now covers the mission's network destinations, so
+    Scope carries egress_hosts. A mission whose declared egress widens after
+    approval is refused; the attack that widened it previously reported that
+    the destination change was neither prevented nor detected.
+  * Add Claude and a local-model provider, for four alongside Codex and
+    offline media. The local model bridge is packaged rather than left under
+    tests, and capabilities() reads local_ai from the registry instead of
+    the literal string "deferred".
+  * A revoked approval can no longer start a mission. require_approval()
+    re-read revoked_at under BEGIN IMMEDIATE and then released it, and the
+    approval-used record and the mission's approval_id followed on two
+    further connections, so a revoke landing in that gap was chained BEFORE
+    the use -- the exact "granted, revoked, used" log the code's own comment
+    claimed to prevent. All three steps are one transaction now: 20 of 300
+    trials started before, 0 of 300 after.
+  * The approval gate runs in the engine before the state transition, so
+    there is no window in which an unapproved mission is running, and every
+    entry point -- CLI, worker, desktop -- is covered because they all come
+    through run_mission. Scope is recomputed at run time from the provider's
+    declared ceiling, not from what the mission claimed when it was
+    approved.
+  * Model selection is the provider's decision; the engine bounds only the
+    string.
+  * The worker unit no longer names one provider's credential file, so a
+    second provider's key reached nothing. Each provider's credentials are
+    read from its own file.
+  * PRAGMA journal_mode=WAL ran before busy_timeout, and SQLite does not run
+    the busy handler for a journal-mode conversion, so 16 of 48 concurrent
+    opens raised and 6 of 18 CLI invocations produced empty stdout and a
+    traceback -- to a desktop that parses stdout as JSON.
+  * The domain rows a receipt reprints as fact -- which provider ran, which
+    executable, what the sandbox enforced, which credentials were granted,
+    which tools ran under which policy decision, whether the tests passed,
+    who reviewed it and what they decided -- are bound to the event that
+    commits them, so they can no longer be rewritten while `audit verify`
+    reports the chain intact.
+  * The blast classifier can no longer be silenced by the thing it
+    classifies: a mission appending two lines to its own .git/config made it
+    report "no remote configured" while git remote -v showed the push
+    remote. git is also no longer invoked as a bare name, and
+    executable_config no longer misses credential.helper.
+  * Replace the 1 Hz worker poll with inotify on the state directory.
+    Measured on an empty queue: idle CPU 0.128% of a core to unmeasurable,
+    2,880 write syscalls per 180s to 1, 225 MiB/hour of dirtied page cache
+    to 0, and median wake latency 0.447s to 0.0003s. Without inotify it
+    becomes a plain 30s sleep and says so once on stderr rather than looking
+    event-driven.
+  * Workspace locks are a hierarchy, not one file each: a workspace
+    operation takes the global lock shared and its own exclusive, a
+    whole-system operation takes the global exclusive. The first version
+    stopped excluding anything while a worker held the global lock during
+    recovery.
+  * Reconciliation settles crashed tasks and sessions, not stale missions
+    alone.
+  * seal_policy could not seal a new provider at all: it never emitted
+    executable_trust, which approve() refuses without.
+  * The recorded argv is the argv that runs -- the namespace helper was
+    missing from it -- and a refusal before launch is recorded instead of
+    vanishing.
+  * The receipt a person reads before accepting agent work named two
+    enforced controls as decorative and named two fields absent from the
+    list it claimed to explain; it is derived from that list now. The
+    credential broker's "race-losable" framing is corrected in the shipped
+    text: an attacker sharing the sandbox holds the same ticket and may
+    simply ask first.
+
+ -- Shadowfetch Project <signing@shadowfetch.com>  Wed, 09 Sep 2026 18:28:58 -0400
+
 shadowfetch-missions (4.0.0-1) umbra; urgency=medium
 
   * Shadowfetch Linux 4.0 Mission Control release.

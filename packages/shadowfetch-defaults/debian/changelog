@@ -1,3 +1,55 @@
+shadowfetch-defaults (4.1.0-1) umbra; urgency=medium
+
+  * BREAKING: /etc/apt/apt.conf.d/52shadowfetch-unattended.conf is removed
+    on upgrade. It set Unattended-Upgrade "1" and Remove-Unused-Dependencies
+    "true"; shadowfetch-fireproof now ships the only APT::Periodic
+    declaration in the product. Both files shipped and which one won was
+    decided by nothing but filename order.
+  * BREAKING: shadowfetch-update updates nothing. It translates the old
+    command line onto fireproof(1) and execs it -- eleven lines of dispatch
+    in place of 342 that ran their own apt-get update, their own simulation,
+    their own sha256 plan fingerprint and their own full-upgrade under sudo,
+    and then relabelled the same snapper Point Fireproof labels while
+    recording it nowhere, so the next `fireproof rollback` would have
+    restored the wrong system state. The one-time 2.1.3 AI package
+    retirement it used to fold in now runs at multi-user.target through
+    shadowfetch-migrate-2.1.3-ai.service, so it completes at the next boot
+    rather than inside the interactive update transaction.
+  * BREAKING: one first-boot initialiser for the Btrfs layout. firstboot.sh
+    created a snapper root config with TIMELINE_CREATE=yes and
+    NUMBER_LIMIT=12 while phoenix-firstboot does the same job with
+    TIMELINE_CREATE=no, NUMBER_LIMIT=8 and the @snapshots mount, and both
+    units were ordered only After=local-fs.target, so which ran first was
+    undefined. When firstboot.sh won, the nested /.snapshots it left behind
+    does not survive the root subvolume exchange, so the machine booted with
+    Point history that would silently vanish on the first restore -- on
+    exactly the recovery path the distribution advertises.
+    shadowfetch-firstboot is now ordered After=phoenix-firstboot, and
+    snapper-timeline.timer is no longer enabled. No snapshot behaviour
+    changes.
+  * Ship /usr/lib/shadowfetch/desktop/sf_desktop.py, the one shared desktop
+    library: the bundle catalog, the hwscan freshness rule, the five helper
+    paths and the privileged install argv, importing neither Qt nor dbus so
+    the Control Center and Welcome can both use it instead of keeping
+    copies.
+  * Add shadowfetch-doctor: structured checks and a privacy-safe support
+    bundle, with a planted credential proven absent from the bundle by
+    mutation.
+  * shadowfetch-workbench ran pkexec on a path taken from
+    SHADOWFETCH_WORKBENCH_HELPER, so anything able to set a variable in the
+    user's session -- ~/.profile, a desktop file, a systemd user unit, none
+    of which need privilege -- chose what would run as root, and the user
+    then supplied their password at the ordinary authentication prompt. The
+    helper is the packaged absolute path unconditionally; nothing read the
+    variable.
+  * shadowfetch-passport resolves shadowfetch-hwscan by trusted absolute
+    path rather than through the inherited PATH.
+  * Recommends shadowfetch-fireproof, since shadowfetch-update is now a shim
+    over it. Recommends and not Depends: a headless install that never
+    updates through the desktop path is still a working system.
+
+ -- Shadowfetch Project <signing@shadowfetch.com>  Wed, 09 Sep 2026 18:28:58 -0400
+
 shadowfetch-defaults (4.0.0-1) umbra; urgency=medium
 
   * Defer Buzz and local model integration; retain Grok, coding agents and workspaces.

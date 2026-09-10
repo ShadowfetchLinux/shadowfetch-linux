@@ -64,7 +64,10 @@ class PickupContractTests(unittest.TestCase):
         iso_gate = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(iso_gate)
 
-        release = gate.load_release("4.0.0")
+        # The LIVE release. Naming a version here meant this cross-check
+        # compared a stale constant against the stale data file that agreed
+        # with it: two wrong halves matching is what it is designed to catch.
+        release = gate.load_release(None)
         self.assertEqual(release.binary_versions[contract.PACKAGE], contract.VERSION)
         self.assertIn(contract.PACKAGE, release.source_packages)
         self.assertIn(contract.PACKAGE, release.smoke_install)

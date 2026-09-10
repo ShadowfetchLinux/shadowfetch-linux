@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -IS
 """Firebreak 4: private filesystem and environment for a named workspace.
 
 A fresh mount namespace exposes system runtimes, selected public /etc files,
@@ -35,25 +35,78 @@ import uuid
 #
 # This does not pretend to defend against someone who can replace this file;
 # nothing can. It removes the cheaper version of that: influencing the
-# environment rather than the bytes. If one of these variables is set, Firebreak
-# re-executes itself isolated (-I ignores PYTHON* and the user site directory,
-# -S skips site processing entirely, which is what sitecustomize rides in on),
-# with the variables stripped, once. The marker makes it once: a re-exec loop in
-# the program that contains agents would be its own denial of service.
-_ISOLATION_MARKER = "SHADOWFETCH_FIREBREAK_ISOLATED"
-if __name__ == "__main__" and not os.environ.get(_ISOLATION_MARKER):
-    _hostile = ("LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "PYTHONPATH",
-                "PYTHONSTARTUP", "PYTHONHOME", "PYTHONEXECUTABLE",
-                "PYTHONINSPECT", "PYTHONUSERBASE", "GLIBC_TUNABLES")
-    if any(name in os.environ for name in _hostile):
+# environment rather than the bytes. Firebreak re-executes itself isolated
+# (-I ignores PYTHON* and the user site directory, -S skips site processing
+# entirely, which is what sitecustomize rides in on) with those variables
+# stripped.
+#
+# WHAT STOPS THAT RE-EXEC LOOPING IS THE INTERPRETER'S OWN STATE, NOT A TOKEN IN
+# THE ENVIRONMENT. The first version of this guard set
+# SHADOWFETCH_FIREBREAK_ISOLATED=1 and skipped itself whenever it saw that name
+# already set -- which handed the off switch to exactly the attacker the guard
+# names, because anyone who can set PYTHONPATH can set that too. Measured, with
+# both set: an injected sitecustomize was imported, was never re-exec'd away
+# from, and was STILL RESIDENT AT EXIT in the process that decides containment.
+# sys.flags cannot be set from the environment. After our own execve the flags
+# are 1/1 and the environment we BUILT holds no hostile name, so the condition
+# below is false and there is no second exec: termination is by construction
+# rather than by a token anyone can forge.
+#
+# AND THE PRIMARY DEFENCE IS THE SHEBANG, not this block. `-IS` makes the
+# interpreter isolated from its first instruction, so `site` never imports
+# `sitecustomize` or `usercustomize` and no attacker code runs before this
+# module body at all. Two legs made that necessary, both measured:
+#
+#   * `~/.local/lib/python3.12/site-packages/usercustomize.py` is imported at
+#     interpreter start with NO environment variable set. That directory is
+#     writable by anything running unprivileged in the desktop session, and
+#     Mission Control forwards HOME to this program. A guard that triggers on
+#     a list of variable NAMES cannot see it.
+#   * An injected module runs BEFORE this block, so it can rebind os.execve to
+#     a no-op. The call then returns and execution falls through into the body,
+#     in the poisoned interpreter, with the record still saying `enforced`.
+#
+# This block is kept for the invocation that bypasses the shebang --
+# `python3 /usr/bin/shadowfetch-firebreak` -- where it is the only defence.
+#
+# The hostile set is matched by PREFIX. An enumerated list of the names that
+# exist today is a list that goes stale silently -- the first version omitted
+# PYTHONPLATLIBDIR, PYTHONWARNINGS and every LD_ name but three. Everything the
+# dynamic linker and CPython consult to decide what code to LOAD begins with one
+# of these three prefixes, and -I ignores PYTHON* anyway, so stripping the whole
+# space costs nothing.
+_HOSTILE_PREFIXES = ("LD_", "GLIBC_", "PYTHON")
+if __name__ == "__main__":
+    _hostile = {name for name in os.environ
+                if name.startswith(_HOSTILE_PREFIXES)}
+    if _hostile or not (sys.flags.isolated and sys.flags.no_site):
         _clean = {k: v for k, v in os.environ.items() if k not in _hostile}
-        _clean[_ISOLATION_MARKER] = "1"
-        os.execve("/usr/bin/python3",
-                  ["/usr/bin/python3", "-I", "-S", os.path.abspath(__file__),
-                   *sys.argv[1:]],
-                  _clean)
+        try:
+            os.execve("/usr/bin/python3",
+                      ["/usr/bin/python3", "-I", "-S", os.path.abspath(__file__),
+                       *sys.argv[1:]],
+                      _clean)
+        except OSError as _exc:
+            # Fail closed. Continuing here would run the containment decision
+            # in the interpreter the caller shaped, which is the whole thing
+            # this guard exists to prevent.
+            sys.stderr.write(
+                "shadowfetch-firebreak: refusing to decide containment in an "
+                f"interpreter this process cannot isolate ({_exc})\n")
+            raise SystemExit(70)
+        # execve does not return. Reaching this line means something in THIS
+        # interpreter replaced it -- measured: a sitecustomize.py that rebinds
+        # os.execve to a no-op used to fall straight through into the module
+        # body here and run to completion with the attacker resident. An
+        # execve that returns is not an error to report and continue past; it
+        # is the attacker, and the only safe thing left is to not run.
+        sys.stderr.write(
+            "shadowfetch-firebreak: os.execve returned. This interpreter is "
+            "not the one that started, or something in it replaced execve; "
+            "either way this process must not decide containment.\n")
+        raise SystemExit(70)
 
-VERSION = "4.0.0"
+VERSION = "4.1.0"
 CREDENTIALS = {"OPENAI_API_KEY", "CODEX_API_KEY", "ANTHROPIC_API_KEY", "XAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY", "DEEPSEEK_API_KEY", "OPENROUTER_API_KEY", "GITHUB_TOKEN", "GH_TOKEN", "GITLAB_TOKEN", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "CLOUDFLARE_API_TOKEN", "CF_API_TOKEN", "DIGITALOCEAN_TOKEN", "NPM_TOKEN", "PYPI_TOKEN", "DOCKER_PASSWORD", "SSH_AUTH_SOCK"}
 PUBLIC_ETC = ("ld.so.cache", "ld.so.conf", "ld.so.conf.d", "alternatives", "ssl/certs", "ca-certificates", "resolv.conf", "hosts", "nsswitch.conf", "passwd", "group", "localtime", "timezone", "mime.types", "fonts")
 

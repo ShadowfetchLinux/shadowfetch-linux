@@ -22,6 +22,21 @@ id = "generic-api-key"
     paths = ['''web/shadowfetch-linux-worker/src/index\.js$''']
     regexes = ['''CLOUDFLARE_WEB_ANALYTICS_TOKEN\s*=\s*"[0-9a-f]{32}"''']
 
+    # The release pointer's `key` field is an R2 OBJECT PATH, not a credential:
+    # `releases/shadowfetch-<version>-amd64.iso`. The default generic-api-key
+    # rule matches on the field NAME plus entropy, and a version-stamped object
+    # path clears the entropy floor -- so the pointer schema's own tests, whose
+    # whole subject is which key values are acceptable, cannot be written
+    # without tripping it. Narrowed to that one field, in that one file,
+    # holding a value that is exactly an ISO filename with an optional release
+    # prefix. Nothing that could authenticate to anything has that shape.
+    [[rules.allowlists]]
+    description = "Release-pointer R2 object path in the pointer schema's tests"
+    condition = "AND"
+    regexTarget = "line"
+    paths = ['''web/shadowfetch-linux-worker/tests/test_release_pointer\.py$''']
+    regexes = ['''"iso\.key":\s*"(releases/)?shadowfetch-[0-9]+\.[0-9]+\.[0-9]+-amd64\.iso"''']
+
     # KDE publishes these OpenPGP fingerprints for release-source verification.
     # They identify public signing keys and cannot authenticate to a service.
     [[rules.allowlists]]

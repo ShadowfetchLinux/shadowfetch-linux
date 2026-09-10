@@ -1,3 +1,16 @@
+shadowfetch-themes (4.1.0-1) umbra; urgency=medium
+
+  * Fix reversed RGB in the Ice palette. ShadowfetchIce's ForegroundNegative
+    and ForegroundNeutral were blue and light blue where red and amber
+    belong, and Konsole's Glacier Color1 and Color1Intense -- the ANSI red a
+    terminal uses for errors -- rendered blue.
+  * The Ice look-and-feel selected the dark splash theme and the dark
+    look-and-feel package, and named itself "Shadowfetch Umbra". It selects
+    its own now.
+  * Report 4.1.0 in the Umbra SDDM theme metadata.
+
+ -- Shadowfetch Project <signing@shadowfetch.com>  Wed, 09 Sep 2026 18:28:58 -0400
+
 shadowfetch-themes (4.0.0-1) umbra; urgency=medium
 
   * Shadowfetch Linux 4.0 Mission Control release.

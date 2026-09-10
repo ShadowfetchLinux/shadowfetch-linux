@@ -7,7 +7,12 @@ mode=${1:---build}
 command -v podman >/dev/null
 recipe="$root/tools/containers/drkonqi-build.Containerfile"
 recipe_sha=$(sha256sum "$recipe" | awk '{print $1}')
-builder=localhost/shadowfetch-drkonqi-build:4.0.0
+# The BUILD ENVIRONMENT's identity, not the product's. It was tagged with the
+# release version, which meant every release retagged a byte-identical image
+# and threw away its cache. What decides whether this image is stale is the
+# recipe digest, which is already checked below and already rebuilds on a
+# mismatch -- so the tag is that digest.
+builder=localhost/shadowfetch-drkonqi-build:${recipe_sha:0:12}
 existing=$(podman image inspect --format '{{ index .Labels "org.shadowfetch.build-recipe" }}' "$builder" 2>/dev/null || true)
 if [[ $existing != "$recipe_sha" ]]; then
     podman build --pull=missing --build-arg "RECIPE_SHA=$recipe_sha" \
@@ -40,10 +45,17 @@ podman run --rm --network=none --cpus=2 --memory=2g --pids-limit=256 \
 shopt -s nullglob
 debs=("$temporary"/*.deb)
 [[ ${#debs[@]} == 1 ]] || { echo 'Expected exactly one pickup binary package' >&2; exit 1; }
-expected=shadowfetch-drkonqi-pickup_4.0.0-1_amd64.deb
-[[ ${debs[0]##*/} == "$expected" ]] || { echo 'Unexpected pickup package filename' >&2; exit 1; }
+# READ FROM THE CHANGELOG, which is what dpkg-buildpackage itself reads, so
+# there is one authority for this package's version instead of two. The literal
+# here was the second, nothing kept it in step, and the 4.1.0 stamp moved every
+# other site while this one failed the build with "Unexpected pickup package
+# filename" -- a version site no census, no gate and no stamper knew about.
+pkg_version=$(dpkg-parsechangelog -l "$root/packages/shadowfetch-drkonqi-pickup/debian/changelog" -S Version)
+[[ -n $pkg_version ]] || { echo 'Could not read the pickup package version from its changelog' >&2; exit 1; }
+expected=shadowfetch-drkonqi-pickup_${pkg_version}_amd64.deb
+[[ ${debs[0]##*/} == "$expected" ]] || { echo "Unexpected pickup package filename: got ${debs[0]##*/}, expected $expected" >&2; exit 1; }
 [[ $(dpkg-deb -f "${debs[0]}" Package) == shadowfetch-drkonqi-pickup ]]
-[[ $(dpkg-deb -f "${debs[0]}" Version) == 4.0.0-1 ]]
+[[ $(dpkg-deb -f "${debs[0]}" Version) == "$pkg_version" ]]
 [[ $(dpkg-deb -f "${debs[0]}" Architecture) == amd64 ]]
 validation="$root/build/drkonqi-${mode#--}-validation.json"
 cp -- "$temporary/validation-results.json" "$validation"

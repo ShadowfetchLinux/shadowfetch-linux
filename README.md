@@ -1,26 +1,28 @@
-# Shadowfetch Linux 4.0 — Mission Control
+# Shadowfetch Linux 4.1 — Egress and Syscall Filters
 
 **Your computer. Your agents. Work you can inspect.**
 
-Shadowfetch Linux is an independent Debian testing derivative with KDE Plasma 6, a creative desktop, reviewed updates and recovery tools. Version 4.0 adds a native Mission Control desktop: give a task a project, choose its connection and provider, then review the files, tests and changes it produces. For the first time in Shadowfetch Linux, Grok Bot is a featured optional choice at startup.
+Shadowfetch Linux is an independent Debian testing derivative with KDE Plasma 6, a creative desktop, reviewed updates and recovery tools. Version 4.0 added a native Mission Control desktop: give a task a project, choose its connection and provider, then review the files, tests and changes it produces.
+
+**Version 4.1 makes the sandbox around that work do what it already said.** A declared egress allowlist is now a default-DROP nftables ruleset inside the sandbox's own network namespace; declared masked paths are real mounts; every sandbox gets a seccomp syscall filter; and names resolve inside a networked sandbox, which they did not before. It also **changes behaviour that working setups depend on** — a mission now has to name its provider, stored approvals stop covering missions that name destinations, and `--net allow` no longer reaches the host's loopback. Read the release notes before upgrading.
 
 > **Publication draft — final acceptance and artifact facts remain unresolved.** Replace every `{{PLACEHOLDER}}` from the accepted release evidence before replacing the tracked README. The two URLs below are reserved for genuine final-ISO captures; they do not yet assert that those images have been published.
 
-![Shadowfetch Linux 4.0 Mission Control with actual task results and review actions](https://www.shadowfetchlinux.org/linux-assets/linux-4.0.0-mission-control.webp)
+![Shadowfetch Linux Mission Control with actual task results and review actions](https://www.shadowfetchlinux.org/linux-assets/linux-4.0.0-mission-control.webp)
 
-*Mission Control: a persistent queue with activity, output files, diffs and review. Final capture state: {{FINAL_MISSION_SCREENSHOT_STATE}}.*
+*Mission Control: a persistent queue with activity, output files, diffs and review. Captured on 4.0; this interface is unchanged in 4.1, which is why the image is not recaptured. Final capture state: {{FINAL_MISSION_SCREENSHOT_STATE}}.*
 
-![Official Grok Bot native Linux application on Shadowfetch Linux 4.0](https://www.shadowfetchlinux.org/linux-assets/linux-4.0.0-grok-bot.webp)
+![Official Grok Bot native Linux application on Shadowfetch Linux](https://www.shadowfetchlinux.org/linux-assets/linux-4.0.0-grok-bot.webp)
 
 *Official native Grok Bot. Final capture state: {{FINAL_GROK_SCREENSHOT_STATE}}. A launch or sign-in screen does not prove an authenticated account or a completed cloud task.*
 
-[Download](https://www.shadowfetchlinux.org/download) · [Mission Control](https://www.shadowfetchlinux.org/mission-control) · [Grok Bot](https://www.shadowfetchlinux.org/grok-bot) · [Screenshots](https://www.shadowfetchlinux.org/screenshots) · [Release notes](RELEASE-4.0.0.md)
+[Download](https://www.shadowfetchlinux.org/download) · [Mission Control](https://www.shadowfetchlinux.org/mission-control) · [Grok Bot](https://www.shadowfetchlinux.org/grok-bot) · [Screenshots](https://www.shadowfetchlinux.org/screenshots) · [Release notes](RELEASE-4.1.0.md)
 
 ## Current release
 
 | Fact | Value |
 | --- | --- |
-| Version / codename | 4.0.0 / Umbra |
+| Version / codename | 4.1.0 / Umbra |
 | Publication date / channel | {{PUBLICATION_DATE}} / {{RELEASE_CHANNEL}} |
 | ISO | {{FINAL_ISO_FILENAME}} |
 | Size | {{FINAL_ISO_BYTES}} bytes — {{FINAL_ISO_SIZE_LABEL}} |
@@ -32,7 +34,7 @@ Shadowfetch Linux is an independent Debian testing derivative with KDE Plasma 6,
 
 Signing-key fingerprint: `8F13 CE15 35EE 1F4A 2916  A1F7 3C5C 900B 7BE8 0CA1`.
 
-## What 4.0 adds
+## What 4.0 established
 
 | Feature | What you can do |
 | --- | --- |
@@ -42,7 +44,7 @@ Signing-key fingerprint: `8F13 CE15 35EE 1F4A 2916  A1F7 3C5C 900B 7BE8 0CA1`.
 | **Media exports** | Export selected media with deterministic FFmpeg workflows; inspect stream validation, sizes and digests alongside the files. |
 | **Review and recovery** | Successful tasks wait for review. Accept a result, cancel running work, retry failed work or restore the local checkpoint. Restore refuses conflicts with newer project edits. |
 | **Featured Grok Bot** | Select the official native desktop in Welcome or use its dedicated Mission Control page. The verified installer discloses the download, administrator approval and vendor update source. Sign in inside the vendor app. |
-| **Offline workspaces** | Keep project files together and use deterministic media tools without an AI provider. Local AI is deferred in 4.0. |
+| **Offline workspaces** | Keep project files together and use deterministic media tools without an AI provider. An on-device provider ships in 4.1; whether it RUNS depends on a model service answering on this machine. |
 
 Grok Bot is separate from the Grok Build CLI. Codex, Claude Code, Grok Build and Cursor Agent remain independent optional coding tools with their own account setup. Grok Bot needs an eligible vendor account and plan; a model API key does not replace its native sign-in.
 
@@ -110,9 +112,9 @@ make iso           # privileged image assembly, signature and ISO gate
 make qemu          # launch the resulting image for a smoke test
 ```
 
-`make iso` produces `shadowfetch-4.0.0-amd64.iso` in the repository root. `VERSION ?= 4.0.0` and `CODENAME ?= umbra` live in the Makefile. Signing and publishing require the maintainer's private key and authorized publisher credentials, which are not in this repository. Consult `make help`, the [release notes](RELEASE-4.0.0.md) and `FINAL_OPERATIONS_CHECKLIST.md` before release operations; `.github/CI-SECRETS.md` records that the CI pipeline holds no secrets and why.
+`make iso` produces `shadowfetch-4.1.0-amd64.iso` in the repository root. `VERSION ?= 4.1.0` and `CODENAME ?= umbra` live in the Makefile. Signing and publishing require the maintainer's private key and authorized publisher credentials, which are not in this repository. Consult `make help`, the [release notes](RELEASE-4.1.0.md) and `FINAL_OPERATIONS_CHECKLIST.md` before release operations; `.github/CI-SECRETS.md` records that the CI pipeline holds no secrets and why.
 
-Source map: `packages/shadowfetch-missions/` contains the queue and execution engine; `packages/shadowfetch-control-center/` contains the native Qt UI; `packages/shadowfetch-welcome/` contains first boot; `packages/shadowfetch-defaults/` supplies integration helpers; `packages/shadowfetch-drkonqi-pickup/` contains the pinned KDE pickup source, correction and behavior checks. `live-build/` assembles the desktop, `tools/` holds gates and release tooling, and `qa/4.0.0/` indexes acceptance evidence.
+Source map: `packages/shadowfetch-missions/` contains the queue and execution engine; `packages/shadowfetch-control-center/` contains the native Qt UI; `packages/shadowfetch-welcome/` contains first boot; `packages/shadowfetch-defaults/` supplies integration helpers; `packages/shadowfetch-drkonqi-pickup/` contains the pinned KDE pickup source, correction and behavior checks. `live-build/` assembles the desktop, `tools/` holds gates and release tooling, and `qa/4.1.0/` indexes acceptance evidence.
 
 ## Support and contributing
 

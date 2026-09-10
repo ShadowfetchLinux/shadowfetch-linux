@@ -18,6 +18,7 @@ Run:  python3 -m unittest discover -s tools/tests -p 'test_drift_gate.py' -v
 from __future__ import annotations
 
 import contextlib
+import json
 from pathlib import Path
 import shutil
 import sys
@@ -75,6 +76,14 @@ def sandbox(*rels: str):
 
 def drifts(findings):
     return [f for f in findings if f.kind == "DRIFT"]
+
+
+# The version the tree is on, and one that is NOT it. Both are derived: a test
+# that plants "the wrong version" by writing 4.0.0 down stops planting anything
+# the day the tree ships 4.0.0, and passes for the wrong reason.
+LIVE = TRUTH["version"]
+_major, _minor, _patch = LIVE.split(".")
+WRONG = f"{_major}.{_minor}.{int(_patch) + 1}"
 
 
 def edit(path: Path, old: str, new: str) -> None:
@@ -168,17 +177,18 @@ class TestVersionDrift(unittest.TestCase):
         rel = ("packages/shadowfetch-branding/data/usr/share/shadowfetch/"
                "os-release.shadowfetch")
         with sandbox(*VERSION_RELS) as fake:
-            edit(fake / rel, 'VERSION_ID="4.0.0"', 'VERSION_ID="4.0.1"')
+            edit(fake / rel, f'VERSION_ID="{LIVE}"', f'VERSION_ID="{WRONG}"')
             found = drifts(drift_gate.check_version(TRUTH))
         self.assertTrue(found)
-        self.assertIn("os-release VERSION_ID is '4.0.1'", found[0].detail)
+        self.assertIn(f"os-release VERSION_ID is '{WRONG}'", found[0].detail)
 
     def test_a_deleted_assignment_is_caught(self):
         """A copy that stops existing is drift too -- silence is not agreement."""
         with sandbox(*VERSION_RELS) as fake:
             target = fake / ("packages/shadowfetch-defaults/data/usr/bin/"
                              "shadowfetch-element")
-            edit(target, 'VERSION="4.0.0"', 'VERSION=$(cat /usr/share/shadowfetch/version)')
+            edit(target, f'VERSION="{LIVE}"',
+                 'VERSION=$(cat /usr/share/shadowfetch/version)')
             found = drifts(drift_gate.check_version(TRUTH))
         self.assertTrue(any("could not be located" in f.detail for f in found))
 
@@ -230,11 +240,24 @@ class TestFingerprintDrift(unittest.TestCase):
         self.assertTrue(any("no 40-hex fingerprint found" in f.detail for f in found))
 
     def test_a_commit_sha_is_not_mistaken_for_a_key(self):
-        """qa/<v>/acceptance.json carries 40-hex Git SHAs next to the key."""
-        manifest = ROOT / f"qa/{TRUTH['version']}/acceptance.json"
-        text = manifest.read_text(encoding="utf-8")
-        self.assertRegex(text, r'"source_commit":\s*"[0-9a-f]{40}"')
-        with sandbox(*FINGERPRINT_RELS):
+        """A recorded case carries a 40-hex Git SHA beside the signing key.
+
+        The SHA is PLANTED rather than read out of the live manifest. A
+        manifest for a release with no candidate yet carries no recording at
+        all, so reading one made this test assert nothing on exactly the days
+        it mattered most -- and this property has to hold on the day the first
+        recording lands, not only afterwards."""
+        with sandbox(*FINGERPRINT_RELS) as fake:
+            manifest = fake / f"qa/{TRUTH['version']}/acceptance.json"
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            data["cases"][0]["evidence"] = [{
+                "path": "src/tests.log",
+                "source_commit": "b" * 40,
+                "artifact_sha256": "c" * 64,
+            }]
+            manifest.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+            self.assertRegex(manifest.read_text(encoding="utf-8"),
+                             r'"source_commit":\s*"[0-9a-f]{40}"')
             self.assertEqual([], drifts(drift_gate.check_fingerprint(TRUTH)))
 
     def test_a_third_party_key_must_be_named(self):
@@ -261,10 +284,10 @@ class TestReleaseData(unittest.TestCase):
     def test_a_makefile_that_disagrees_with_the_release_data_is_caught(self):
         with sandbox("Makefile", f"qa/{TRUTH['version']}/acceptance.json",
                      RELEASE_DATA, POINTER) as fake:
-            edit(fake / "Makefile", "VERSION  ?= 4.0.0", "VERSION  ?= 4.0.1")
+            edit(fake / "Makefile", f"VERSION  ?= {LIVE}", f"VERSION  ?= {WRONG}")
             found = drifts(drift_gate.check_release_data(TRUTH))
         self.assertTrue(found)
-        self.assertIn("Makefile VERSION is '4.0.1'", found[0].detail)
+        self.assertIn(f"Makefile VERSION is '{WRONG}'", found[0].detail)
 
     def test_exactly_one_release_is_live(self):
         """Two non-historical data files is an ambiguity, not a default."""

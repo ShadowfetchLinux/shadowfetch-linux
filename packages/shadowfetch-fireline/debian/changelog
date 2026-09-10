@@ -1,3 +1,70 @@
+shadowfetch-fireline (4.1.0-1) umbra; urgency=medium
+
+  * BREAKING: both network postures now unshare the network. Posture 'allow'
+    created no network namespace at all, so a sandbox that merely needed the
+    internet kept the host's loopback services, the host's abstract AF_UNIX
+    namespace and every LAN service the desktop user could reach. It now
+    reaches the outside through a slirp4netns NAT attached to its own
+    namespace with --disable-host-loopback: the internet, and not the host.
+    An agent that relied on reaching a service on your 127.0.0.1 no longer
+    can.
+  * BREAKING: a networked run is REFUSED when no slirp4netns exists at a
+    trusted absolute path, rather than quietly falling back to sharing the
+    host network -- the fallback would hand back exactly the containment the
+    session asked for. A sandbox that does not report its namespace is
+    refused with that sentence.
+  * BREAKING: the Fireline polkit action is removed. It authorised a generic
+    shell escalation to root.
+  * BREAKING: the fs MCP server fails closed without an explicit scope
+    instead of choosing one.
+  * A declared egress allowlist is now enforced as a default-DROP nftables
+    ruleset installed inside the sandbox's own network namespace. Measured
+    through the real Firebreak: the allowlisted address reached, an
+    un-allowlisted address blocked, net=none blocks both, and the host
+    loopback and abstract sockets stay unreachable in both postures.
+  * Add a seccomp-BPF filter denying 46 syscalls, among them ptrace,
+    process_vm_readv, process_vm_writev, the io_uring family, mount, setns,
+    the module and kexec calls, perf_event_open and bpf. The assembled
+    program is self-tested against this kernel before the run starts, and a
+    kernel that refuses it refuses the run rather than degrading it.
+  * Names resolve inside a networked sandbox for the first time. The bound
+    /etc/resolv.conf names 127.0.0.53, which in the sandbox's own namespace
+    is its own empty loopback, so every cloud provider failed at getaddrinfo
+    while an IP address was reachable the whole time. The networked posture
+    binds a resolver pointing at the NAT's forwarder, and the cost -- a
+    query name can carry data out -- is stated in the enforcement mechanism
+    rather than hidden.
+  * masked_paths are real mounts rather than a recorded declaration.
+    --mask-path was accepted and applied by nothing; its own help text said
+    RECORDED ONLY, so a provider could declare that .env and a workspace's
+    private keys were masked, the receipt printed the declaration as fact,
+    and the agent read every one of them. An empty tmpfs now hides a
+    directory and /dev/null overlays a file, applied after the workspace
+    bind. Direct opens, absolute paths, relative traversal, symlinks, nested
+    keys, directory listings and renaming the target are all denied where
+    the previous build read the secret.
+  * The launch chain no longer inherits the caller's environment. A
+    PYTHONPATH pointing at a sitecustomize.py ran attacker code inside the
+    namespace helper BEFORE nft installed the ruleset, blanked the ruleset,
+    and the sandbox then reached 8.8.8.8 and the LAN with an allowlist
+    naming neither -- while the record said enforced. The helper interpreter
+    runs -I -S, the shebang stopped asking PATH which python to be, and
+    Firebreak re-execs isolated when the environment is hostile.
+  * Firebreak's readiness verdict and its checkpoint binary, and sf_mcp's
+    Passport lookup -- an attestation of the machine's posture that an agent
+    reads back -- resolve to trusted absolute paths instead of through the
+    inherited PATH.
+  * shadowfetch-checkpoint gains a structured interface, so callers stop
+    parsing its prose, and undo is transactional: restore to a sibling,
+    verify path by path and byte by byte, atomically exchange, then confirm
+    by (st_dev, st_ino) that the directory now answering to the workspace's
+    name is the one that was verified. A partial recovery is never reported
+    as success.
+  * Record Firebreak sessions, and audit MCP tool calls.
+  * Run the containment acceptance suite in `make test`.
+
+ -- Shadowfetch Project <signing@shadowfetch.com>  Wed, 09 Sep 2026 18:28:58 -0400
+
 shadowfetch-fireline (4.0.0-1) umbra; urgency=medium
 
   * Defer the local-model recommender; preserve sandbox, checkpoint and MCP tools.
