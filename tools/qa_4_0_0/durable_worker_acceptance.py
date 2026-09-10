@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import signal
 import sqlite3
+import resource
 import subprocess
 import time
 import wave
@@ -171,7 +172,14 @@ def main():
         check('running Firebreak has actual per-scope task memory and CPU limits',
               props['kernel']['pids.max'] == '24' and props['kernel']['memory.max'] == str(512 * 1024**2)
               and quota / period == 2
-              and proof['address_space'][0] > 512 * 1024**2
+              # RLIMIT_AS is deliberately UNLIMITED in 4.x -- the fix that stops a
+              # Codex V8 sandbox VA reservation from SIGTRAPping when it is pinned
+              # to the RSS budget. getrlimit reports unlimited as -1 (RLIM_INFINITY),
+              # so the property is 'AS is NOT pinned to the small memory cap': accept
+              # unlimited, or any value above the 512MiB cap. The real memory limit is
+              # the cgroup memory.max checked above, not RLIMIT_AS.
+              and (proof['address_space'][0] in (-1, resource.RLIM_INFINITY)
+                   or proof['address_space'][0] > 512 * 1024**2)
               and proof['cpu_time'] == [20, 21], {'scope': props, 'process_limits': proof})
         (workspace / 'scope-release').touch()
         check('real constrained process completes cleanly', scope.wait(timeout=5) == 0)

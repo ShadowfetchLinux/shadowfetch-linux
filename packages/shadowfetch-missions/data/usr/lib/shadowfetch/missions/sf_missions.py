@@ -4,7 +4,8 @@
 No HTTP listener. The CLI is the desktop IPC boundary. SQLite, controller logs,
 receipts and the queue lock are outside every writable agent workspace. Code and
 reports use the existing sandboxed Codex CLI with explicit cloud permission;
-media exports run offline. Local AI is deferred for this release.
+media exports run offline. An on-device model provider ships, but no model
+is bundled -- supply a model service to use it.
 """
 from __future__ import annotations
 import argparse
@@ -4466,23 +4467,9 @@ class Wakeup:
     def event_driven(self):
         return self._fd is not None
 
-    def wait(self, timeout=None):
-        """Block until something changed or the timeout expired.
-
-        Returns True if woken by an event. The caller re-reads the queue either
-        way -- the wake-up is a hint, never the data, so a spurious wake costs
-        one query and a missed one costs at most the fallback.
-        """
-        timeout = self.fallback if timeout is None else timeout
-        if self._fd is None:
-            time.sleep(timeout)
-            return False
-        readable, _, _ = select.select([self._fd], [], [], timeout)
-        if not readable:
-            return False
+    def _drain(self):
+        """Consume every queued inotify event without blocking (fd is NONBLOCK)."""
         try:
-            # Drain. One INSERT produces several events and leaving them queued
-            # would spin the loop once per event for no additional information.
             while True:
                 try:
                     if not os.read(self._fd, 65536):
@@ -4491,6 +4478,34 @@ class Wakeup:
                     break
         except OSError:
             pass
+
+    def wait(self, timeout=None):
+        """Block until something changed AFTER this call, or the timeout expired.
+
+        Returns True if woken by an event. The caller re-reads the queue either
+        way -- the wake-up is a hint, never the data, so a spurious wake costs
+        one query and a missed one costs at most the fallback.
+
+        The directory this watches is the one the store writes to, and in WAL
+        mode the caller's OWN queue scan just opened and closed the database's
+        -wal/-shm sidecars in it -- each a create/modify/close-write event on
+        the watched directory. If those were left queued, select() below would
+        return readable immediately, every iteration, and the worker would wake
+        itself on its own reads and spin a core at 100% on an idle queue. So
+        drain what accumulated up to now FIRST, then block for a change that
+        happens strictly AFTER this point (an external write). An external write
+        that lands during the caller's scan is not lost: the queue is re-read by
+        value every loop, and select() still bounds the wait at the fallback.
+        """
+        timeout = self.fallback if timeout is None else timeout
+        if self._fd is None:
+            time.sleep(timeout)
+            return False
+        self._drain()
+        readable, _, _ = select.select([self._fd], [], [], timeout)
+        if not readable:
+            return False
+        self._drain()
         return True
 
     def close(self):
