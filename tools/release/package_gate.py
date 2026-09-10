@@ -316,7 +316,15 @@ def payload_gate(package_paths: dict[str, Path], extracted: Path) -> None:
         "usr/share/shadowfetch/welcome/catalog/workbench-production-ops.json",
         "usr/share/shadowfetch/welcome/catalog/workbench-creative-ai.json",
     }
-    missing_workbench = sorted(required_workbench_payload - set(owners))
+    # dh_compress gzips /usr/share/doc files over ~4KB (WORKBENCH.md and
+    # GROK-BOT.md both cross it), so a doc's shipped path may be either <name>
+    # or <name>.gz. Both mean "the doc is shipped"; requiring the uncompressed
+    # path made the gate fail the day a doc grew past the threshold.
+    def _shipped(path):
+        return path in owners or (
+            path.startswith("usr/share/doc/") and path + ".gz" in owners)
+    missing_workbench = sorted(p for p in required_workbench_payload
+                               if not _shipped(p))
     if missing_workbench:
         raise RuntimeError(
             "Element Workbench package payload is incomplete: "
