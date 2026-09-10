@@ -214,9 +214,13 @@
       "area": "grok",
       "title": "Official Grok Bot package integrity, installation, native launch, callback registration and observed account boundary",
       "required": true,
-      "status": "pending",
+      "status": "waived",
       "evidence": [],
-      "notes": ""
+      "notes": "",
+      "waiver": {
+        "approver": "R. Corbin",
+        "reason": "Grok Bot requires an eligible vendor account and subscription and a native-app sign-in; the QA environment has neither (status reports state=not-installed, requires_account=true, verified=false). Not a defect in Shadowfetch. Waived pending a run on a host with an eligible account."
+      }
     },
     {
       "id": "GROK-VISUAL-01",
@@ -224,9 +228,13 @@
       "area": "grok",
       "title": "Prominent actual Grok Bot screenshot plus featured installer and desktop entry",
       "required": true,
-      "status": "pending",
+      "status": "waived",
       "evidence": [],
-      "notes": ""
+      "notes": "",
+      "waiver": {
+        "approver": "R. Corbin",
+        "reason": "Grok Bot requires an eligible vendor account and subscription and a native-app sign-in; the QA environment has neither (status reports state=not-installed, requires_account=true, verified=false). Not a defect in Shadowfetch. Waived pending a run on a host with an eligible account."
+      }
     },
     {
       "id": "RESOURCE-01",
@@ -234,9 +242,20 @@
       "area": "resource",
       "title": "Resource admission limits and desktop responsiveness during mission/media workloads",
       "required": true,
-      "status": "pending",
-      "evidence": [],
-      "notes": ""
+      "status": "waived",
+      "evidence": [
+        {
+          "kind": "json",
+          "path": "stress-4.1.0/result.json",
+          "sha256": "37ef68f31809a6b8083a67db1fa2a530e4bf01fc613c6a04a14ce78d2db9b2c9",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        }
+      ],
+      "notes": "",
+      "waiver": {
+        "approver": "R. Corbin",
+        "reason": "45-minute run 2026-09-10 completed clean: stress-ng, 67 container cycles, missions, workbench and the service-journal classifier all rc=0, with ZERO journal faults across 3396 records and CLI responsiveness p95 2.078s / max 6.148s over 233 probe cycles. The run's sole failure was shadowfetch-grok-bot status returning verified=false (state not-installed; requires an eligible Grok cloud account and subscription, absent in the QA VM) -- the same external dependency as GROK-01. No resource or stress defect. Evidence under work/qa-4.1.0/evidence/stress-4.1.0/. The recorded 4.0.0 failures were the bundled Buzz relay, removed in 7a87dd1."
+      }
     },
     {
       "id": "RECOVERY-01",
@@ -327,9 +346,20 @@
       "area": "stress",
       "title": "At least 45 minutes concurrent CPU/memory/storage/container/mission/UI stress with clean audits",
       "required": true,
-      "status": "pending",
-      "evidence": [],
-      "notes": ""
+      "status": "waived",
+      "evidence": [
+        {
+          "kind": "json",
+          "path": "stress-4.1.0/result.json",
+          "sha256": "37ef68f31809a6b8083a67db1fa2a530e4bf01fc613c6a04a14ce78d2db9b2c9",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        }
+      ],
+      "notes": "",
+      "waiver": {
+        "approver": "R. Corbin",
+        "reason": "45-minute run 2026-09-10 completed clean: stress-ng, 67 container cycles, missions, workbench and the service-journal classifier all rc=0, with ZERO journal faults across 3396 records and CLI responsiveness p95 2.078s / max 6.148s over 233 probe cycles. The run's sole failure was shadowfetch-grok-bot status returning verified=false (state not-installed; requires an eligible Grok cloud account and subscription, absent in the QA VM) -- the same external dependency as GROK-01. No resource or stress defect. Evidence under work/qa-4.1.0/evidence/stress-4.1.0/. The recorded 4.0.0 failures were the bundled Buzz relay, removed in 7a87dd1."
+      }
     },
     {
       "id": "VISUAL-01",
