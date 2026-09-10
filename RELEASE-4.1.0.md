@@ -17,9 +17,34 @@ what stands in the way. There is no press release for 4.1.0, by decision.
 - Architecture: amd64; desktop KDE Plasma 6; installer Calamares
 - Source branch: `release/4.0.0` — the checkout path is named for 4.0.0 and is
   not the version
-- Source commit at the time of writing: `362c68f72919aef0917333f004f330cf7abf4081`
-- ISO name, size, SHA-256, detached signature and release date: recorded only
-  after the image that matches this source is built
+- Source commit the shipped image is built from: `78ee38ceac0ff989d596e5a5e0b97aac17c3b936`
+  (tree `163b434ebbd572522c781cc92ff48f90f7fda01c`), on branch `release/4.0.0`.
+  The prior candidate was `a9e8cf21`; this commit adds the mission-worker
+  idle-spin fix (see "Fixed after the first cut" below), so the ISO was rebuilt.
+- ISO: `shadowfetch-4.1.0-amd64.iso`, 3,980,670,976 bytes, SHA-256
+  `e19e96302f97e94d5284f8fbef181c9b0e49ca7b746afe5e66e4bc6d5c551f25`, detached
+  signature `shadowfetch-4.1.0-amd64.iso.asc` verifying against
+  `8F13CE1535EE1F4A2916A1F73C5C900B7BE80CA1`. The signed APT `InRelease` was
+  re-signed in this build (Valid-Until 2027-03-09).
+
+## Fixed after the first cut: the mission worker idle CPU spin
+
+A first 4.1.0 candidate (`40cb0969`) was cut and its acceptance cases proven,
+then QA's under-load screenshot caught the shipped `shadowfetch-missions`
+service worker holding ~100% of one CPU core continuously on an idle queue. The
+Phase-3 event-driven worker loop inotify-watches the mission state directory,
+and in WAL mode the worker's own queue reads open and close the database's
+`-wal`/`-shm` sidecars in that same directory -- create/modify/close-write
+events that `Wakeup.wait()` found readable immediately, every iteration, so the
+worker woke itself on its own reads and never blocked. The loop was new since
+4.0.0, so 4.1.0 would have been the first release to ship it. The fix drains the
+inotify descriptor before `select()`, so self-generated events are discarded and
+the worker blocks for a genuinely new external change; a regression test pins
+both halves (a self-event must not wake it; an external write must). On a fresh
+install of the corrected image the idle worker holds ~0.4% CPU and a new mission
+is still picked up in under a second. The whole packages -> repo -> ISO chain was
+rebuilt (candidate `e19e9630`) and every artifact-bound acceptance case
+re-proven against the new digest.
 
 ## Why 4.1.0 and not 4.0.1
 

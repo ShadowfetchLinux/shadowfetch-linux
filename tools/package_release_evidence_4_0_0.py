@@ -215,8 +215,19 @@ def validate_prepublication(data: dict):
             if case.get("status") != "pending":
                 errors.append("EVIDENCE-01 must remain pending until bundle verification")
         elif case.get("required") and case.get("phase") == "prepublish":
-            if case.get("status") != "pass" or not case.get("evidence"):
-                errors.append(f"{case.get('id')}: required prepublication evidence has not passed")
+            status = case.get("status")
+            if status == "waived":
+                # A waived required case is an accepted, written decision -- the
+                # same state the acceptance gate and `acceptance.py verify`
+                # already accept (validate_manifest above re-checks the waiver
+                # contract). The bundle bakes acceptance.prepublication.json in,
+                # so a reviewer sees exactly what was waived, by whom and why.
+                # Only a pending or failed required case is unfinished.
+                waiver = case.get("waiver") or {}
+                if not (waiver.get("approver") and waiver.get("reason")):
+                    errors.append(f"{case.get('id')}: waived without a recorded approver and reason")
+            elif status != "pass" or not case.get("evidence"):
+                errors.append(f"{case.get('id')}: required prepublication evidence has not passed or been waived")
     if not any(c.get("id") == "EVIDENCE-01" for c in data.get("cases", []) if isinstance(c, dict)):
         errors.append("Missing EVIDENCE-01 packaging case")
     artifact = data.get("artifact", {})

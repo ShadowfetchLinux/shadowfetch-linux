@@ -86,6 +86,33 @@ class EvidenceBundleTests(unittest.TestCase):
                 bundle.package(root, f"work/release-{V}", "approved.json")
             self.assertFalse((root / f"work/release-{V}" / bundle.BUNDLE).exists())
 
+    def test_waived_required_case_with_waiver_is_accepted(self):
+        # A required prepublish case that is a recorded waiver (approver+reason)
+        # is accepted -- the same state the acceptance gate and verify accept.
+        # The reviewer sees it in the baked-in acceptance.prepublication.json.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest = self.fixture(root)
+            manifest["cases"].append({
+                "id": "GROK-01", "phase": "prepublish", "required": True,
+                "status": "waived", "evidence": [],
+                "waiver": {"approver": "R. Corbin", "reason": "Grok Bot needs an eligible vendor account absent from QA."}})
+            (root / f"qa/{V}/acceptance.json").write_text(json.dumps(manifest))
+            result = bundle.package(root, f"work/release-{V}", "approved.json")
+            self.assertIn("sha256", result)
+            self.assertTrue(Path(result["bundle"]).exists())
+
+    def test_waived_required_case_without_reason_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            manifest = self.fixture(root)
+            manifest["cases"].append({
+                "id": "GROK-01", "phase": "prepublish", "required": True,
+                "status": "waived", "evidence": [], "waiver": {"approver": "", "reason": ""}})
+            (root / f"qa/{V}/acceptance.json").write_text(json.dumps(manifest))
+            with self.assertRaises(ValueError):
+                bundle.package(root, f"work/release-{V}", "approved.json")
+
     def test_symlink_parent_escape_and_self_hash_are_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
