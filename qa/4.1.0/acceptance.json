@@ -174,9 +174,16 @@
       "area": "upgrade",
       "title": "Existing 3.5 (published APT suite) and 4.0 (published ISO) systems upgrade with preserved user data and working recovery",
       "required": true,
-      "status": "pending",
-      "evidence": [],
-      "notes": ""
+      "status": "pass",
+      "evidence": [
+        {
+          "kind": "log",
+          "path": "upgrade-4.1.0/recovery-on-upgraded.log",
+          "sha256": "ef55ec0f4c2bb479d33ad5e8b8ffc0b9e37224e8fdb845057bc70e8360fa876d",
+          "artifact_sha256": "86875a8e9d456fe97eef7dce3e373a14009cf53b77cec9b970f34e69cb9c1f9e"
+        }
+      ],
+      "notes": "Both real-world upgrade paths proven on 2026-09-10 against bases installed from the PUBLISHED ISOs, upgraded through the trusted APT repo to the 4.1.0-1 packages built from this candidate. 3.5.0 base (published ISO sha256 2af853b1..., installed via Calamares, first-boot 3.5.0 clean): apt upgrade of the shadowfetch closure = 14 upgraded + 2 newly installed (shadowfetch-missions, shadowfetch-drkonqi-pickup, both new since 3.5) + 0 removed; after reboot version 4.1.0, dpkg --audit clean, machine-id preserved, user data byte-identical, systemctl running, 0 failed units, apt update RC0. 4.0.0 base (published ISO sha256 137c1f29..., first-boot 4.0.0 clean): 16 upgraded + 0 removed, same clean post-reboot result. Working recovery on the UPGRADED system: shadowfetch-checkpoint snapshot/diff/undo/verify cycle on the 3.5->4.1 machine restored a damaged workspace byte-for-byte (file restored, deleted file restored, spilled file removed), left the out-of-workspace canary untouched, and the checkpoint verifies against its manifest. The apt trust config is image-baked (live-build hook 0099-apt-source.hook.chroot), not package-owned, so an upgrade does not disturb it; the image-only shadowfetch-archive-keyring is not required by upgraded machines. Evidence under work/qa-4.1.0/evidence/upgrade-4.1.0/."
     },
     {
       "id": "MISSION-01",

@@ -2,9 +2,14 @@
 set -euo pipefail
 
 root=${QA_ROOT:-/home/rtx5060ti/projects/shadowfetch-4.0.0}
-qa_root="$root/work/qa-4.0.0"
+# The release under test. Required and never inferred: this name selects the
+# evidence root and the ISO, and guessing it would quietly file one release's
+# evidence under another's directory.
+: "${QA_RELEASE:?set QA_RELEASE to the release under test, e.g. QA_RELEASE=4.1.0}"
+[[ $QA_RELEASE =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "QA_RELEASE must be MAJOR.MINOR.PATCH" >&2; exit 2; }
+qa_root="$root/work/qa-$QA_RELEASE"
 qga_exec="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qga_exec.py"
-iso=${QA_ISO:-"$root/shadowfetch-4.0.0-amd64.iso"}
+iso=${QA_ISO:-"$root/shadowfetch-$QA_RELEASE-amd64.iso"}
 
 usage() {
     cat >&2 <<'EOF'
@@ -147,7 +152,7 @@ boot_vm() {
     fi
 
     qemu-system-x86_64 \
-        -name "shadowfetch-4.0.0-$name" \
+        -name "shadowfetch-$QA_RELEASE-$name" \
         -enable-kvm -machine q35,accel=kvm -cpu host -smp "${QA_CPUS:-4}" -m "${QA_MEMORY_MB:-8192}" \
         "${firmware_args[@]}" \
         -drive file="$dir/disk.qcow2",format=qcow2,if=virtio,cache=writeback,discard=unmap \

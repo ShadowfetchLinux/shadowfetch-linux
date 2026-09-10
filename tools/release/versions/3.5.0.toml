@@ -1,0 +1,30 @@
+# QA-only historical release data for 3.5.0, reconstructed from
+# qa/3.5.0/acceptance.json so the VM acceptance harness can drive the 3.5.0
+# installer for the 3.5 -> 4.1 upgrade test. historical = true: this does not
+# change which release is live (4.1.0 remains the sole non-historical file).
+# The [release] identity is authoritative (copied from 3.5.0's recorded
+# manifest); the package list is present only to satisfy a full load and is not
+# exercised by the install case.
+[release]
+version = "3.5.0"
+edition = "Fire and Ice"
+subtitle = "Element Workbench"
+codename = "umbra"
+display_codename = "Umbra"
+package_revision = "1"
+signing_fingerprint = "8F13CE1535EE1F4A2916A1F73C5C900B7BE80CA1"
+historical = true
+
+[packages]
+shadowfetch_binaries = [
+    "shadowfetch-branding", "shadowfetch-control-center", "shadowfetch-creative-base",
+    "shadowfetch-defaults", "shadowfetch-desktop", "shadowfetch-ember",
+    "shadowfetch-fireline", "shadowfetch-fireproof", "shadowfetch-firewatchd",
+    "shadowfetch-hwscan", "shadowfetch-menus", "shadowfetch-phoenix",
+    "shadowfetch-themes", "shadowfetch-welcome",
+]
+sources = ["shadowfetch-meta"]
+smoke_install = ["shadowfetch-desktop"]
+
+[packages.third_party]
+"grub-btrfs" = "4.14-2"

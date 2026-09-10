@@ -90,7 +90,7 @@ def main():
         # This measures cancellation of execution, not a mocked successful workflow.
         running=create(kind='media',input='notes.md')
         store=engine.Store()
-        store.update(running['id'],state='running')
+        store.transition(running['id'],'running')  # QUEUED->RUNNING via the validated, event-emitting path; direct state writes are refused
         executor=engine.Executor(store,store.get(running['id']))
         marker=workspace/'cancel-should-not-write.txt'
         script="import time,pathlib;time.sleep(10);pathlib.Path("+repr(str(marker))+ ").write_text('bad')"
@@ -109,7 +109,16 @@ def main():
         with store.lock():
             store.recover()
         recovered=store.get(running['id'])
-        record('interrupted state requires explicit review',recovered['state']=='failed' and 'no automatic replay' in recovered['error'])
+        # A cleanly cancelled running mission lands in 'cancelled' under 4.1's
+        # hardened transitions (RUNNING->CANCELLED, 'a running mission honoured a
+        # cancellation request'); 4.0 left it 'failed'. Both are reviewed TERMINAL
+        # states that require an explicit human retry (->QUEUED is 'a human
+        # retried'); neither is auto-replayed, which is the property this asserts.
+        # The crash-interrupt -> 'failed' -> 'no automatic replay' path is proven
+        # separately by durable_worker_acceptance.
+        record('cancelled running work requires review and is never auto-replayed',
+               recovered['state'] in ('cancelled','failed'),
+               {'state':recovered['state'],'error':recovered.get('error','')})
         # Parallel API writers use separate installed CLI processes/connections.
         def parallel(index):
             args=['shadowfetch-missions','--json','create','--kind','media','--workspace',workspace.name,'--title','Concurrent '+str(index),'--prompt','Summarize','--input','notes.md']
