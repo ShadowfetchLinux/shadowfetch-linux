@@ -1,4 +1,4 @@
-"""Shadowfetch Linux 4.0: persistent work with scope, evidence and review."""
+"""Shadowfetch Mission Control: persistent work with scope, evidence and review."""
 import json
 import shlex
 from pathlib import Path

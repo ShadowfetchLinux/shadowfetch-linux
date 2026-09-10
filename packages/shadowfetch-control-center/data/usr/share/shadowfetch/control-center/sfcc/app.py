@@ -121,7 +121,7 @@ class ControlCenterWindow(QWidget):
                             f"font-weight: 700; color: {theme.GOLD};"
                             "padding: 16px 16px 2px 16px;")
         side.addWidget(brand)
-        brand_sub = QLabel("MISSION CONTROL  /  4.0")
+        brand_sub = QLabel("MISSION CONTROL  /  " + ".".join(self.version.split(".")[:2]))
         brand_sub.setStyleSheet(f"background: transparent; color: {theme.MUTED};"
                                 "padding: 0 16px 10px 16px;")
         side.addWidget(brand_sub)

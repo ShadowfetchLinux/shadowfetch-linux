@@ -64,8 +64,10 @@ choice during Welcome. Its cloud tasks and account sign-in live in the official
 Grok Bot app. The Grok Build coding CLI is a separate tool. No API keys or app
 accounts are included in the distro.
 
-Buzz integration and local model execution are deferred in this release. Existing
-models, workspaces and vendor application data are preserved during upgrades.
+The former Buzz integration is retired in this release (see the retirement helper
+below); an on-device model provider now ships, though no model is bundled, so you
+supply the model service. Existing models, workspaces and vendor application data
+are preserved during upgrades.
 
 The upgrade disables the former distro relay and its automatic container restart.
 It stops only recognized Shadowfetch relay containers, keeping their volumes and

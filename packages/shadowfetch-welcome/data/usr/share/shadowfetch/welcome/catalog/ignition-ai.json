@@ -18,5 +18,5 @@
     "none"
   ],
   "section": "ignition",
-  "blurb": "Workspace tools: git, Python environments and rootless containers. Local model installation and inference are deferred in 4.0."
+  "blurb": "Workspace tools: git, Python environments and rootless containers. An on-device model provider ships, but no model is bundled -- this preset installs the workspace tools and you supply the model service."
 }

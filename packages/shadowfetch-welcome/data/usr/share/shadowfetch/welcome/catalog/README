@@ -5,8 +5,10 @@ Static, root-owned JSON records - one file per catalog entry, named
 <id>.json with the file name matching the record's "id" field.  These
 records are the single source both the Welcome assistant (Ignition page,
 media and preset cards) and Control Center > Software & Updates > Bundles
-render from. Local model setup is deferred in 4.0; it is not owned by
-by catalog records or a second Shadowfetch model installer.
+render from. The on-device model provider ships, but bundles no model; model
+setup is not owned by catalog records or a second Shadowfetch installer -- the
+AI Workstation preset installs workspace tools only, and the user supplies the
+model.
 
 Schema (all keys always present):
 
@@ -36,6 +38,7 @@ Rules inherited from the 2.1.2 spec:
     Bundles contain ONLY pinned-snapshot Debian packages, never umbra
     packages, so an offline-saved choice resolves identically forever.
   * Model selection and download are intentionally outside this catalog.
-    Local model setup is deferred; catalog presets install workspace tools only.
+    The catalog installs no model; presets install workspace tools only, and
+    the user supplies the model for the on-device provider.
   * Nothing in the catalog phones home. apt installs happen only after the
     user confirms and go to the configured mirrors.
