@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "screenshots": [
+    {
+      "path": "visual-4.1.0/fire-mission-control-1280x800.png",
+      "sha256": "e400cc206d10ac114848df31b37a3ef7eb899df9d478099756ebb34b77205e6e",
+      "approved": true
+    },
+    {
+      "path": "visual-4.1.0/fire-mission-control-1920x1080.png",
+      "sha256": "cb4cb3d28efbc40257cf92d316c0075eb37d10b6ba7ed78afaad2527d8362d03",
+      "approved": true
+    },
+    {
+      "path": "visual-4.1.0/fire-welcome-1280x800.png",
+      "sha256": "5e5e4c41e8ecd74571e78f1c23c085968996c2a8742d8874efe24dbb5770ec0c",
+      "approved": true
+    },
+    {
+      "path": "visual-4.1.0/fire-welcome-1920x1080.png",
+      "sha256": "8520a918e003e09d7a426d15ed408cda4896700e2dcf0158ff67153d9c120295",
+      "approved": true
+    },
+    {
+      "path": "visual-4.1.0/ice-desktop-1280x800.png",
+      "sha256": "0e07748b233a179adbe0536e347e173ceb86bc1f476748329fd028d5ed92acff",
+      "approved": true
+    },
+    {
+      "path": "visual-4.1.0/ice-desktop-1920x1080.png",
+      "sha256": "a834e78bc2ebf4e40b6c4a87e90799008bea3906ce9dcc00759e77afada85e1d",
+      "approved": true
+    },
+    {
+      "path": "visual-4.1.0/underload-1280x800.png",
+      "sha256": "216a1a7d17f513dea1474854dd95fd0df1e84779dd7536165e8db03688a6f7e3",
+      "approved": true
+    },
+    {
+      "path": "visual-4.1.0/underload-1920x1080.png",
+      "sha256": "bdda87db3e64c783fd2cdad51b5556c06450bf3374f6cffccc062ff0fdc298be",
+      "approved": true
+    },
+    {
+      "path": "vm-acceptance/install-20260910T213431Z-e19e96302f97/install-01-welcome.png",
+      "sha256": "0d457e74af7d3c9d10f184c368d1420d489792740ad554a7e65fbe79e73819a8",
+      "approved": true
+    },
+    {
+      "path": "vm-acceptance/install-both-firmwares-20260910T215202Z-e19e96302f97/install-both-bios.png",
+      "sha256": "06020f5b7f53d149a28252b09d6bdbfce7074a24e73909284066c21bfe505b6b",
+      "approved": true
+    },
+    {
+      "path": "vm-acceptance/install-both-firmwares-20260910T215202Z-e19e96302f97/install-both-uefi.png",
+      "sha256": "cfa5511e8a2428590266080f1139bce8cbc1b3f361db324fc12f41466e5b9170",
+      "approved": true
+    },
+    {
+      "path": "vm-acceptance/recovery-project-20260910T215548Z-e19e96302f97/project-desktop.png",
+      "sha256": "d756ef39f4a93e9ab5f8cfd3ff9a74fffd3f6e3056ae6223aa058b466dc2e14c",
+      "approved": true
+    }
+  ],
+  "documents": []
+}
