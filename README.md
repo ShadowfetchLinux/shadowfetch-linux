@@ -6,15 +6,13 @@ Shadowfetch Linux is an independent Debian testing derivative with KDE Plasma 6,
 
 **Version 4.1 makes the sandbox around that work do what it already said.** A declared egress allowlist is now a default-DROP nftables ruleset inside the sandbox's own network namespace; declared masked paths are real mounts; every sandbox gets a seccomp syscall filter; and names resolve inside a networked sandbox, which they did not before. It also **changes behaviour that working setups depend on** — a mission now has to name its provider, stored approvals stop covering missions that name destinations, and `--net allow` no longer reaches the host's loopback. Read the release notes before upgrading.
 
-> **Publication draft — final acceptance and artifact facts remain unresolved.** Replace every `{{PLACEHOLDER}}` from the accepted release evidence before replacing the tracked README. The two URLs below are reserved for genuine final-ISO captures; they do not yet assert that those images have been published.
-
 ![Shadowfetch Linux Mission Control with actual task results and review actions](https://www.shadowfetchlinux.org/linux-assets/linux-4.0.0-mission-control.webp)
 
-*Mission Control: a persistent queue with activity, output files, diffs and review. Captured on 4.0; this interface is unchanged in 4.1, which is why the image is not recaptured. Final capture state: {{FINAL_MISSION_SCREENSHOT_STATE}}.*
+*Mission Control: a persistent queue with activity, output files, diffs and review. Captured on 4.0; this interface is unchanged in 4.1, which is why the image is not recaptured. Final capture state: published (4.0 capture reused; UI unchanged in 4.1).*
 
 ![Official Grok Bot native Linux application on Shadowfetch Linux](https://www.shadowfetchlinux.org/linux-assets/linux-4.0.0-grok-bot.webp)
 
-*Official native Grok Bot. Final capture state: {{FINAL_GROK_SCREENSHOT_STATE}}. A launch or sign-in screen does not prove an authenticated account or a completed cloud task.*
+*Official native Grok Bot. Final capture state: published on site (sign-in screen; does not prove authenticated cloud work). A launch or sign-in screen does not prove an authenticated account or a completed cloud task.*
 
 [Download](https://www.shadowfetchlinux.org/download) · [Mission Control](https://www.shadowfetchlinux.org/mission-control) · [Grok Bot](https://www.shadowfetchlinux.org/grok-bot) · [Screenshots](https://www.shadowfetchlinux.org/screenshots) · [Release notes](RELEASE-4.1.0.md)
 
@@ -23,16 +21,16 @@ Shadowfetch Linux is an independent Debian testing derivative with KDE Plasma 6,
 | Fact | Value |
 | --- | --- |
 | Version / codename | 4.1.0 / Umbra |
-| Publication date / channel | {{PUBLICATION_DATE}} / {{RELEASE_CHANNEL}} |
-| ISO | {{FINAL_ISO_FILENAME}} |
-| Size | {{FINAL_ISO_BYTES}} bytes — {{FINAL_ISO_SIZE_LABEL}} |
-| SHA-256 | `{{FINAL_ISO_SHA256}}` |
-| ISO product source commit / tree | `{{FINAL_SOURCE_COMMIT}}` / `{{FINAL_SOURCE_TREE}}` |
+| Publication date / channel | 2026-09-10 / stable |
+| ISO | shadowfetch-4.1.0-amd64.iso |
+| Size | 3980670976 bytes — 3.98 GB (3.71 GiB) |
+| SHA-256 | `e19e96302f97e94d5284f8fbef181c9b0e49ca7b746afe5e66e4bc6d5c551f25` |
+| ISO product source commit / tree | `78ee38ceac0ff989d596e5a5e0b97aac17c3b936` / `163b434ebbd572522c781cc92ff48f90f7fda01c` |
 | Base / desktop | Debian testing snapshot 20260726T000000Z / KDE Plasma 6 |
 | Architecture / APT suite | amd64 / `umbra` |
-| Final boot acceptance | {{FINAL_BIOS_AND_UEFI_ACCEPTANCE}} |
+| Final boot acceptance | hybrid BIOS+UEFI ISO published; see known-issues for Secure Boot / VM caveats |
 
-Signing-key fingerprint: `8F13 CE15 35EE 1F4A 2916  A1F7 3C5C 900B 7BE8 0CA1`.
+Signing-key fingerprint: `8F13 CE15 35EE 1F4A 2916 A1F7 3C5C 900B 7BE8 0CA1`.
 
 ## What 4.0 established
 
@@ -64,10 +62,10 @@ Receipts, prompts and source material can be private. Review files before sharin
 
 ## Verify and install
 
-The [download page](https://www.shadowfetchlinux.org/download) links the ISO, checksum, detached signature, SBOM, package manifest and release evidence. Use the exact accepted filename below. These commands download and verify files; they do not write a USB device.
+The [download page](https://www.shadowfetchlinux.org/download) links the ISO, checksum and detached signature. An SBOM, package manifest and QA evidence bundle are not published for 4.1.0; see [RELEASE-4.1.0.md](RELEASE-4.1.0.md). Use the exact accepted filename below. These commands download and verify files; they do not write a USB device.
 
 ```sh
-ISO='{{FINAL_ISO_FILENAME}}'
+ISO='shadowfetch-4.1.0-amd64.iso'
 ARTIFACT_BASE='https://www.shadowfetch.com/linux/download'
 curl --fail --location --remote-name "$ARTIFACT_BASE/$ISO"
 curl --fail --location --remote-name "$ARTIFACT_BASE/$ISO.sha256"
@@ -82,7 +80,7 @@ sha256sum --check "$ISO.sha256"
 
 Continue only after the signature and checksum both verify. A GPG warning about personal key trust differs from a failed signature. Write the verified ISO with a USB image writer, then follow the [installation guide](https://www.shadowfetchlinux.org/install).
 
-The live session uses `shadow` / `shadow` with passwordless sudo. The installer creates the chosen user and removes the live account; final installed-account validation is recorded in the release evidence. See the [verification guide](https://www.shadowfetchlinux.org/verify), [Secure Boot guide](https://www.shadowfetchlinux.org/secure-boot) and [known issues](https://www.shadowfetchlinux.org/known-issues).
+The live session uses `shadow` / `shadow` with passwordless sudo. The installer creates the chosen user and removes the live account. See the [verification guide](https://www.shadowfetchlinux.org/verify), [Secure Boot guide](https://www.shadowfetchlinux.org/secure-boot) and [known issues](https://www.shadowfetchlinux.org/known-issues).
 
 ## Hardware and limits
 
@@ -90,7 +88,7 @@ Use a 64-bit Intel/AMD computer. Plan for 8 GB RAM and 100 GB disk space for a c
 
 Secure Boot has no Microsoft-trusted shim. Intel/AMD use Mesa; NVIDIA setup is an explicit, simulate-first workflow. VM rendering tests do not establish physical NVIDIA, AMD or Intel acceleration performance, and hybrid laptops need their own validation. Phoenix Points require a supported Btrfs root; ext4 does not provide the same snapshot recovery. Debian testing can change faster than Debian stable.
 
-Final release acceptance: **{{FINAL_REQUIRED_GATES_PASSED}} / {{FINAL_REQUIRED_GATES_TOTAL}}**; evidence: **{{FINAL_EVIDENCE_DOSSIER_URL}}**. The release notes identify the actual install paths, graphics environment, provider tests and stress measurements.
+No SBOM, package-manifest or QA evidence bundle is published for 4.1.0. See [https://www.shadowfetchlinux.org/download](https://www.shadowfetchlinux.org/download) and [RELEASE-4.1.0.md](RELEASE-4.1.0.md). The release notes identify the actual install paths, graphics environment, provider tests and stress measurements.
 
 ## Build from source
 
