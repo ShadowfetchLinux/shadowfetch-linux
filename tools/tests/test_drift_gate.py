@@ -260,6 +260,23 @@ class TestFingerprintDrift(unittest.TestCase):
                              r'"source_commit":\s*"[0-9a-f]{40}"')
             self.assertEqual([], drifts(drift_gate.check_fingerprint(TRUTH)))
 
+    def test_a_prose_commit_sha_beside_a_fingerprint_is_not_a_key(self):
+        """sf41-ia-readme.txt names the signing key, then two git SHAs.
+
+        The SHAs sit inside the three-line fingerprint window, so a sweep that
+        only looks at nearby labels would treat them as a second key."""
+        with sandbox(*FINGERPRINT_RELS) as fake:
+            planted = fake / "sf41-ia-readme.txt"
+            planted.write_text(
+                "OpenPGP fingerprint: {fp}\n"
+                "Source commit (ISO): {sha1}\n"
+                "Release-tooling commit: {sha2}\n".format(
+                    fp=TRUTH["signing"]["fingerprint"],
+                    sha1="78ee38ceac0ff989d596e5a5e0b97aac17c3b936",
+                    sha2="aa8fd1b22e8e3c8a098a28e43fd6b156fbb74b56"),
+                encoding="utf-8")
+            self.assertEqual([], drifts(drift_gate.check_fingerprint(TRUTH)))
+
     def test_a_third_party_key_must_be_named(self):
         with sandbox(*FINGERPRINT_RELS) as fake:
             planted = fake / "packages/anything/vendor/provenance.json"
