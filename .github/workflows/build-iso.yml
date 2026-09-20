@@ -28,7 +28,7 @@ jobs:
       - name: Install source and package test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential debhelper dh-python devscripts fakeroot python3 python3-yaml python3-pyqt6 python3-dbus python3-psutil shellcheck desktop-file-utils bubblewrap ffmpeg podman
+          sudo apt-get install -y build-essential debhelper dh-python devscripts fakeroot python3 python3-yaml python3-pyqt6 python3-dbus python3-psutil shellcheck desktop-file-utils bubblewrap ffmpeg podman dbus-user-session
       # ubuntu-24.04 sets kernel.apparmor_restrict_unprivileged_userns=1.
       # bubblewrap can still create a user+net namespace, but configuring
       # loopback inside it fails with RTM_NEWADDR EPERM, so every empirical
@@ -40,6 +40,21 @@ jobs:
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           fi
           bwrap --ro-bind / / --dev /dev --unshare-user --unshare-net --die-with-parent -- /bin/true
+      # Firebreak wraps every live sandbox in systemd-run --user. Hosted
+      # runners have systemd as PID 1 but no lingering user session, so the
+      # user bus is missing unless we start one.
+      - name: Start systemd user session for Firebreak
+        run: |
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
+          for _ in $(seq 1 40); do
+            [ -S "/run/user/$(id -u)/bus" ] && break
+            sleep 0.25
+          done
+          test -S "/run/user/$(id -u)/bus"
+          systemd-run --user --scope --quiet --collect -- /bin/true
       - name: Test behavior
         run: make test
       - name: Validate source syntax and desktop entries

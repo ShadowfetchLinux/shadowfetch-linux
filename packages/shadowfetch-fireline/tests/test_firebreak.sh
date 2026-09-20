@@ -3,6 +3,13 @@
 set -euo pipefail
 FB=${SHADOWFETCH_FIREBREAK_TEST_BIN:-shadowfetch-firebreak}
 CP=${SHADOWFETCH_CHECKPOINT_BIN:-shadowfetch-checkpoint}
+# Firebreak launches via systemd-run --user. A host without a user bus cannot
+# exercise that path; the Python live-sandbox tests skip on the same check.
+# Missing namespaces remain a failure once the bus is present.
+if [[ ! -S "/run/user/$(id -u)/bus" ]]; then
+  echo "SKIP live Firebreak containment: no systemd user bus at /run/user/$(id -u)/bus"
+  exit 0
+fi
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
 export SHADOWFETCH_AGENT_WORKSPACES="$fixture/Workspaces"
