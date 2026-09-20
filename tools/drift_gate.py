@@ -364,6 +364,11 @@ def check_fingerprint(truth: dict) -> list[Finding]:
             if field is not None:
                 if not _KEY_CONTEXT.search(field.group(1)):
                     continue  # e.g. "source_commit", "release_build", "URL"
+            elif re.search(r"(?i)\bcommit\b", line) and not _KEY_CONTEXT.search(line):
+                # Prose like "Source commit (ISO): <sha>" next to an OpenPGP
+                # fingerprint line: the 3-line window would otherwise inherit
+                # the word "fingerprint" and treat a git SHA as a signing key.
+                continue
             else:
                 window = "\n".join(lines[max(0, number - 3):number + 1])
                 if not _KEY_CONTEXT.search(window):

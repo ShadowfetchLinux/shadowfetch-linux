@@ -1,3 +1,6 @@
+# Named build-iso.yml for history. This workflow is source and package checks
+# only; it does not build an ISO. The signed ISO is published from the
+# authorized Linux publisher. See RELEASE-4.0.0.md.
 name: Source and package checks
 
 on:
@@ -22,10 +25,42 @@ jobs:
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@v4
+      # Phoenix restore/report regression proofs compare against the scripts
+      # as published in v4.0.0 (`git show v4.0.0:...`). A shallow checkout
+      # has no tags, so those tests ERROR instead of measuring the pre-fix
+      # behaviour.
+      - name: Fetch v4.0.0 for phoenix regression proofs
+        run: git fetch --depth=1 origin tag v4.0.0
       - name: Install source and package test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential debhelper dh-python devscripts fakeroot python3 python3-yaml python3-pyqt6 python3-dbus python3-psutil shellcheck desktop-file-utils bubblewrap ffmpeg podman
+          sudo apt-get install -y build-essential debhelper dh-python devscripts fakeroot python3 python3-yaml python3-pyqt6 python3-dbus python3-psutil shellcheck desktop-file-utils bubblewrap ffmpeg podman dbus-user-session qemu-utils qemu-system-x86 slirp4netns
+      # ubuntu-24.04 sets kernel.apparmor_restrict_unprivileged_userns=1.
+      # bubblewrap can still create a user+net namespace, but configuring
+      # loopback inside it fails with RTM_NEWADDR EPERM, so every empirical
+      # sandbox test dies before the probe runs. Runners are disposable;
+      # lift the restriction for this job instead of skipping the suite.
+      - name: Allow bubblewrap network namespaces
+        run: |
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = "1" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --ro-bind / / --dev /dev --unshare-user --unshare-net --die-with-parent -- /bin/true
+      # Firebreak wraps every live sandbox in systemd-run --user. Hosted
+      # runners have systemd as PID 1 but no lingering user session, so the
+      # user bus is missing unless we start one.
+      - name: Start systemd user session for Firebreak
+        run: |
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@$(id -u).service"
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
+          for _ in $(seq 1 40); do
+            [ -S "/run/user/$(id -u)/bus" ] && break
+            sleep 0.25
+          done
+          test -S "/run/user/$(id -u)/bus"
+          systemd-run --user --scope --quiet --collect -- /bin/true
       - name: Test behavior
         run: make test
       - name: Validate source syntax and desktop entries
@@ -44,7 +79,8 @@ jobs:
               first = text.splitlines()[0] if text.splitlines() else ''
               if p.suffix == '.py' or first.startswith('#!') and 'python' in first:
                   ast.parse(text, filename=str(p))
-              if p.suffix == '.json':
+              # Test fixtures may be deliberately invalid (e.g. broken-not-json.json).
+              if p.suffix == '.json' and 'tests' not in p.parts:
                   json.loads(text)
               if p.suffix == '.desktop' and ('applications' in p.parts or 'autostart' in p.parts):
                   subprocess.run(['desktop-file-validate', str(p)], check=True)

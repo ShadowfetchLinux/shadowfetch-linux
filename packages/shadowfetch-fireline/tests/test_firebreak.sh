@@ -3,6 +3,14 @@
 set -euo pipefail
 FB=${SHADOWFETCH_FIREBREAK_TEST_BIN:-shadowfetch-firebreak}
 CP=${SHADOWFETCH_CHECKPOINT_BIN:-shadowfetch-checkpoint}
+# Firebreak launches via systemd-run --user. A socket at /run/user/$UID/bus
+# is not enough -- a leftover dbus-daemon without a user manager still fails
+# the launch. Probe the real wrapper. Missing namespaces remain a failure
+# once systemd-run --user works (the Python live-sandbox tests skip too).
+if ! systemd-run --user --scope --quiet --collect -- /bin/true >/dev/null 2>&1; then
+  echo "SKIP live Firebreak containment: systemd-run --user is not available"
+  exit 0
+fi
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
 export SHADOWFETCH_AGENT_WORKSPACES="$fixture/Workspaces"

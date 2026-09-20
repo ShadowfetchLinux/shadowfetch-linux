@@ -86,11 +86,17 @@ def code_only(text):
 
 
 def product_files():
-    """Every shipped payload file under packages/, build copies excluded."""
+    """Every shipped payload file under packages/, build copies excluded.
+
+    Skip names are matched against the path relative to packages/, not the
+    absolute path. GitHub Actions checks out under /home/runner/work/<repo>,
+    and treating that ancestor `work` as a skip directory emptied the scan
+    so the pin lists compared against nothing.
+    """
     for path in PACKAGES.rglob("*"):
         if not path.is_file():
             continue
-        if any(part in SKIP_PARTS for part in path.parts):
+        if any(part in SKIP_PARTS for part in path.relative_to(PACKAGES).parts):
             continue
         yield path
 
@@ -219,6 +225,16 @@ def product_code():
             yield path, code_only(path.read_text())
         except (UnicodeDecodeError, OSError):
             continue
+
+
+class TestProductScanIsRelative(unittest.TestCase):
+    def test_an_ancestor_named_work_does_not_empty_the_scan(self):
+        """GitHub Actions checks out under /home/runner/work/<repo>/<repo>."""
+        files = list(product_files())
+        self.assertTrue(files, "product_files() scanned an empty tree")
+        self.assertTrue(
+            any(path.name == "85fireproof" for path in files),
+            "the one APT::Periodic file was skipped with the rest")
 
 
 class TestOnlyOneUpdater(unittest.TestCase):
