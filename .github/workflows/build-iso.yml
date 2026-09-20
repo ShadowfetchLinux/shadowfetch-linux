@@ -1,3 +1,6 @@
+# Named build-iso.yml for history. This workflow is source and package checks
+# only; it does not build an ISO. The signed ISO is published from the
+# authorized Linux publisher. See RELEASE-4.0.0.md.
 name: Source and package checks
 
 on:
@@ -26,6 +29,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential debhelper dh-python devscripts fakeroot python3 python3-yaml python3-pyqt6 python3-dbus python3-psutil shellcheck desktop-file-utils bubblewrap ffmpeg podman
+      # ubuntu-24.04 sets kernel.apparmor_restrict_unprivileged_userns=1.
+      # bubblewrap can still create a user+net namespace, but configuring
+      # loopback inside it fails with RTM_NEWADDR EPERM, so every empirical
+      # sandbox test dies before the probe runs. Runners are disposable;
+      # lift the restriction for this job instead of skipping the suite.
+      - name: Allow bubblewrap network namespaces
+        run: |
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = "1" ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --ro-bind / / --dev /dev --unshare-user --unshare-net --die-with-parent -- /bin/true
       - name: Test behavior
         run: make test
       - name: Validate source syntax and desktop entries

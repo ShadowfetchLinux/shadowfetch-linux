@@ -347,7 +347,7 @@ class MissionTests(unittest.TestCase):
 
     def test_codex_incomplete_turn_and_missing_key_refuse_success(self):
         executor = m.Executor(self.store, self.create())
-        with patch.dict(os.environ, {"CODEX_API_KEY": "", "OPENAI_API_KEY": ""}), patch.object(executor, "run_process", side_effect=AssertionError("No call without API key")):
+        with patch.dict(os.environ, {"CODEX_API_KEY": "", "OPENAI_API_KEY": ""}), patch.object(codex_adapter, "resolve_executable", return_value="/usr/bin/true"), patch.object(sf_providers, "declared_executables", return_value={"/usr/bin/true"}), patch.object(executor, "run_process", side_effect=AssertionError("No call without API key")):
             with self.assertRaisesRegex(m.MissionError, "not configured"):
                 executor.agent_turn("task")
         log = executor.directory / "failed.jsonl"
