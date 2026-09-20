@@ -277,7 +277,23 @@ def chain_summary(store):
 
 
 def missing_sandbox_tools():
-    return [name for name in SANDBOX_TOOLS if shutil.which(name) is None]
+    missing = [name for name in SANDBOX_TOOLS if shutil.which(name) is None]
+    if missing:
+        return missing
+    # systemd-run is on PATH on this host, but Firebreak launches via
+    # systemd-run --user. A leftover dbus socket without a user manager
+    # still fails that wrapper; treat it as missing so these attacks skip
+    # instead of reporting a harness error as a product FAIL.
+    try:
+        done = subprocess.run(
+            ["systemd-run", "--user", "--scope", "--quiet", "--collect",
+             "--", "/bin/true"],
+            capture_output=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return ["systemd-run --user"]
+    if done.returncode != 0:
+        return ["systemd-run --user"]
+    return []
 
 
 def lines(*parts):
