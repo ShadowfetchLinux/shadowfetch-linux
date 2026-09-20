@@ -25,6 +25,12 @@ jobs:
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - uses: actions/checkout@v4
+      # Phoenix restore/report regression proofs compare against the scripts
+      # as published in v4.0.0 (`git show v4.0.0:...`). A shallow checkout
+      # has no tags, so those tests ERROR instead of measuring the pre-fix
+      # behaviour.
+      - name: Fetch v4.0.0 for phoenix regression proofs
+        run: git fetch --depth=1 origin tag v4.0.0
       - name: Install source and package test dependencies
         run: |
           sudo apt-get update
