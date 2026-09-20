@@ -79,7 +79,8 @@ jobs:
               first = text.splitlines()[0] if text.splitlines() else ''
               if p.suffix == '.py' or first.startswith('#!') and 'python' in first:
                   ast.parse(text, filename=str(p))
-              if p.suffix == '.json':
+              # Test fixtures may be deliberately invalid (e.g. broken-not-json.json).
+              if p.suffix == '.json' and 'tests' not in p.parts:
                   json.loads(text)
               if p.suffix == '.desktop' and ('applications' in p.parts or 'autostart' in p.parts):
                   subprocess.run(['desktop-file-validate', str(p)], check=True)
