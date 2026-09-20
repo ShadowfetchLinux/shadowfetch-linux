@@ -1309,6 +1309,18 @@ def attack_allowlist_reaches_elsewhere(bench, report):
     egress = (record or {}).get("enforcement", {}).get("egress_allowlist", {})
     network = (record or {}).get("enforcement", {}).get("network", {})
 
+    if not reached:
+        report(name,
+               "an egress allowlist naming one host does not let the sandbox reach "
+               "the host's loopback, and any destination it CAN still reach is "
+               "described honestly rather than as enforced",
+               f"$ shadowfetch-firebreak run --net allow --egress-host one.one.one.one "
+               f"-- python3 (rc={proc.returncode}, no RESULT line)\n"
+               f"stderr={(proc.stderr or '')[-400:]}",
+               None,
+               "SKIPPED: Firebreak did not execute the probe. This measurement "
+               "needs systemd-run --user and slirp4netns.")
+        return
     loopback_contained = (reached.get("loopback") != "REACHED" and not received)
     # The allowlist named one.one.one.one and nothing else. A destination it
     # never named must not be reachable, and the one it did name must be: a
@@ -1418,7 +1430,14 @@ def main():
 
     def report(name, expected, observed, passed, note=""):
         rows.append({"attack": name, "expected": expected, "observed": observed,
-                     "passed": bool(passed), "note": note})
+                     "passed": passed, "note": note})
+
+    def label(passed):
+        if passed is True:
+            return "PASS"
+        if passed is None:
+            return "SKIP"
+        return "FAIL"
 
     run(report)
     width = max(len(row["attack"]) for row in rows)
@@ -1427,19 +1446,21 @@ def main():
     print("=" * 78)
     for row in rows:
         print()
-        print(f"{'PASS' if row['passed'] else 'FAIL'}  {row['attack']}")
+        print(f"{label(row['passed'])}  {row['attack']}")
         print(f"      EXPECTED  {row['expected']}")
         for index, line in enumerate(row["observed"].splitlines() or [""]):
             print(f"      {'OBSERVED  ' if index == 0 else '          '}{line}")
         if row["note"]:
             print(f"      NOTE      {row['note']}")
-    failed = [row["attack"] for row in rows if not row["passed"]]
+    failed = [row["attack"] for row in rows if row["passed"] is False]
     print()
     print("-" * 78)
     for row in rows:
-        print(f"  {'PASS' if row['passed'] else 'FAIL'}  {row['attack']:<{width}}")
+        print(f"  {label(row['passed'])}  {row['attack']:<{width}}")
     print("-" * 78)
-    print(f"{len(rows) - len(failed)} passed, {len(failed)} FAILED")
+    skipped = sum(1 for row in rows if row["passed"] is None)
+    print(f"{len(rows) - len(failed) - skipped} passed, {len(failed)} FAILED"
+          + (f", {skipped} SKIPPED" if skipped else ""))
     if failed:
         print("FAILED: " + ", ".join(failed))
     return 1 if failed else 0

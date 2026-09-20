@@ -8,7 +8,7 @@ of them went undetected while `audit verify` reported the chain intact.
 """
 import json, os, sqlite3, sys, tempfile, time
 from pathlib import Path
-ENGINE = Path.home() / "projects/shadowfetch-4.0.0/packages/shadowfetch-missions/data/usr/lib/shadowfetch/missions"
+ENGINE = Path(__file__).resolve().parents[2] / "packages/shadowfetch-missions/data/usr/lib/shadowfetch/missions"
 sys.path.insert(0, str(ENGINE))
 R0 = tempfile.mkdtemp(prefix="stgA-")
 os.environ["SHADOWFETCH_MISSIONS_STATE"] = R0
