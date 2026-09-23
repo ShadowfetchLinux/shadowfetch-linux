@@ -116,7 +116,7 @@ Source map: `packages/shadowfetch-missions/` contains the queue and execution en
 
 ## Support and contributing
 
-Use [GitHub Issues](https://github.com/ShadowfetchLinux/shadowfetch-linux/issues) for bugs, installation reports and hardware notes. Include the exact ISO and checksum result, firmware/boot mode, CPU/GPU/RAM, disk layout, the failing step and redacted `shadowfetch-health --json` output. For mission bugs, include the workflow, state and redacted receipt. Report security-sensitive findings through [SECURITY.md](SECURITY.md).
+Use [GitHub Issues](https://github.com/Shadowfetchapps/shadowfetch-linux/issues) for bugs, installation reports and hardware notes. Include the exact ISO and checksum result, firmware/boot mode, CPU/GPU/RAM, disk layout, the failing step and redacted `shadowfetch-health --json` output. For mission bugs, include the workflow, state and redacted receipt. Report security-sensitive findings through [SECURITY.md](SECURITY.md).
 
 Patches to packages, build tools, tests and documentation are welcome. Run `make source-gate` before submitting. Do not post password exports, private keys, tokens, private source files or unredacted account logs.
 
