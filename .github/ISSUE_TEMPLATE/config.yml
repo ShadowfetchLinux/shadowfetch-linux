@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Support questions and install help
-    url: https://github.com/Shadowfetchapps/shadowfetch-linux/discussions
-    about: Use Discussions for questions, install reports, and hardware notes that are not reproducible bugs.
+    url: https://www.shadowfetchlinux.org/faq
+    about: Start with the FAQ, or email linux@shadowfetchlinux.org. Use the hardware report form for install results on specific machines.
   - name: Verification guide
     url: https://www.shadowfetchlinux.org/verify
     about: Verify the ISO checksum, detached signature, and signing key before installing.
