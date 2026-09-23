@@ -6,11 +6,13 @@ names the two filters this release adds; it does not claim the sandbox as a
 whole is now enforced, because the credential broker and the blast-radius
 classifier are built and wired to nothing.
 
-Status: NOT RELEASED. This file is a release contract, not a claim that 4.1.0
-has shipped. 4.0.0 (2026-09-06) remains the current public release until an
-image built from this source passes `make iso-gate` and the required acceptance
-cases carry evidence bound to it. See **Release state** at the end for exactly
-what stands in the way. There is no press release for 4.1.0, by decision.
+Status: RELEASED 2026-09-11 as the [v4.1.0 GitHub release](https://github.com/Shadowfetchapps/shadowfetch-linux/releases/tag/v4.1.0), with the
+ISO checksum, detached signature, SBOM, package manifest and QA evidence bundle
+attached. The final acceptance record (`qa/4.1.0/acceptance.json`, bound to ISO
+`e19e9630…`) has 13 cases passing, 4 waived (GROK-01, GROK-VISUAL-01,
+RESOURCE-01, STRESS-01) and PUB-01 pending. **Release state** at the end records
+the gates as measured on 2026-09-09, before the final candidate was rebuilt.
+There is no press release for 4.1.0, by decision.
 
 - Version: 4.1.0
 - Codename / repository suite: `umbra`

@@ -62,7 +62,7 @@ Receipts, prompts and source material can be private. Review files before sharin
 
 ## Verify and install
 
-The [download page](https://www.shadowfetchlinux.org/download) links the ISO, checksum and detached signature. An SBOM, package manifest and QA evidence bundle are not published for 4.1.0; see [RELEASE-4.1.0.md](RELEASE-4.1.0.md). Use the exact accepted filename below. These commands download and verify files; they do not write a USB device.
+The [download page](https://www.shadowfetchlinux.org/download) links the ISO, checksum and detached signature. The SBOM, package manifest and QA evidence bundle are attached to the [v4.1.0 GitHub release](https://github.com/Shadowfetchapps/shadowfetch-linux/releases/tag/v4.1.0); see [RELEASE-4.1.0.md](RELEASE-4.1.0.md). Use the exact accepted filename below. These commands download and verify files; they do not write a USB device.
 
 ```sh
 ISO='shadowfetch-4.1.0-amd64.iso'
@@ -88,7 +88,7 @@ Use a 64-bit Intel/AMD computer. Plan for 8 GB RAM and 100 GB disk space for a c
 
 Secure Boot has no Microsoft-trusted shim. Intel/AMD use Mesa; NVIDIA setup is an explicit, simulate-first workflow. VM rendering tests do not establish physical NVIDIA, AMD or Intel acceleration performance, and hybrid laptops need their own validation. Phoenix Points require a supported Btrfs root; ext4 does not provide the same snapshot recovery. Debian testing can change faster than Debian stable.
 
-No SBOM, package-manifest or QA evidence bundle is published for 4.1.0. See [https://www.shadowfetchlinux.org/download](https://www.shadowfetchlinux.org/download) and [RELEASE-4.1.0.md](RELEASE-4.1.0.md). The release notes identify the actual install paths, graphics environment, provider tests and stress measurements.
+The SBOM (`sbom-4.1.0.cdx.json`), package manifest (`packages-4.1.0.manifest`) and QA evidence bundle (`evidence-bundle-4.1.0.tar.gz`) are attached to the [v4.1.0 GitHub release](https://github.com/Shadowfetchapps/shadowfetch-linux/releases/tag/v4.1.0). In the acceptance record, 13 cases pass, 4 are waived (Grok Bot integrity, Grok Bot screenshot, resource limits, 45-minute stress) and the publication check PUB-01 is still pending. See [https://www.shadowfetchlinux.org/download](https://www.shadowfetchlinux.org/download) and [RELEASE-4.1.0.md](RELEASE-4.1.0.md). The release notes identify the actual install paths, graphics environment, provider tests and stress measurements.
 
 ## Build from source
 
