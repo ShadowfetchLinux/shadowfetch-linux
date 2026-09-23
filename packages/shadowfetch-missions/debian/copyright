@@ -1,6 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: shadowfetch-missions
-Source: https://github.com/ShadowfetchLinux/shadowfetch-linux
+Source: https://github.com/Shadowfetchapps/shadowfetch-linux
 
 Files: *
 Copyright: 2026 Shadowfetch Project

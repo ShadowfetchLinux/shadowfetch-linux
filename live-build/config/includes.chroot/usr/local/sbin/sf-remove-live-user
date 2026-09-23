@@ -95,7 +95,7 @@ if [ -n "$failed" ]; then
     echo "[shadowfetch]        password and passwordless sudo, so completing the" >&2
     echo "[shadowfetch]        install would hand over a machine with a known" >&2
     echo "[shadowfetch]        credential. Please report this, with this message, at" >&2
-    echo "[shadowfetch]        https://github.com/ShadowfetchLinux/shadowfetch-linux/issues" >&2
+    echo "[shadowfetch]        https://github.com/Shadowfetchapps/shadowfetch-linux/issues" >&2
     exit 1
 fi
 

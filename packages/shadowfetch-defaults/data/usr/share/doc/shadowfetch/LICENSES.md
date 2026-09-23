@@ -32,7 +32,7 @@ vendor update source. This integration does not imply vendor endorsement.
 ## Written offer for source
 
 The complete corresponding source for the Shadowfetch packages is:
-  * published at https://github.com/ShadowfetchLinux/shadowfetch-linux
+  * published at https://github.com/Shadowfetchapps/shadowfetch-linux
   * available as a source tarball at
       https://shadowfetch.com/linux/apt/sources/shadowfetch-source-3.0.0.tar.gz
 

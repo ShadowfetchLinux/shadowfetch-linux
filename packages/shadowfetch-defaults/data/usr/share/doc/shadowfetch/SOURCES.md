@@ -41,7 +41,7 @@ APT source index, alongside the matching binary packages:
 
 The signed InRelease authenticates the index and its SHA-256 references each
 source archive and Debian source control file. The project's public home
-and issue tracker are at https://github.com/ShadowfetchLinux/shadowfetch-linux .
+and issue tracker are at https://github.com/Shadowfetchapps/shadowfetch-linux .
 For the corresponding source of any upstream Debian/KDE component shipped in
 this image, email signing@shadowfetch.com and we will provide the exact source
 for the version shipped, at no more than the cost of distribution.

@@ -33,7 +33,7 @@ from iso_gate import mounted_iso
 VERSION: str = ""
 CODENAME: str = ""
 WEBSITE = "https://www.shadowfetchlinux.org"
-GITHUB = "https://github.com/ShadowfetchLinux/shadowfetch-linux"
+GITHUB = "https://github.com/Shadowfetchapps/shadowfetch-linux"
 
 # mounted_iso() opens the shipped image; unsquashfs supplies the dpkg inventory
 # and APT sources that become the SBOM.

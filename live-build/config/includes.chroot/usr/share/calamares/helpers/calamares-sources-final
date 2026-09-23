@@ -62,7 +62,7 @@ if [ -z "$live_line" ]; then
     echo "[shadowfetch] sources-final: no usable deb line in $LIVE_LIST -- refusing to" >&2
     echo "[shadowfetch]   guess a suite. The installed system would get the wrong Debian" >&2
     echo "[shadowfetch]   archive, which breaks apt. Please report this at" >&2
-    echo "[shadowfetch]   https://github.com/ShadowfetchLinux/shadowfetch-linux/issues" >&2
+    echo "[shadowfetch]   https://github.com/Shadowfetchapps/shadowfetch-linux/issues" >&2
     exit 1
 fi
 

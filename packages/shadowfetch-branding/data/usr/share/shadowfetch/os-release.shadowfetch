@@ -7,4 +7,4 @@ VERSION_ID="4.1.0"
 VERSION_CODENAME=umbra
 HOME_URL="https://www.shadowfetchlinux.org/"
 SUPPORT_URL="https://www.shadowfetchlinux.org/known-issues"
-BUG_REPORT_URL="https://github.com/ShadowfetchLinux/shadowfetch-linux/issues"
+BUG_REPORT_URL="https://github.com/Shadowfetchapps/shadowfetch-linux/issues"

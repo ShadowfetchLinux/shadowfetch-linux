@@ -63,7 +63,7 @@ class FireEdition215Tests(unittest.TestCase):
 
     def test_canonical_identity_keeps_verified_raw_artifact_routes(self):
         canonical = "https://www.shadowfetchlinux.org"
-        repository = "https://github.com/ShadowfetchLinux/shadowfetch-linux"
+        repository = "https://github.com/Shadowfetchapps/shadowfetch-linux"
         artifact_base = "https://www.shadowfetch.com/linux"
         os_release = (
             ROOT
