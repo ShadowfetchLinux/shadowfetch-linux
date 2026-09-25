@@ -1,8 +1,20 @@
-# Staged for 2.2.0 — not shipped
+# next-release/
 
-Files here are finished and tested but deliberately NOT in any package.
-`debian/*.install` lists every shipped file explicitly by path, so nothing in
-this directory can reach a build by accident.
+Planning notes and staged files that are deliberately **not** in any
+package. `debian/*.install` lists every shipped file explicitly by path, so
+nothing in this directory can reach a build by accident.
+
+## 3.6 planning
+
+- [`3.6-secure-boot.md`](3.6-secure-boot.md) — what 3.6 can honestly do
+  about known-issues #1 (unsigned Secure Boot) without Microsoft-trusted
+  keys, without rebuilding the 3.5.0 ISO, and without spending the last
+  of the 4 GiB budget. Phoenix/Fireproof snapshot rollback is already
+  shipped in 3.5.0; this note does not re-open that bet.
+
+## Staged for 2.2.0 — not shipped
+
+Finished and tested binaries, still not in any package.
 
 ## shadowfetch-hardware
 
